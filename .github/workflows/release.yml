@@ -6,7 +6,7 @@ on:
       - "v*"
 
 concurrency:
-  group: release-${{ github.ref_name }}
+  group: release
   cancel-in-progress: false
 
 permissions:
@@ -239,6 +239,7 @@ jobs:
           git add Formula/codewire.rb
           git diff --cached --quiet && { echo "No changes to commit"; exit 0; }
           git commit -m "brew: update codewire to ${{ github.ref_name }}"
+          git pull --rebase origin main
           git push origin main
 
   deb-packages:
@@ -348,6 +349,7 @@ jobs:
           git add pool/ dists/ gpg.key
           git diff --cached --quiet && { echo "No changes to commit"; exit 0; }
           git commit -m "apt: update repo for ${{ github.ref_name }}"
+          git pull --rebase origin gh-pages
           git push origin gh-pages
 
   aur-publish:
