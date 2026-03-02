@@ -18,17 +18,23 @@ import (
 
 func launchCmd() *cobra.Command {
 	var (
-		branch       string
-		templateName string
-		templateID   string
-		resourceID   string
-		noWait       bool
+		branch         string
+		templateName   string
+		templateID     string
+		resourceID     string
+		noWait         bool
+		yes            bool
+		cpu            string
+		memory         string
+		image          string
+		installCommand string
+		startupScript  string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "launch <repo-url>",
 		Short: "Create a workspace from a repo URL",
-		Long:  "Create a new workspace on the default Coder resource, cloning the given repository.",
+		Long:  "Create a new workspace on the default Coder resource, cloning the given repository.\nUses AI to detect the project type and configure the workspace automatically.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			repoURL := args[0]
@@ -36,6 +42,102 @@ func launchCmd() *cobra.Command {
 			client, err := platform.NewClient()
 			if err != nil {
 				return err
+			}
+
+			// Call detection endpoint first (before resource resolution)
+			fmt.Printf("Analyzing %s...\n", repoURL)
+			detection, err := client.DetectRepo(repoURL, branch)
+			if err != nil {
+				fmt.Printf("Detection failed: %v\nFalling back to defaults.\n", err)
+				detection = nil
+			}
+
+			// Derive workspace name
+			wsName := deriveWorkspaceName(repoURL)
+			if detection != nil && detection.SuggestedName != "" {
+				wsName = detection.SuggestedName
+			}
+
+			// Apply detection results, CLI flags override
+			if detection != nil {
+				fmt.Printf("\nDetected: %s", detection.Language)
+				if detection.Framework != "" {
+					fmt.Printf(" (%s)", detection.Framework)
+				}
+				fmt.Println()
+				if detection.TemplateImage != "" {
+					fmt.Printf("  Image:    %s\n", detection.TemplateImage)
+				}
+				if detection.InstallCommand != "" {
+					fmt.Printf("  Install:  %s\n", detection.InstallCommand)
+				}
+				if detection.StartupScript != "" {
+					lines := strings.Split(detection.StartupScript, "\n")
+					if len(lines) == 1 {
+						fmt.Printf("  Script:   %s\n", detection.StartupScript)
+					} else {
+						fmt.Printf("  Script:   %s (+%d lines)\n", lines[0], len(lines)-1)
+					}
+				}
+				if len(detection.Services) > 0 {
+					var svcParts []string
+					for _, s := range detection.Services {
+						svcParts = append(svcParts, fmt.Sprintf("%s:%d", s.Name, s.Port))
+					}
+					fmt.Printf("  Services: %s\n", strings.Join(svcParts, ", "))
+				}
+				if detection.SetupNotes != "" {
+					fmt.Printf("  Notes:    %s\n", detection.SetupNotes)
+				}
+				fmt.Println()
+
+				// Use detected values as defaults; CLI flags override
+				if image == "" {
+					image = detection.TemplateImage
+				}
+				if installCommand == "" {
+					installCommand = detection.InstallCommand
+				}
+				if startupScript == "" {
+					startupScript = detection.StartupScript
+				}
+				if cpu == "" {
+					cpu = detection.CPU
+				}
+				if memory == "" {
+					memory = detection.Memory
+				}
+			}
+
+			// Confirm unless --yes
+			if !yes {
+				idx, err := promptSelect("Launch workspace?", []string{"Yes", "Edit options", "Cancel"})
+				if err != nil {
+					return err
+				}
+				switch idx {
+				case 2: // Cancel
+					return fmt.Errorf("canceled")
+				case 1: // Edit options
+					if v, err := promptDefault("Image", image); err == nil {
+						image = v
+					}
+					if v, err := promptDefault("Install command", installCommand); err == nil {
+						installCommand = v
+					}
+					if v, err := promptDefault("Startup script", startupScript); err == nil {
+						startupScript = v
+					}
+					if v, err := promptDefault("CPU cores", cpu); err == nil {
+						cpu = v
+					}
+					if v, err := promptDefault("Memory (GB)", memory); err == nil {
+						memory = v
+					}
+					if v, err := promptDefault("Workspace name", wsName); err == nil {
+						wsName = v
+					}
+				}
 			}
 
 			// Resolve resource ID
@@ -48,38 +150,44 @@ func launchCmd() *cobra.Command {
 				resID = cfg.DefaultResource
 			}
 
-			// Derive workspace name from repo URL
-			wsName := deriveWorkspaceName(repoURL)
-
-			// Resolve template
-			tmplID := templateID
-			if tmplID == "" && templateName == "" {
-				// Auto-pick first template
-				templates, err := client.ListTemplates(resID)
-				if err != nil {
-					return fmt.Errorf("list templates: %w", err)
-				}
-				if len(templates) == 0 {
-					return fmt.Errorf("no templates available on this resource")
-				}
-				tmplID = templates[0].ID
-				if templateName == "" {
-					templateName = templates[0].Name
-				}
+			// Use auto-launch template by name
+			tmplName := templateName
+			if tmplName == "" && templateID == "" {
+				tmplName = "auto-launch"
 			}
+
+			// Build git_repos JSON from the repo URL
+			gitRepos := map[string]string{wsName: repoURL}
+			gitReposJSON, _ := json.Marshal(gitRepos)
 
 			// Build rich parameters
 			var params []platform.RichParameterValue
-			params = append(params, platform.RichParameterValue{Name: "repo", Value: repoURL})
+			params = append(params, platform.RichParameterValue{Name: "project_name", Value: wsName})
+			params = append(params, platform.RichParameterValue{Name: "git_repos", Value: string(gitReposJSON)})
 			if branch != "" {
-				params = append(params, platform.RichParameterValue{Name: "branch", Value: branch})
+				params = append(params, platform.RichParameterValue{Name: "issue_branch", Value: branch})
+			}
+			if installCommand != "" {
+				params = append(params, platform.RichParameterValue{Name: "install_command", Value: installCommand})
+			}
+			if startupScript != "" {
+				params = append(params, platform.RichParameterValue{Name: "startup_script", Value: startupScript})
+			}
+			if image != "" {
+				params = append(params, platform.RichParameterValue{Name: "image", Value: image})
+			}
+			if cpu != "" {
+				params = append(params, platform.RichParameterValue{Name: "cpu", Value: cpu})
+			}
+			if memory != "" {
+				params = append(params, platform.RichParameterValue{Name: "memory", Value: memory})
 			}
 
 			fmt.Printf("Creating workspace %q...\n", wsName)
 			ws, err := client.CreateWorkspace(resID, &platform.CreateWorkspaceRequest{
 				Name:         wsName,
-				TemplateID:   tmplID,
-				TemplateName: templateName,
+				TemplateID:   templateID,
+				TemplateName: tmplName,
 				RichParams:   params,
 			})
 			if err != nil {
@@ -114,10 +222,16 @@ func launchCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&branch, "branch", "", "Branch to checkout (default: repo default)")
-	cmd.Flags().StringVar(&templateName, "template", "", "Template name (default: first available)")
+	cmd.Flags().StringVar(&templateName, "template", "", "Template name (default: auto-launch)")
 	cmd.Flags().StringVar(&templateID, "template-id", "", "Template ID")
 	cmd.Flags().StringVar(&resourceID, "resource", "", "Resource ID (default: from config)")
 	cmd.Flags().BoolVar(&noWait, "no-wait", false, "Don't wait for workspace to start")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Skip confirmation prompt")
+	cmd.Flags().StringVar(&cpu, "cpu", "", "CPU cores (default: from detection)")
+	cmd.Flags().StringVar(&memory, "memory", "", "Memory in GB (default: from detection)")
+	cmd.Flags().StringVar(&image, "image", "", "Template image (default: from detection)")
+	cmd.Flags().StringVar(&installCommand, "install-command", "", "Install command (default: from detection)")
+	cmd.Flags().StringVar(&startupScript, "startup-script", "", "Startup script (default: from detection)")
 	return cmd
 }
 

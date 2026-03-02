@@ -178,6 +178,28 @@ type DeviceTokenResponse struct {
 	User         *User  `json:"user,omitempty"`
 }
 
+// Detection types
+
+type DetectionResult struct {
+	TemplateImage  string              `json:"template_image"`
+	InstallCommand string              `json:"install_command"`
+	StartupScript  string              `json:"startup_script"`
+	Language       string              `json:"language"`
+	Framework      string              `json:"framework"`
+	SuggestedName  string              `json:"suggested_name"`
+	NeedsDocker    bool                `json:"needs_docker"`
+	HasCompose     bool                `json:"has_compose"`
+	Services       []ServiceDefinition `json:"services"`
+	CPU            string              `json:"cpu"`
+	Memory         string              `json:"memory"`
+	SetupNotes     string              `json:"setup_notes"`
+}
+
+type ServiceDefinition struct {
+	Name string `json:"name"`
+	Port int    `json:"port"`
+}
+
 // API error
 
 type APIError struct {
