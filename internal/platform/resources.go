@@ -1,5 +1,10 @@
 package platform
 
+import (
+	"fmt"
+	"time"
+)
+
 // ListResources returns all resources the user has access to across all orgs.
 func (c *Client) ListResources() ([]PlatformResource, error) {
 	var resources []PlatformResource
@@ -25,6 +30,45 @@ func (c *Client) CreateResource(req *CreateResourceRequest) (*CreateResourceResu
 		return nil, err
 	}
 	return &result, nil
+}
+
+// WaitForResource polls until the resource reaches the target status or the timeout expires.
+func (c *Client) WaitForResource(resourceID string, targetStatus string, interval, timeout time.Duration) (*PlatformResource, error) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resource, err := c.GetResource(resourceID)
+		if err != nil {
+			return nil, fmt.Errorf("poll resource: %w", err)
+		}
+		if resource.Status == targetStatus {
+			return resource, nil
+		}
+		if resource.Status == "failed" || resource.Status == "error" {
+			msg := resource.ProvisionError
+			if msg == "" {
+				msg = resource.Status
+			}
+			return resource, fmt.Errorf("resource %s: %s", resource.Status, msg)
+		}
+		time.Sleep(interval)
+	}
+	return nil, fmt.Errorf("timed out waiting for resource to reach %q status", targetStatus)
+}
+
+// WaitForCheckout polls until the resource's billing_status is no longer "checkout_pending".
+func (c *Client) WaitForCheckout(resourceID string, interval, timeout time.Duration) (*PlatformResource, error) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resource, err := c.GetResource(resourceID)
+		if err != nil {
+			return nil, fmt.Errorf("poll checkout: %w", err)
+		}
+		if resource.BillingStatus != "checkout_pending" {
+			return resource, nil
+		}
+		time.Sleep(interval)
+	}
+	return nil, fmt.Errorf("timed out waiting for checkout completion")
 }
 
 // DeleteResource deletes a resource by ID or slug.

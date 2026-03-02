@@ -147,7 +147,25 @@ type CreateResourceRequest struct {
 
 type CreateResourceResult struct {
 	PlatformResource
-	CheckoutURL string `json:"checkout_url,omitempty"`
+	CheckoutURL      string `json:"checkout_url,omitempty"`
+	RequiresCheckout bool   `json:"requires_checkout,omitempty"`
+}
+
+// Plan represents a billing plan for a resource type.
+type Plan struct {
+	DisplayName         string  `json:"display_name"`
+	PriceCents          int     `json:"price_cents"`
+	IncludedDevs        int     `json:"included_devs"`
+	MaxConcurrentWS     int     `json:"max_concurrent_ws"`
+	MaxTeamMembers      int     `json:"max_team_members"`
+	StorageGB           int     `json:"storage_gb"`
+	IsContactUs         bool    `json:"is_contact_us"`
+	IncludedCPUHours    int     `json:"included_cpu_hours"`
+	IncludedMemGBHours  int     `json:"included_mem_gb_hours"`
+	IncludedDiskGBHours int     `json:"included_disk_gb_hours"`
+	CPUOverageCents     float64 `json:"cpu_overage_cents"`
+	MemOverageCents     float64 `json:"mem_overage_cents"`
+	DiskOverageCents    float64 `json:"disk_overage_cents"`
 }
 
 // Billing checkout types

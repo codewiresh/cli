@@ -98,6 +98,16 @@ func (c *Client) GetResourceBilling(resourceID string) (*ResourceBilling, error)
 	return &resp, nil
 }
 
+// ListPlans returns available billing plans for a resource type.
+// The server returns a map of plan name -> plan details.
+func (c *Client) ListPlans(resourceType string) (map[string]Plan, error) {
+	var plans map[string]Plan
+	if err := c.do("GET", "/api/v1/billing/plans/"+resourceType, nil, &plans); err != nil {
+		return nil, err
+	}
+	return plans, nil
+}
+
 func (c *Client) CreateResourceCheckout(resourceID string, req *ResourceCheckoutRequest) (*CheckoutURLResponse, error) {
 	var resp CheckoutURLResponse
 	err := c.do("POST", fmt.Sprintf("/api/v1/resources/%s/billing/checkout", resourceID), req, &resp)

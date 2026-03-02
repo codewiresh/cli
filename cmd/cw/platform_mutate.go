@@ -174,10 +174,15 @@ func resourcesCreateCmd() *cobra.Command {
 
 			fmt.Printf("Created resource %q (slug: %s, status: %s)\n", result.Name, result.Slug, result.Status)
 
-			if result.CheckoutURL != "" {
-				fmt.Printf("Checkout URL: %s\n", result.CheckoutURL)
-				fmt.Println("Opening in browser...")
-				_ = openBrowser(result.CheckoutURL)
+			if result.RequiresCheckout || result.CheckoutURL != "" {
+				if err := handleCheckoutAndWait(pc, result); err != nil {
+					return err
+				}
+			} else if result.Status != "running" {
+				fmt.Printf("Provisioning %q...\n", result.Name)
+				if err := handleCheckoutAndWait(pc, result); err != nil {
+					return err
+				}
 			}
 
 			return nil
