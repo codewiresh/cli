@@ -112,7 +112,7 @@ func (c *Client) DeviceToken(deviceCode string) (*DeviceTokenResponse, int, erro
 
 // Healthz checks if the server is reachable.
 func (c *Client) Healthz() error {
-	resp, err := c.HTTP.Get(c.ServerURL + "/api/healthz")
+	resp, err := c.HTTP.Get(c.ServerURL + "/healthz")
 	if err != nil {
 		return fmt.Errorf("cannot reach server: %w", err)
 	}
@@ -121,6 +121,10 @@ func (c *Client) Healthz() error {
 		return fmt.Errorf("server returned %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func debugEnabled() bool {
+	return os.Getenv("CW_DEBUG") != ""
 }
 
 // do makes an authenticated HTTP request.
@@ -155,6 +159,11 @@ func (c *Client) do(method, path string, body any, result any) error {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("read response: %w", err)
+	}
+
+	if debugEnabled() {
+		fmt.Fprintf(os.Stderr, "DEBUG %s %s → %d (%d bytes)\n", method, path, resp.StatusCode, len(respBody))
+		fmt.Fprintf(os.Stderr, "DEBUG body: %s\n", string(respBody))
 	}
 
 	if resp.StatusCode >= 400 {
@@ -208,6 +217,11 @@ func (c *Client) doWithStatus(method, path string, body any) (*DeviceTokenRespon
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, resp.StatusCode, fmt.Errorf("read response: %w", err)
+	}
+
+	if debugEnabled() {
+		fmt.Fprintf(os.Stderr, "DEBUG %s %s → %d (%d bytes)\n", method, path, resp.StatusCode, len(respBody))
+		fmt.Fprintf(os.Stderr, "DEBUG body: %s\n", string(respBody))
 	}
 
 	if resp.StatusCode >= 400 {

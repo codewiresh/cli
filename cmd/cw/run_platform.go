@@ -22,7 +22,12 @@ func runInWorkspace(wsName, sessionName string, command []string) error {
 	}
 
 	if _, err := os.Stat(coderBin); err != nil {
-		return fmt.Errorf("coder binary not found at %s (run 'cw setup')", coderBin)
+		// Try PATH as fallback
+		if found, lookErr := exec.LookPath("coder"); lookErr == nil {
+			coderBin = found
+		} else {
+			return fmt.Errorf("coder binary not found (checked %s and PATH)\nInstall coder or set coder_binary in ~/.config/cw/config.json", coderBin)
+		}
 	}
 
 	// Build the remote cw run command

@@ -235,33 +235,31 @@ func runCmd() *cobra.Command {
 		Aliases: []string{},
 		Short:   "Launch a new session",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Platform mode: run in remote workspace via coder ssh
+			// Platform mode: route to remote workspace if workspace context exists
 			if platform.HasConfig() {
-				dash := cmd.ArgsLenAtDash()
-				if dash == -1 {
-					return fmt.Errorf("command required after --\n\nUsage: cw run [workspace] -- <command> [args...]")
-				}
+				wsName := workspaceOverride
 
-				// Parse: cw run [workspace] -- command...
-				// Priority: workspaceOverride > positional arg > current workspace
-				explicit := ""
-				if dash >= 1 {
-					explicit = args[0]
-				}
-				wsName := resolveWorkspaceName(explicit)
-				if wsName == "" {
-					wsName = platform.GetCurrentWorkspace()
-				}
-				if wsName == "" {
-					return fmt.Errorf("no workspace specified\n\nUsage: cw <workspace> run -- <command>\n   or: cw run <workspace> -- <command>\n   or: set current workspace with 'cw <name>'")
-				}
-				command := args[dash:]
+				if wsName != "" {
+					// Remote mode — workspace context is set
+					dash := cmd.ArgsLenAtDash()
+					if dash == -1 {
+						return fmt.Errorf("command required after --\n\nUsage: cw run [name] -- <command> [args...]")
+					}
 
-				if len(command) == 0 {
-					return fmt.Errorf("command required after --")
-				}
+					// Positional arg before -- is session name, not workspace
+					sessionName := name
+					if sessionName == "" && dash >= 1 {
+						sessionName = args[0]
+					}
 
-				return runInWorkspace(wsName, name, command)
+					command := args[dash:]
+					if len(command) == 0 {
+						return fmt.Errorf("command required after --")
+					}
+
+					return runInWorkspace(wsName, sessionName, command)
+				}
+				// No workspace context — fall through to standalone local mode
 			}
 
 			// Standalone mode: existing code below

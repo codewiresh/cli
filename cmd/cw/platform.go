@@ -161,7 +161,11 @@ func loginWithDevice(client *platform.Client) (string, error) {
 			continue
 		}
 
-		// Success
+		// Success — verify token was actually set
+		if client.SessionToken == "" {
+			return "", fmt.Errorf("device auth approved but no session token received (status %d, session_token=%q)", statusCode, resp.SessionToken)
+		}
+
 		if resp.User != nil {
 			name := resp.User.Name
 			if name == "" {
@@ -169,7 +173,7 @@ func loginWithDevice(client *platform.Client) (string, error) {
 			}
 			return name, nil
 		}
-		return "", nil
+		return "(unknown)", nil
 	}
 
 	return "", fmt.Errorf("timed out waiting for authorization")
