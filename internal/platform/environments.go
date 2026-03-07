@@ -1,6 +1,10 @@
 package platform
 
-import "fmt"
+import (
+	"fmt"
+	"io"
+	"net/http"
+)
 
 func (c *Client) CreateEnvironment(orgID string, req *CreateEnvironmentRequest) (*Environment, error) {
 	var env Environment
@@ -77,4 +81,69 @@ func (c *Client) CreateEnvTemplate(orgID string, req *CreateTemplateRequest) (*E
 
 func (c *Client) DeleteEnvTemplate(orgID, templateID string) error {
 	return c.do("DELETE", fmt.Sprintf("/api/v1/organizations/%s/templates/%s", orgID, templateID), nil, nil)
+}
+
+func (c *Client) ExecInEnvironment(orgID, envID string, req *ExecRequest) (*ExecResult, error) {
+	var result ExecResult
+	if err := c.do("POST", fmt.Sprintf("/api/v1/organizations/%s/environments/%s/exec", orgID, envID), req, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (c *Client) ListFiles(orgID, envID, path string) ([]FileEntry, error) {
+	p := fmt.Sprintf("/api/v1/organizations/%s/environments/%s/files", orgID, envID)
+	if path != "" {
+		p += "?path=" + path
+	}
+	var entries []FileEntry
+	if err := c.do("GET", p, nil, &entries); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func (c *Client) UploadFile(orgID, envID, path string, data io.Reader) error {
+	url := fmt.Sprintf("%s/api/v1/organizations/%s/environments/%s/files/upload?path=%s",
+		c.ServerURL, orgID, envID, path)
+	req, err := http.NewRequest(http.MethodPost, url, data)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	if c.SessionToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.SessionToken)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return fmt.Errorf("upload failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("upload failed (%d): %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
+func (c *Client) DownloadFile(orgID, envID, path string) (io.ReadCloser, error) {
+	url := fmt.Sprintf("%s/api/v1/organizations/%s/environments/%s/files/download?path=%s",
+		c.ServerURL, orgID, envID, path)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.SessionToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.SessionToken)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("download failed: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("download failed (%d): %s", resp.StatusCode, string(body))
+	}
+	return resp.Body, nil
 }

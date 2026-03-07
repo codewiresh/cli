@@ -23,6 +23,9 @@ func envParentCmd() *cobra.Command {
 	cmd.AddCommand(envStopCmd())
 	cmd.AddCommand(envStartCmd())
 	cmd.AddCommand(envRmCmd())
+	cmd.AddCommand(envExecCmd())
+	cmd.AddCommand(envSSHCmd())
+	cmd.AddCommand(envCpCmd())
 	return cmd
 }
 

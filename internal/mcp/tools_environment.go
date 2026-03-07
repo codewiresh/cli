@@ -152,6 +152,51 @@ func environmentTools() []tool {
 				},
 			},
 		},
+		{
+			Name:        "codewire_exec_in_environment",
+			Description: "Execute a command in a running sandbox environment. Returns stdout, stderr, and exit code.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"environment_id": map[string]interface{}{
+						"type":        "string",
+						"description": "The environment ID to execute in",
+					},
+					"command": map[string]interface{}{
+						"type":        "array",
+						"items":       map[string]interface{}{"type": "string"},
+						"description": "Command and arguments (e.g. [\"ls\", \"-la\"])",
+					},
+					"working_dir": map[string]interface{}{
+						"type":        "string",
+						"description": "Working directory (default: /workspace)",
+					},
+					"timeout": map[string]interface{}{
+						"type":        "integer",
+						"description": "Timeout in seconds (default: 30)",
+					},
+				},
+				"required": []string{"environment_id", "command"},
+			},
+		},
+		{
+			Name:        "codewire_list_files",
+			Description: "List files in a directory in a running sandbox environment.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"environment_id": map[string]interface{}{
+						"type":        "string",
+						"description": "The environment ID",
+					},
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "Directory path to list (default: /workspace)",
+					},
+				},
+				"required": []string{"environment_id"},
+			},
+		},
 	}
 }
 
@@ -308,6 +353,79 @@ func toolDeleteEnvironment(args map[string]interface{}) (string, error) {
 		return "", fmt.Errorf("delete environment: %w", err)
 	}
 	return fmt.Sprintf("Environment %s deleted.", envID), nil
+}
+
+func toolExecInEnvironment(args map[string]interface{}) (string, error) {
+	client, orgID, err := getPlatformClient()
+	if err != nil {
+		return "", err
+	}
+
+	envID, _ := args["environment_id"].(string)
+	if envID == "" {
+		return "", fmt.Errorf("environment_id is required")
+	}
+
+	cmdArg, _ := args["command"].([]interface{})
+	if len(cmdArg) == 0 {
+		return "", fmt.Errorf("command is required")
+	}
+	var command []string
+	for _, c := range cmdArg {
+		if s, ok := c.(string); ok {
+			command = append(command, s)
+		}
+	}
+
+	req := &platform.ExecRequest{
+		Command: command,
+	}
+	if wd, ok := args["working_dir"].(string); ok && wd != "" {
+		req.WorkingDir = wd
+	}
+	if t, ok := args["timeout"].(float64); ok && t > 0 {
+		req.Timeout = int(t)
+	}
+
+	result, err := client.ExecInEnvironment(orgID, envID, req)
+	if err != nil {
+		return "", fmt.Errorf("exec: %w", err)
+	}
+
+	out, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+func toolListFiles(args map[string]interface{}) (string, error) {
+	client, orgID, err := getPlatformClient()
+	if err != nil {
+		return "", err
+	}
+
+	envID, _ := args["environment_id"].(string)
+	if envID == "" {
+		return "", fmt.Errorf("environment_id is required")
+	}
+
+	path, _ := args["path"].(string)
+
+	entries, err := client.ListFiles(orgID, envID, path)
+	if err != nil {
+		return "", fmt.Errorf("list files: %w", err)
+	}
+
+	if len(entries) == 0 {
+		return "No files found.", nil
+	}
+
+	out, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
 
 func toolListTemplates(args map[string]interface{}) (string, error) {

@@ -312,3 +312,24 @@ type CreateTemplateRequest struct {
 type StatusResponse struct {
 	Status string `json:"status"`
 }
+
+type ExecRequest struct {
+	Command    []string          `json:"command"`
+	WorkingDir string            `json:"working_dir,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
+	Timeout    int               `json:"timeout,omitempty"`
+}
+
+type ExecResult struct {
+	ExitCode int    `json:"exit_code"`
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+}
+
+type FileEntry struct {
+	Name    string `json:"name"`
+	Size    int64  `json:"size"`
+	IsDir   bool   `json:"is_dir"`
+	Mode    string `json:"mode"`
+	ModTime string `json:"mod_time"`
+}

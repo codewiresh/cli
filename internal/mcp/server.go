@@ -582,6 +582,10 @@ func handleToolCall(dataDir string, params json.RawMessage) (string, error) {
 		return toolDeleteEnvironment(args)
 	case "codewire_list_templates":
 		return toolListTemplates(args)
+	case "codewire_exec_in_environment":
+		return toolExecInEnvironment(args)
+	case "codewire_list_files":
+		return toolListFiles(args)
 	default:
 		return "", fmt.Errorf("unknown tool: %s", p.Name)
 	}
