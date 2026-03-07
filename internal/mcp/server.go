@@ -122,8 +122,14 @@ func RunMCPServer(dataDir string) error {
 // Tool definitions
 // ---------------------------------------------------------------------------
 
-// getTools returns the 7 MCP tools matching the Rust implementation.
+// getTools returns all MCP tools (local node + platform environment tools).
 func getTools() []tool {
+	tools := getNodeTools()
+	tools = append(tools, environmentTools()...)
+	return tools
+}
+
+func getNodeTools() []tool {
 	return []tool{
 		{
 			Name:        "codewire_list_sessions",
@@ -561,6 +567,21 @@ func handleToolCall(dataDir string, params json.RawMessage) (string, error) {
 		return toolKVList(dataDir, args)
 	case "codewire_kv_delete":
 		return toolKVDelete(dataDir, args)
+	// Platform environment tools (use API, not local node)
+	case "codewire_list_environments":
+		return toolListEnvironments(args)
+	case "codewire_create_environment":
+		return toolCreateEnvironment(args)
+	case "codewire_get_environment":
+		return toolGetEnvironment(args)
+	case "codewire_stop_environment":
+		return toolStopEnvironment(args)
+	case "codewire_start_environment":
+		return toolStartEnvironment(args)
+	case "codewire_delete_environment":
+		return toolDeleteEnvironment(args)
+	case "codewire_list_templates":
+		return toolListTemplates(args)
 	default:
 		return "", fmt.Errorf("unknown tool: %s", p.Name)
 	}
