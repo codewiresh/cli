@@ -21,6 +21,9 @@ func TestParseSemver(t *testing.T) {
 		{"", 0, 0, 0, false},
 		{"v1.2", 0, 0, 0, false},
 		{"v1.2.three", 0, 0, 0, false},
+		{"v0.2.52-2-gf2fe21a", 0, 2, 52, true},
+		{"0.2.52-2-gf2fe21a", 0, 2, 52, true},
+		{"v1.0.0-dirty", 1, 0, 0, true},
 	}
 	for _, tt := range tests {
 		maj, min, patch, ok := parseSemver(tt.input)
@@ -45,6 +48,8 @@ func TestIsNewer(t *testing.T) {
 		{"dev", "v0.2.49", false},
 		{"v0.2.48", "dev", false},
 		{"bad", "worse", false},
+		{"v0.2.52-2-gf2fe21a", "v0.2.57", true},
+		{"v0.2.57", "v0.2.57", false},
 	}
 	for _, tt := range tests {
 		got := IsNewer(tt.current, tt.latest)

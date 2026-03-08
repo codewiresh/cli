@@ -309,9 +309,12 @@ type CreateEnvironmentRequest struct {
 	InstallCommand string            `json:"install_command,omitempty"`
 	StartupScript  string            `json:"startup_script,omitempty"`
 	EnvVars        map[string]string `json:"env_vars,omitempty"`
-	Agent          string            `json:"agent,omitempty"`
-	AgentEnv       map[string]string `json:"agent_env,omitempty"`
-	SecretProject  string            `json:"secret_project,omitempty"`
+	Agent              string            `json:"agent,omitempty"`
+	AgentEnv           map[string]string `json:"agent_env,omitempty"`
+	SecretProject      string            `json:"secret_project,omitempty"`
+	AppPorts           []AppPort         `json:"app_ports,omitempty"`
+	IncludeOrgSecrets  *bool             `json:"include_org_secrets,omitempty"`
+	IncludeUserSecrets *bool             `json:"include_user_secrets,omitempty"`
 }
 
 // SecretProject represents a named collection of secrets.

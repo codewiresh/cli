@@ -86,6 +86,8 @@ func envCreateCmd() *cobra.Command {
 		agent          string
 		envVars        []string
 		secretProject  string
+		noOrgSecrets   bool
+		noUserSecrets  bool
 	)
 
 	cmd := &cobra.Command{
@@ -133,6 +135,12 @@ Examples:
 					}
 					if cfg.Disk > 0 && disk == 0 {
 						disk = cfg.Disk
+					}
+					if cfg.IncludeOrgSecrets != nil && !*cfg.IncludeOrgSecrets {
+						noOrgSecrets = true
+					}
+					if cfg.IncludeUserSecrets != nil && !*cfg.IncludeUserSecrets {
+						noUserSecrets = true
 					}
 					for k, v := range cfg.Env {
 						envVars = append(envVars, k+"="+v)
@@ -204,6 +212,15 @@ Examples:
 				req.TTLSeconds = &secs
 			}
 
+			if noOrgSecrets {
+				f := false
+				req.IncludeOrgSecrets = &f
+			}
+			if noUserSecrets {
+				f := false
+				req.IncludeUserSecrets = &f
+			}
+
 			// Resolve Claude OAuth token if agent is claude-code.
 			if agent == "claude-code" {
 				token := resolveClaudeOAuthToken()
@@ -249,6 +266,8 @@ Examples:
 	cmd.Flags().StringVar(&agent, "agent", "", "AI agent (claude-code)")
 	cmd.Flags().StringSliceVar(&envVars, "env", nil, "Env vars (KEY=val)")
 	cmd.Flags().StringVar(&secretProject, "secrets", "", "Secret project to bind")
+	cmd.Flags().BoolVar(&noOrgSecrets, "no-org-secrets", false, "Don't inject org-level secrets")
+	cmd.Flags().BoolVar(&noUserSecrets, "no-user-secrets", false, "Don't inject user-level secrets")
 	return cmd
 }
 

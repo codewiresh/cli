@@ -17,8 +17,10 @@ type CodewireConfig struct {
 	Ports    []PortConfig      `yaml:"ports"`
 	CPU      int               `yaml:"cpu"`
 	Memory   int               `yaml:"memory"`
-	Disk     int               `yaml:"disk"`
-	Agent    string            `yaml:"agent"`
+	Disk               int               `yaml:"disk"`
+	Agent              string            `yaml:"agent"`
+	IncludeOrgSecrets  *bool             `yaml:"include_org_secrets"`
+	IncludeUserSecrets *bool             `yaml:"include_user_secrets"`
 }
 
 // PortConfig represents a port in codewire.yaml.

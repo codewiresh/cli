@@ -86,6 +86,10 @@ func IsNewer(current, latest string) bool {
 // parseSemver parses "v0.2.48" or "0.2.48" into (major, minor, patch, ok).
 func parseSemver(s string) (int, int, int, bool) {
 	s = strings.TrimPrefix(s, "v")
+	// Strip git-describe suffix (e.g. "0.2.52-2-gf2fe21a" → "0.2.52")
+	if idx := strings.Index(s, "-"); idx != -1 {
+		s = s[:idx]
+	}
 	parts := strings.SplitN(s, ".", 3)
 	if len(parts) != 3 {
 		return 0, 0, 0, false

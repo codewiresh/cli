@@ -22,6 +22,8 @@ func secretsCmd() *cobra.Command {
 		secretsSetCmd(),
 		secretsDeleteCmd(),
 		secretsRmCmd(),
+		secretsUserCmd(),
+		secretsOrgCmd(),
 	)
 	return cmd
 }
@@ -229,6 +231,234 @@ func secretsRmCmd() *cobra.Command {
 	cmd := secretsDeleteCmd()
 	cmd.Use = "rm <project> [key]"
 	cmd.Aliases = nil
+	return cmd
+}
+
+// ── cw secrets user ──────────────────────────────────────────────────
+
+func secretsUserCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "user",
+		Short: "Manage user-scoped secrets",
+	}
+	cmd.AddCommand(
+		secretsUserListCmd(),
+		secretsUserSetCmd(),
+		secretsUserDeleteCmd(),
+	)
+	return cmd
+}
+
+func secretsUserListCmd() *cobra.Command {
+	var jsonOutput bool
+
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List your user secrets",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := platform.NewClient()
+			if err != nil {
+				return err
+			}
+
+			secrets, err := client.ListUserSecrets()
+			if err != nil {
+				return fmt.Errorf("list user secrets: %w", err)
+			}
+
+			if jsonOutput {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(secrets)
+			}
+
+			if len(secrets) == 0 {
+				fmt.Println("No user secrets found.")
+				return nil
+			}
+
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "KEY\tCREATED\tUPDATED")
+			for _, s := range secrets {
+				fmt.Fprintf(w, "%s\t%s\t%s\n", s.Key, s.CreatedAt, s.UpdatedAt)
+			}
+			return w.Flush()
+		},
+	}
+
+	cmd.Flags().BoolVarP(&jsonOutput, "json", "j", false, "Output as JSON")
+	return cmd
+}
+
+func secretsUserSetCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "set <KEY>",
+		Short: "Set a user secret (prompts for value)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := platform.NewClient()
+			if err != nil {
+				return err
+			}
+
+			key := args[0]
+
+			value, err := promptPassword("Value: ")
+			if err != nil {
+				return err
+			}
+			if value == "" {
+				return fmt.Errorf("value cannot be empty")
+			}
+
+			if err := client.SetUserSecret(key, value); err != nil {
+				return fmt.Errorf("set user secret: %w", err)
+			}
+
+			fmt.Printf("Secret %s set.\n", key)
+			return nil
+		},
+	}
+	return cmd
+}
+
+func secretsUserDeleteCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "delete <KEY>",
+		Aliases: []string{"rm"},
+		Short:   "Delete a user secret",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := platform.NewClient()
+			if err != nil {
+				return err
+			}
+
+			key := args[0]
+
+			if err := client.DeleteUserSecret(key); err != nil {
+				return fmt.Errorf("delete user secret: %w", err)
+			}
+
+			fmt.Printf("Secret %s deleted.\n", key)
+			return nil
+		},
+	}
+	return cmd
+}
+
+// ── cw secrets org ──────────────────────────────────────────────────
+
+func secretsOrgCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "org",
+		Short: "Manage organization-scoped secrets",
+	}
+	cmd.AddCommand(
+		secretsOrgListCmd(),
+		secretsOrgSetCmd(),
+		secretsOrgDeleteCmd(),
+	)
+	return cmd
+}
+
+func secretsOrgListCmd() *cobra.Command {
+	var jsonOutput bool
+
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List organization secrets",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			orgID, client, err := getDefaultOrg()
+			if err != nil {
+				return err
+			}
+
+			secrets, err := client.ListSecrets(orgID)
+			if err != nil {
+				return fmt.Errorf("list org secrets: %w", err)
+			}
+
+			if jsonOutput {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(secrets)
+			}
+
+			if len(secrets) == 0 {
+				fmt.Println("No organization secrets found.")
+				return nil
+			}
+
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "KEY\tCREATED\tUPDATED")
+			for _, s := range secrets {
+				fmt.Fprintf(w, "%s\t%s\t%s\n", s.Key, s.CreatedAt, s.UpdatedAt)
+			}
+			return w.Flush()
+		},
+	}
+
+	cmd.Flags().BoolVarP(&jsonOutput, "json", "j", false, "Output as JSON")
+	return cmd
+}
+
+func secretsOrgSetCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "set <KEY>",
+		Short: "Set an organization secret (prompts for value)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			orgID, client, err := getDefaultOrg()
+			if err != nil {
+				return err
+			}
+
+			key := args[0]
+
+			value, err := promptPassword("Value: ")
+			if err != nil {
+				return err
+			}
+			if value == "" {
+				return fmt.Errorf("value cannot be empty")
+			}
+
+			if err := client.SetSecret(orgID, key, value); err != nil {
+				return fmt.Errorf("set org secret: %w", err)
+			}
+
+			fmt.Printf("Secret %s set.\n", key)
+			return nil
+		},
+	}
+	return cmd
+}
+
+func secretsOrgDeleteCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "delete <KEY>",
+		Aliases: []string{"rm"},
+		Short:   "Delete an organization secret",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			orgID, client, err := getDefaultOrg()
+			if err != nil {
+				return err
+			}
+
+			key := args[0]
+
+			if err := client.DeleteSecret(orgID, key); err != nil {
+				return fmt.Errorf("delete org secret: %w", err)
+			}
+
+			fmt.Printf("Secret %s deleted.\n", key)
+			return nil
+		},
+	}
 	return cmd
 }
 

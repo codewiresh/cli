@@ -96,3 +96,31 @@ func (c *Client) SetProjectSecret(orgID, projectID, key, value string) error {
 func (c *Client) DeleteProjectSecret(orgID, projectID, key string) error {
 	return c.do("DELETE", fmt.Sprintf("/api/v1/organizations/%s/secret-projects/%s/secrets/%s", orgID, projectID, key), nil, nil)
 }
+
+// ── User Secret methods ─────────────────────────────────────────────
+
+type setUserSecretRequest struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// ListUserSecrets returns secret metadata for the authenticated user.
+func (c *Client) ListUserSecrets() ([]SecretMetadata, error) {
+	var resp listSecretsResponse
+	if err := c.do("GET", "/api/v1/user/secrets", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Secrets, nil
+}
+
+// SetUserSecret creates or updates a user secret.
+func (c *Client) SetUserSecret(key, value string) error {
+	return c.do("PUT", "/api/v1/user/secrets", &setUserSecretRequest{
+		Key: key, Value: value,
+	}, nil)
+}
+
+// DeleteUserSecret removes a user secret.
+func (c *Client) DeleteUserSecret(key string) error {
+	return c.do("DELETE", fmt.Sprintf("/api/v1/user/secrets/%s", key), nil, nil)
+}
