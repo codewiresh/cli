@@ -343,7 +343,8 @@ jobs:
           gh release download ${VERSION} \
             --repo ${{ github.repository }} \
             --pattern "*.deb" \
-            --dir pool
+            --dir pool \
+            --clobber
 
       - name: Generate APT repository metadata
         run: |
