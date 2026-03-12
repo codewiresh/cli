@@ -295,6 +295,12 @@ type EnvironmentTemplate struct {
 	CreatedAt            string  `json:"created_at"`
 }
 
+// RepoEntry describes a single repository to clone into an environment.
+type RepoEntry struct {
+	URL    string `json:"url"`
+	Branch string `json:"branch,omitempty"`
+}
+
 type CreateEnvironmentRequest struct {
 	TemplateID     string            `json:"template_id,omitempty"`
 	TemplateSlug   string            `json:"template_slug,omitempty"`
@@ -305,6 +311,7 @@ type CreateEnvironmentRequest struct {
 	TTLSeconds     *int              `json:"ttl_seconds,omitempty"`
 	RepoURL        string            `json:"repo_url,omitempty"`
 	Branch         string            `json:"branch,omitempty"`
+	Repos          []RepoEntry       `json:"repos,omitempty"`
 	Image          string            `json:"image,omitempty"`
 	InstallCommand string            `json:"install_command,omitempty"`
 	StartupScript  string            `json:"startup_script,omitempty"`

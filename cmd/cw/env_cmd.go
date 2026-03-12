@@ -36,6 +36,25 @@ func envParentCmd() *cobra.Command {
 	return cmd
 }
 
+// parseRepoSpec splits "url@branch" into (url, branch).
+// If no "@" is present, branch is empty.
+func parseRepoSpec(spec string) (string, string) {
+	// Don't split on @ inside the user@host part of SSH/HTTPS URLs.
+	// The branch delimiter is the last @ that appears after a "/" or at the end.
+	idx := strings.LastIndex(spec, "@")
+	if idx == -1 {
+		return spec, ""
+	}
+	// Ensure the @ is after a path separator (not in user@host).
+	url := spec[:idx]
+	branch := spec[idx+1:]
+	if !strings.Contains(url, "/") {
+		// No slash before @, so this is user@host, not url@branch.
+		return spec, ""
+	}
+	return url, branch
+}
+
 func getDefaultOrg() (string, *platform.Client, error) {
 	client, err := platform.NewClient()
 	if err != nil {
@@ -78,7 +97,7 @@ func envCreateCmd() *cobra.Command {
 		cpu            int
 		memory         int
 		disk           int
-		repoURL        string
+		repoFlags      []string
 		branch         string
 		image          string
 		install        string
@@ -91,20 +110,40 @@ func envCreateCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "create [repo-url]",
+		Use:   "create [repo-url ...]",
 		Short: "Create a new environment",
 		Long: `Create a new environment. Smart create detects configuration from a repo URL.
 
+Multiple repos can be specified as positional args or with --repo flags.
+Use url@branch syntax to specify a branch per repo.
+
 Examples:
   cw env create https://github.com/foo/bar
+  cw env create https://github.com/foo/frontend https://github.com/foo/api
+  cw env create --repo github.com/foo/frontend@main --repo git.noel.sh/foo/backend
   cw env create --template go --name my-env
   cw env create --image go --name my-env
   cw env create --secrets my-project https://github.com/foo/bar`,
-		Args: cobra.MaximumNArgs(1),
+		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Positional arg is repo URL.
-			if len(args) == 1 {
-				repoURL = args[0]
+			// Collect repos from positional args + --repo flags.
+			var repoURL string
+			var repos []platform.RepoEntry
+
+			allRepoSpecs := append(args, repoFlags...)
+			for _, spec := range allRepoSpecs {
+				u, b := parseRepoSpec(spec)
+				repos = append(repos, platform.RepoEntry{URL: u, Branch: b})
+			}
+
+			// Single repo: also set repoURL for backward compat.
+			if len(repos) == 1 {
+				repoURL = repos[0].URL
+				if repos[0].Branch != "" && branch == "" {
+					branch = repos[0].Branch
+				}
+			} else if len(repos) > 1 {
+				repoURL = repos[0].URL
 			}
 
 			// 0-arg support: look for ./codewire.yaml
@@ -193,6 +232,9 @@ Examples:
 				Agent:          agent,
 				SecretProject:  secretProject,
 			}
+			if len(repos) > 0 {
+				req.Repos = repos
+			}
 			if len(parsedEnvVars) > 0 {
 				req.EnvVars = parsedEnvVars
 			}
@@ -265,7 +307,7 @@ Examples:
 	cmd.Flags().IntVar(&cpu, "cpu", 0, "CPU in millicores")
 	cmd.Flags().IntVar(&memory, "memory", 0, "Memory in MB")
 	cmd.Flags().IntVar(&disk, "disk", 0, "Disk in GB")
-	cmd.Flags().StringVar(&repoURL, "repo", "", "Git repo URL")
+	cmd.Flags().StringArrayVar(&repoFlags, "repo", nil, "Git repo URL (repeatable, url@branch syntax)")
 	cmd.Flags().StringVar(&branch, "branch", "", "Branch to checkout")
 	cmd.Flags().StringVar(&image, "image", "", "Container image (shorthand: go → workspace-go)")
 	cmd.Flags().StringVar(&install, "install", "", "Install command")
