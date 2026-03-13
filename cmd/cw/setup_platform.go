@@ -138,8 +138,8 @@ func platformSetupCmd() *cobra.Command {
 			}
 
 			successMsg("Setup complete!")
-			fmt.Println("  cw launch github.com/your/repo    # Create a workspace")
-			fmt.Println("  cw workspaces                      # List workspaces")
+			fmt.Println("  cw env create github.com/your/repo   # Create an environment")
+			fmt.Println("  cw env list                          # List environments")
 			return nil
 		},
 	}

@@ -57,7 +57,6 @@ func loginCmd() *cobra.Command {
 			if existing, err := platform.LoadConfig(); err == nil {
 				cfg.DefaultOrg = existing.DefaultOrg
 				cfg.DefaultResource = existing.DefaultResource
-				cfg.CoderBinary = existing.CoderBinary
 			}
 			if err := platform.SaveConfig(cfg); err != nil {
 				return fmt.Errorf("save config: %w", err)

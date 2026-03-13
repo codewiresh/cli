@@ -76,11 +76,3 @@ func (c *Client) DeleteResource(idOrSlug string) error {
 	return c.do("DELETE", "/api/v1/resources/"+idOrSlug, nil, nil)
 }
 
-// ListWorkspaces returns workspaces for a given resource.
-func (c *Client) ListWorkspaces(resourceID string) (*WorkspacesListResponse, error) {
-	var resp WorkspacesListResponse
-	if err := c.do("GET", "/api/v1/resources/"+resourceID+"/workspaces", nil, &resp); err != nil {
-		return nil, err
-	}
-	return &resp, nil
-}

@@ -70,29 +70,6 @@ func envExecCmd() *cobra.Command {
 	return cmd
 }
 
-func envSSHCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:               "ssh <id-or-name>",
-		Short:             "Open an interactive shell in a running environment",
-		Long:              "Start an interactive shell in a sandbox environment via SSH or terminal fallback.",
-		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: envCompletionFunc,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			orgID, client, err := getDefaultOrg()
-			if err != nil {
-				return err
-			}
-
-			envID, err := resolveEnvID(client, orgID, args[0])
-			if err != nil {
-				return err
-			}
-
-			return sshInteractive(client, orgID, envID)
-		},
-	}
-}
-
 func envCpCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "cp <src> <dst>",

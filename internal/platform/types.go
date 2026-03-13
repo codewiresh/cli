@@ -10,9 +10,7 @@ type PlatformConfig struct {
 	ServerURL        string `json:"server_url"`
 	SessionToken     string `json:"session_token"`
 	DefaultOrg       string `json:"default_org,omitempty"`
-	DefaultResource  string `json:"default_resource,omitempty"`
-	CoderBinary      string `json:"coder_binary,omitempty"`
-	CurrentWorkspace string `json:"current_workspace,omitempty"`
+	DefaultResource string `json:"default_resource,omitempty"`
 }
 
 // Auth types
@@ -120,22 +118,6 @@ type PlatformResource struct {
 	BillingStatus     string          `json:"billing_status"`
 	CreatedAt         string          `json:"created_at"`
 	UpdatedAt         string          `json:"updated_at"`
-}
-
-// Workspace types
-
-type WorkspaceSummary struct {
-	ID                  string  `json:"id"`
-	Name                string  `json:"name"`
-	OwnerName           string  `json:"owner_name"`
-	Status              string  `json:"status"`
-	TemplateDisplayName string  `json:"template_display_name"`
-	LastUsedAt          *string `json:"last_used_at,omitempty"`
-}
-
-type WorkspacesListResponse struct {
-	Workspaces []WorkspaceSummary `json:"workspaces"`
-	Count      int                `json:"count"`
 }
 
 // Resource CRUD types

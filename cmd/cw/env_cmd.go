@@ -31,7 +31,6 @@ func envParentCmd() *cobra.Command {
 	cmd.AddCommand(envStartCmd())
 	cmd.AddCommand(envRmCmd())
 	cmd.AddCommand(envExecCmd())
-	cmd.AddCommand(envSSHCmd())
 	cmd.AddCommand(envCpCmd())
 	cmd.AddCommand(envPruneCmd())
 	cmd.AddCommand(envNukeCmd())
@@ -170,6 +169,7 @@ func envCreateCmd() *cobra.Command {
 		noOrgSecrets   bool
 		noUserSecrets  bool
 		follow         bool
+		yes            bool
 	)
 
 	cmd := &cobra.Command{
@@ -266,6 +266,119 @@ Examples:
 				return err
 			}
 
+			// Smart detection: analyze repo for optimal configuration.
+			var detection *platform.DetectionResult
+			if repoURL != "" && templateSlug == "" && templateID == "" && image == "" {
+				analyze := yes // --yes skips the prompt and auto-analyzes
+				if !yes {
+					idx, promptErr := promptSelect("Do you want to auto analyze for setup suggestions?", []string{"Yes", "No"})
+					if promptErr != nil {
+						return promptErr
+					}
+					analyze = idx == 0
+				}
+
+				if analyze {
+					fmt.Fprintf(os.Stderr, "Analyzing %s...\n", repoURL)
+
+					ghStatus, ghErr := client.GetGitHubStatus()
+					if ghErr == nil && !ghStatus.Connected {
+						fmt.Fprintln(os.Stderr, "Tip: Connect GitHub for private repo access: cw github login")
+					}
+
+					detection, err = client.DetectRepo(repoURL, branch)
+					if err != nil {
+						errMsg := err.Error()
+						if (ghStatus == nil || !ghStatus.Connected) && (strings.Contains(errMsg, "404") || strings.Contains(errMsg, "failed to fetch repo")) {
+							fmt.Fprintf(os.Stderr, "Detection failed (possibly private repo): %v\n", err)
+							fmt.Fprintln(os.Stderr, "Connect GitHub for private repo access: cw github login")
+						} else {
+							fmt.Fprintf(os.Stderr, "Detection failed: %v\nFalling back to defaults.\n", err)
+						}
+						detection = nil
+						err = nil // non-fatal
+					}
+
+					if detection != nil {
+						fmt.Fprintf(os.Stderr, "\nDetected: %s", detection.Language)
+						if detection.Framework != "" {
+							fmt.Fprintf(os.Stderr, " (%s)", detection.Framework)
+						}
+						if detection.ProjectType != "" {
+							fmt.Fprintf(os.Stderr, " [%s]", detection.ProjectType)
+						}
+						fmt.Fprintln(os.Stderr)
+						if detection.TemplateImage != "" {
+							fmt.Fprintf(os.Stderr, "  Image:    %s\n", detection.TemplateImage)
+						}
+						if detection.InstallCommand != "" {
+							fmt.Fprintf(os.Stderr, "  Install:  %s\n", detection.InstallCommand)
+						}
+						if detection.StartupScript != "" {
+							lines := strings.Split(detection.StartupScript, "\n")
+							if len(lines) == 1 {
+								fmt.Fprintf(os.Stderr, "  Script:   %s\n", detection.StartupScript)
+							} else {
+								fmt.Fprintf(os.Stderr, "  Script:   %s (+%d lines)\n", lines[0], len(lines)-1)
+							}
+						}
+						if len(detection.AppPorts) > 0 {
+							var portParts []string
+							for _, p := range detection.AppPorts {
+								portParts = append(portParts, fmt.Sprintf("%s:%d", p.Label, p.Port))
+							}
+							fmt.Fprintf(os.Stderr, "  Ports:    %s\n", strings.Join(portParts, ", "))
+						}
+						if detection.SetupNotes != "" {
+							fmt.Fprintf(os.Stderr, "  Notes:    %s\n", detection.SetupNotes)
+						}
+						fmt.Fprintln(os.Stderr)
+
+						// Apply detection as defaults; CLI flags override.
+						if image == "" {
+							image = detection.TemplateImage
+						}
+						if install == "" {
+							install = detection.InstallCommand
+						}
+						if startup == "" {
+							startup = detection.StartupScript
+						}
+						if name == "" && detection.SuggestedName != "" {
+							name = detection.SuggestedName
+						}
+						if templateSlug == "" && detection.TemplateSlug != "" {
+							templateSlug = detection.TemplateSlug
+						}
+
+						// Interactive confirmation (unless --yes).
+						if !yes {
+							idx, promptErr := promptSelect("Create environment?", []string{"Yes", "Edit options", "Cancel"})
+							if promptErr != nil {
+								return promptErr
+							}
+							switch idx {
+							case 2: // Cancel
+								return fmt.Errorf("canceled")
+							case 1: // Edit options
+								if v, err := promptDefault("Image", image); err == nil {
+									image = v
+								}
+								if v, err := promptDefault("Install command", install); err == nil {
+									install = v
+								}
+								if v, err := promptDefault("Startup script", startup); err == nil {
+									startup = v
+								}
+								if v, err := promptDefault("Environment name", name); err == nil {
+									name = v
+								}
+							}
+						}
+					}
+				}
+			}
+
 			// Parse env vars from KEY=val format.
 			parsedEnvVars := make(map[string]string)
 			for _, ev := range envVars {
@@ -295,6 +408,9 @@ Examples:
 			}
 			if len(repos) > 0 {
 				req.Repos = repos
+			}
+			if detection != nil && len(detection.AppPorts) > 0 && len(req.AppPorts) == 0 {
+				req.AppPorts = detection.AppPorts
 			}
 			if len(parsedEnvVars) > 0 {
 				req.EnvVars = parsedEnvVars
@@ -386,6 +502,7 @@ Examples:
 	cmd.Flags().BoolVar(&noOrgSecrets, "no-org-secrets", false, "Don't inject org-level secrets")
 	cmd.Flags().BoolVar(&noUserSecrets, "no-user-secrets", false, "Don't inject user-level secrets")
 	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "Follow startup logs after creation")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Skip confirmation prompts")
 	return cmd
 }
 

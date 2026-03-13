@@ -19,7 +19,6 @@ import (
 	"github.com/codewiresh/codewire/internal/config"
 	"github.com/codewiresh/codewire/internal/mcp"
 	"github.com/codewiresh/codewire/internal/node"
-	"github.com/codewiresh/codewire/internal/platform"
 	"github.com/codewiresh/codewire/internal/relay"
 	"github.com/codewiresh/codewire/internal/update"
 )
@@ -28,31 +27,16 @@ var (
 	// version is set at build time via -ldflags "-X main.version=..."
 	version = "dev"
 
-	serverFlag        string
-	tokenFlag         string
-	workspaceOverride string // set by workspace prefix interception (e.g. "cw api run")
+	serverFlag string
+	tokenFlag  string
 )
 
 func main() {
 	rootCmd := &cobra.Command{
-		Use:     "cw [workspace]",
-		Short:   "Codewire CLI",
-		Long:    "  ▸ codewire\n\n  Persistent process server and agent-first dev environments.",
-		Version: version,
-		Args:    cobra.ArbitraryArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				if platform.HasConfig() {
-					return showCurrentWorkspace()
-				}
-				return cmd.Help()
-			}
-			// Try workspace switching in platform mode
-			if platform.HasConfig() {
-				return switchWorkspace(args[0], false)
-			}
-			return fmt.Errorf("unknown command %q\nRun 'cw --help' for usage.", args[0])
-		},
+		Use:          "cw",
+		Short:        "Codewire CLI",
+		Long:         "  ▸ codewire\n\n  Persistent process server and agent-first dev environments.",
+		Version:      version,
 		SilenceUsage: true,
 	}
 	rootCmd.PersistentFlags().StringVarP(&serverFlag, "server", "s", "", "Connect to a remote server (name from servers.toml or ws://host:port)")
@@ -75,12 +59,7 @@ func main() {
 		// Environments
 		grouped(envParentCmd(), "environment"),
 		grouped(tmplParentCmd(), "environment"),
-		grouped(launchCmd(), "environment"),
-		grouped(openCmd(), "environment"),
 		grouped(sshCmd(), "environment"),
-		grouped(workspacesListCmd(), "environment"),
-		grouped(workspaceStartCmd(), "environment"),
-		grouped(workspaceStopCmd(), "environment"),
 		// Sessions
 		grouped(runCmd(), "session"),
 		grouped(attachCmd(), "session"),
@@ -128,16 +107,6 @@ func main() {
 		grouped(updateCmd(), "system"),
 	)
 
-	// Workspace prefix interception: "cw api run -- cmd" → workspaceOverride="api"
-	// Only when: platform mode, >= 3 args, first arg is not a known command or flag.
-	if len(os.Args) >= 3 && platform.HasConfig() {
-		candidate := os.Args[1]
-		if !strings.HasPrefix(candidate, "-") && !isKnownCommand(rootCmd, candidate) {
-			workspaceOverride = candidate
-			os.Args = append(os.Args[:1], os.Args[2:]...)
-		}
-	}
-
 	printUpdateNotice := update.BackgroundCheck(version)
 	err := rootCmd.Execute()
 	if !isUpdateCommand() {
@@ -156,25 +125,6 @@ func isUpdateCommand() bool {
 		}
 		if !strings.HasPrefix(arg, "-") {
 			return false
-		}
-	}
-	return false
-}
-
-// isKnownCommand checks if name matches any registered cobra command or alias.
-func isKnownCommand(root *cobra.Command, name string) bool {
-	// Built-in cobra commands
-	if name == "help" || name == "version" || name == "completion" {
-		return true
-	}
-	for _, cmd := range root.Commands() {
-		if cmd.Name() == name {
-			return true
-		}
-		for _, alias := range cmd.Aliases {
-			if alias == name {
-				return true
-			}
 		}
 	}
 	return false
@@ -275,34 +225,6 @@ func runCmd() *cobra.Command {
 		Aliases: []string{},
 		Short:   "Launch a new session",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Platform mode: route to remote workspace if workspace context exists
-			if platform.HasConfig() {
-				wsName := workspaceOverride
-
-				if wsName != "" {
-					// Remote mode — workspace context is set
-					dash := cmd.ArgsLenAtDash()
-					if dash == -1 {
-						return fmt.Errorf("command required after --\n\nUsage: cw run [name] -- <command> [args...]")
-					}
-
-					// Positional arg before -- is session name, not workspace
-					sessionName := name
-					if sessionName == "" && dash >= 1 {
-						sessionName = args[0]
-					}
-
-					command := args[dash:]
-					if len(command) == 0 {
-						return fmt.Errorf("command required after --")
-					}
-
-					return runInWorkspace(wsName, sessionName, command)
-				}
-				// No workspace context — fall through to standalone local mode
-			}
-
-			// Standalone mode: existing code below
 			target, err := resolveTarget()
 			if err != nil {
 				return err

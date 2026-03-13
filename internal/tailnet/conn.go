@@ -23,6 +23,7 @@ import (
 	tslogger "tailscale.com/types/logger"
 	"tailscale.com/types/netmap"
 	"tailscale.com/util/eventbus"
+	"tailscale.com/util/usermetric"
 	"tailscale.com/wgengine"
 	"tailscale.com/wgengine/magicsock"
 	"tailscale.com/wgengine/netstack"
@@ -102,6 +103,7 @@ func NewConn(opts *Options) (*Conn, error) {
 		NetMon:       netMon,
 		Dialer:       dialer,
 		SetSubsystem: sys.Set,
+		Metrics:      new(usermetric.Registry),
 	})
 	if err != nil {
 		netMon.Close()
