@@ -2,22 +2,27 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
 	"nhooyr.io/websocket"
+	"tailscale.com/tailcfg"
 
 	"github.com/codewiresh/codewire/internal/platform"
+	"github.com/codewiresh/codewire/internal/tailnet"
 	"github.com/codewiresh/codewire/internal/terminal"
 )
 
@@ -68,9 +73,21 @@ For VS Code Remote-SSH, run 'cw setup' to configure ~/.ssh/config.`,
 	return cmd
 }
 
-// sshStdio connects to the SSH proxy WebSocket and pipes stdin/stdout.
-// Used as ProxyCommand for VS Code and regular ssh client.
+// sshStdio connects via WireGuard (primary) or WebSocket proxy (fallback)
+// and pipes stdin/stdout. Used as ProxyCommand for VS Code and ssh clients.
 func sshStdio(client *platform.Client, orgID, envID string) error {
+	// Try WireGuard first.
+	err := sshStdioWireGuard(client, orgID, envID)
+	if err == nil {
+		return nil
+	}
+
+	// Fall back to WebSocket proxy.
+	return sshStdioWebSocket(client, orgID, envID)
+}
+
+// sshStdioWebSocket connects to the SSH proxy WebSocket and pipes stdin/stdout.
+func sshStdioWebSocket(client *platform.Client, orgID, envID string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -139,13 +156,19 @@ func sshStdio(client *platform.Client, orgID, envID string) error {
 	return err
 }
 
-// sshInteractive connects to the environment via SSH over WebSocket with a PTY.
+// sshInteractive connects to the environment via SSH over WireGuard (primary)
+// or WebSocket proxy (fallback).
 func sshInteractive(client *platform.Client, orgID, envID string) error {
+	// Try WireGuard first.
+	err := sshOverWireGuard(client, orgID, envID)
+	if err == nil {
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "wireguard unavailable (%v) — trying websocket proxy\n", err)
+
 	// Check if SSH proxy is available
 	available, _ := client.CheckSSHProxy(orgID, envID)
-
 	if !available {
-		// Fall back to terminal WebSocket
 		fmt.Fprintln(os.Stderr, "sshd not available — using terminal fallback")
 		fmt.Fprintln(os.Stderr, "For full SSH support, use a codewire base image")
 		return terminalFallback(client, orgID, envID)
@@ -154,7 +177,230 @@ func sshInteractive(client *platform.Client, orgID, envID string) error {
 	return sshOverWebSocket(client, orgID, envID)
 }
 
+// coordinateMsg is the JSON message sent to the coordinate WebSocket.
+type coordinateMsg struct {
+	Type string       `json:"type"`
+	Node *tailnet.Node `json:"node,omitempty"`
+}
+
+// coordinateResp is the JSON response from the coordinate WebSocket.
+type coordinateResp struct {
+	Type    string           `json:"type"`
+	Nodes   []*tailnet.Node  `json:"nodes,omitempty"`
+	DERPMap *tailcfg.DERPMap `json:"derp_map,omitempty"`
+}
+
+// connectWireGuard creates a WireGuard tunnel to the environment's agent and
+// returns a TCP connection to the agent's SSH port (22).
+func connectWireGuard(ctx context.Context, client *platform.Client, orgID, envID string) (net.Conn, *tailnet.Conn, error) {
+	agentID, err := uuid.Parse(envID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid env ID %q: %w", envID, err)
+	}
+	clientID := uuid.New()
+
+	// Derive our tailnet address and the agent's.
+	clientAddr := tailnet.CWServicePrefix.PrefixFromUUID(clientID)
+	agentAddr := tailnet.CWServicePrefix.PrefixFromUUID(agentID)
+
+	// Build DERP map pointing at the server.
+	serverHost := extractServerHost(client.ServerURL)
+	insecure := strings.HasPrefix(client.ServerURL, "http://")
+	derpPort := 443
+	if insecure {
+		// Parse port from server URL for dev mode.
+		if host, p, err := net.SplitHostPort(serverHost); err == nil {
+			serverHost = host
+			fmt.Sscanf(p, "%d", &derpPort)
+		}
+	}
+	derpMap := &tailcfg.DERPMap{
+		Regions: map[int]*tailcfg.DERPRegion{
+			1: {
+				RegionID:   1,
+				RegionCode: "cw",
+				RegionName: "Codewire",
+				Nodes: []*tailcfg.DERPNode{{
+					Name:             "1a",
+					RegionID:         1,
+					HostName:         serverHost,
+					DERPPort:         derpPort,
+					InsecureForTests: insecure,
+				}},
+			},
+		},
+	}
+
+	conn, err := tailnet.NewConn(&tailnet.Options{
+		ID:        clientID,
+		Addresses: []netip.Prefix{clientAddr},
+		DERPMap:   derpMap,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("wireguard conn: %w", err)
+	}
+
+	// Connect to coordinator WebSocket.
+	wsURL := strings.Replace(client.ServerURL, "https://", "wss://", 1)
+	wsURL = strings.Replace(wsURL, "http://", "ws://", 1)
+	wsURL += fmt.Sprintf("/api/v1/organizations/%s/environments/%s/coordinate", orgID, envID)
+
+	wsConn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		Subprotocols: []string{"coordinate"},
+		HTTPHeader: http.Header{
+			"Authorization": []string{"Bearer " + client.SessionToken},
+		},
+	})
+	if err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("coordinator connect: %w", err)
+	}
+
+	// Mutex protects concurrent WebSocket writes from node callback.
+	var wsMu sync.Mutex
+
+	// Send our node updates to the coordinator.
+	conn.SetNodeCallback(func(node *tailnet.Node) {
+		msg := coordinateMsg{Type: "node", Node: node}
+		data, err := json.Marshal(msg)
+		if err != nil {
+			return
+		}
+		wsMu.Lock()
+		_ = wsConn.Write(ctx, websocket.MessageText, data)
+		wsMu.Unlock()
+	})
+
+	// Read peer updates from coordinator.
+	peerReady := make(chan struct{}, 1)
+	go func() {
+		defer wsConn.Close(websocket.StatusNormalClosure, "")
+		for {
+			_, data, err := wsConn.Read(ctx)
+			if err != nil {
+				return
+			}
+			var resp coordinateResp
+			if json.Unmarshal(data, &resp) != nil {
+				continue
+			}
+			if resp.Type == "peer_update" && len(resp.Nodes) > 0 {
+				if err := conn.UpdatePeers(resp.Nodes); err == nil {
+					select {
+					case peerReady <- struct{}{}:
+					default:
+					}
+				}
+			}
+			if resp.DERPMap != nil {
+				conn.SetDERPMap(resp.DERPMap)
+			}
+		}
+	}()
+
+	// Wait for peer info (with timeout).
+	select {
+	case <-peerReady:
+	case <-time.After(10 * time.Second):
+		conn.Close()
+		return nil, nil, fmt.Errorf("timeout waiting for agent peer info")
+	case <-ctx.Done():
+		conn.Close()
+		return nil, nil, ctx.Err()
+	}
+
+	// Dial agent's SSH port over the WireGuard tunnel.
+	agentIP := agentAddr.Addr()
+	tcpConn, err := conn.DialContextTCP(ctx, netip.AddrPortFrom(agentIP, 22))
+	if err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("dial agent ssh: %w", err)
+	}
+
+	return tcpConn, conn, nil
+}
+
+// sshOverWireGuard establishes an SSH connection through WireGuard.
+func sshOverWireGuard(client *platform.Client, orgID, envID string) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tcpConn, wgConn, err := connectWireGuard(ctx, client, orgID, envID)
+	if err != nil {
+		return err
+	}
+	defer wgConn.Close()
+
+	sshConfig := &ssh.ClientConfig{
+		User:            "coder",
+		Auth:            []ssh.AuthMethod{ssh.Password("")},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	}
+
+	sshConn, chans, reqs, err := ssh.NewClientConn(tcpConn, "cw-"+envID, sshConfig)
+	if err != nil {
+		return fmt.Errorf("ssh handshake: %w", err)
+	}
+	defer sshConn.Close()
+
+	return runSSHSession(ssh.NewClient(sshConn, chans, reqs))
+}
+
+// sshStdioWireGuard connects via WireGuard and pipes stdin/stdout to the
+// raw TCP connection. The calling SSH client handles SSH protocol.
+func sshStdioWireGuard(client *platform.Client, orgID, envID string) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tcpConn, wgConn, err := connectWireGuard(ctx, client, orgID, envID)
+	if err != nil {
+		return err
+	}
+	defer wgConn.Close()
+	defer tcpConn.Close()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		<-sigCh
+		cancel()
+		tcpConn.Close()
+	}()
+
+	done := make(chan error, 2)
+
+	// stdin -> TCP
+	go func() {
+		_, err := io.Copy(tcpConn, os.Stdin)
+		done <- err
+	}()
+
+	// TCP -> stdout
+	go func() {
+		_, err := io.Copy(os.Stdout, tcpConn)
+		done <- err
+	}()
+
+	err = <-done
+	if err == io.EOF {
+		return nil
+	}
+	return err
+}
+
+func extractServerHost(serverURL string) string {
+	u := serverURL
+	u = strings.TrimPrefix(u, "https://")
+	u = strings.TrimPrefix(u, "http://")
+	if idx := strings.IndexByte(u, '/'); idx >= 0 {
+		u = u[:idx]
+	}
+	return u
+}
+
 // sshOverWebSocket establishes an SSH connection through the WebSocket proxy.
+// Uses "none" auth — the workspace SSH server runs with NoClientAuth since
+// network-layer authentication (WireGuard or server-side auth) handles identity.
 func sshOverWebSocket(client *platform.Client, orgID, envID string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -174,35 +420,25 @@ func sshOverWebSocket(client *platform.Client, orgID, envID string) error {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	// Create a net.Conn-like wrapper over the WebSocket for the SSH client
 	wsConn := &wsNetConn{conn: conn, ctx: ctx}
-
-	// Find the user's SSH key
-	keyPath := defaultSSHKeyPath()
-	keyData, err := os.ReadFile(keyPath)
-	if err != nil {
-		return fmt.Errorf("read SSH key %s: %w (run 'cw setup' to generate one)", keyPath, err)
-	}
-
-	signer, err := ssh.ParsePrivateKey(keyData)
-	if err != nil {
-		return fmt.Errorf("parse SSH key: %w", err)
-	}
 
 	sshConfig := &ssh.ClientConfig{
 		User:            "coder",
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		Auth:            []ssh.AuthMethod{ssh.Password("")},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 	}
 
-	// SSH handshake over the WebSocket
 	sshConn, chans, reqs, err := ssh.NewClientConn(wsConn, "cw-"+envID, sshConfig)
 	if err != nil {
 		return fmt.Errorf("ssh handshake: %w", err)
 	}
 	defer sshConn.Close()
 
-	sshClient := ssh.NewClient(sshConn, chans, reqs)
+	return runSSHSession(ssh.NewClient(sshConn, chans, reqs))
+}
+
+// runSSHSession opens a PTY session on the given SSH client with detach support.
+func runSSHSession(sshClient *ssh.Client) error {
 	defer sshClient.Close()
 
 	session, err := sshClient.NewSession()
@@ -211,13 +447,11 @@ func sshOverWebSocket(client *platform.Client, orgID, envID string) error {
 	}
 	defer session.Close()
 
-	// Get terminal size
 	cols, rows, err := terminal.TerminalSize()
 	if err != nil {
 		cols, rows = 80, 24
 	}
 
-	// Request PTY
 	if err := session.RequestPty("xterm-256color", int(rows), int(cols), ssh.TerminalModes{
 		ssh.ECHO:          1,
 		ssh.TTY_OP_ISPEED: 14400,
@@ -226,14 +460,12 @@ func sshOverWebSocket(client *platform.Client, orgID, envID string) error {
 		return fmt.Errorf("request pty: %w", err)
 	}
 
-	// Enable raw mode
 	rawGuard, err := terminal.EnableRawMode()
 	if err != nil {
 		return fmt.Errorf("raw mode: %w", err)
 	}
 	defer rawGuard.Restore()
 
-	// Set up I/O with detach detection
 	stdinPipe, err := session.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("stdin pipe: %w", err)
@@ -242,16 +474,13 @@ func sshOverWebSocket(client *platform.Client, orgID, envID string) error {
 	session.Stdout = os.Stdout
 	session.Stderr = os.Stderr
 
-	// Start shell
 	if err := session.Shell(); err != nil {
 		return fmt.Errorf("start shell: %w", err)
 	}
 
-	// Handle SIGWINCH
 	resizeCh, resizeCleanup := terminal.ResizeSignal()
 	defer resizeCleanup()
 
-	// Stdin reader with detach detection
 	detach := terminal.NewDetachDetector()
 	done := make(chan error, 1)
 
@@ -281,7 +510,6 @@ func sshOverWebSocket(client *platform.Client, orgID, envID string) error {
 		}
 	}()
 
-	// Handle resize signals
 	go func() {
 		for range resizeCh {
 			c, r, err := terminal.TerminalSize()
@@ -291,7 +519,6 @@ func sshOverWebSocket(client *platform.Client, orgID, envID string) error {
 		}
 	}()
 
-	// Wait for session to finish or detach
 	sessionDone := make(chan error, 1)
 	go func() {
 		sessionDone <- session.Wait()
@@ -470,9 +697,3 @@ type wsAddr struct{}
 
 func (wsAddr) Network() string { return "websocket" }
 func (wsAddr) String() string  { return "websocket" }
-
-// defaultSSHKeyPath returns the path to the user's default SSH private key.
-func defaultSSHKeyPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".ssh", "id_ed25519")
-}

@@ -2,9 +2,7 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"sort"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -121,55 +119,10 @@ func platformSetupCmd() *cobra.Command {
 
 			// [6/6] SSH Setup
 			fmt.Println("[6/6] SSH Setup")
-			pubKey, sshKeyErr := ensureSSHKey()
-			if sshKeyErr != nil {
-				fmt.Printf("      Warning: SSH key setup failed: %v\n", sshKeyErr)
+			if writeErr := writeSSHConfig(); writeErr != nil {
+				fmt.Printf("      Warning: SSH config update failed: %v\n", writeErr)
 			} else {
-				fmt.Println("      SSH key: ~/.ssh/id_ed25519")
-
-				// Upload to platform if not already registered
-				existingKeys, listErr := client.ListLoginKeys()
-				if listErr == nil {
-					found := false
-					// Compare key-type + key-data (ignore comment suffix)
-					pubFields := strings.Fields(strings.TrimSpace(pubKey))
-					pubKeyData := ""
-					if len(pubFields) >= 2 {
-						pubKeyData = pubFields[0] + " " + pubFields[1]
-					}
-					for _, k := range existingKeys {
-						kFields := strings.Fields(strings.TrimSpace(k.PublicKey))
-						kData := ""
-						if len(kFields) >= 2 {
-							kData = kFields[0] + " " + kFields[1]
-						}
-						if pubKeyData != "" && kData == pubKeyData {
-							found = true
-							break
-						}
-					}
-					if !found {
-						hostname, _ := os.Hostname()
-						keyName := hostname
-						if keyName == "" {
-							keyName = "default"
-						}
-						if _, addErr := client.AddLoginKey(keyName, pubKey); addErr != nil {
-							fmt.Printf("      Warning: failed to upload SSH key: %v\n", addErr)
-						} else {
-							fmt.Println("      Uploaded SSH key to platform")
-						}
-					} else {
-						fmt.Println("      SSH key already registered")
-					}
-				}
-
-				// Write SSH config
-				if writeErr := writeSSHConfig(); writeErr != nil {
-					fmt.Printf("      Warning: SSH config update failed: %v\n", writeErr)
-				} else {
-					fmt.Println("      Updated ~/.ssh/config")
-				}
+				fmt.Println("      Updated ~/.ssh/config (WireGuard auth — no keys needed)")
 			}
 			fmt.Println()
 
