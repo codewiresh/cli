@@ -2,22 +2,33 @@ package platform
 
 import "fmt"
 
+type SubscriptionSummary struct {
+	ResourceID       string `json:"resource_id"`
+	ResourceName     string `json:"resource_name"`
+	ResourceType     string `json:"resource_type"`
+	Plan             string `json:"plan"`
+	PlanDisplayName  string `json:"plan_display_name"`
+	Status           string `json:"status"`
+	MonthlyCostCents int    `json:"monthly_cost_cents"`
+}
+
 // Billing overview types (mirrors server BillingOverviewResponse)
 type BillingOverview struct {
-	BillingEnabled        bool          `json:"billing_enabled"`
-	HasPaymentMethod      bool          `json:"has_payment_method"`
-	Plan                  string        `json:"plan"`
-	PlanDisplayName       string        `json:"plan_display_name"`
-	Status                string        `json:"status"`
-	TrialEnd              *string       `json:"trial_end"`
-	SeatCount             int           `json:"seat_count"`
-	IncludedDevs          int           `json:"included_devs"`
-	ExtraSeatPriceCents   int           `json:"extra_seat_price_cents"`
-	CurrentPeriodEnd      *string       `json:"current_period_end"`
-	ActiveSubscriptions   int           `json:"active_subscriptions"`
-	TotalMonthlyCostCents int           `json:"total_monthly_cost_cents"`
-	CurrentMonthUsage     UsageSummary  `json:"current_month_usage"`
-	Limits                BillingLimits `json:"limits"`
+	BillingEnabled        bool                  `json:"billing_enabled"`
+	HasPaymentMethod      bool                  `json:"has_payment_method"`
+	Plan                  string                `json:"plan"`
+	PlanDisplayName       string                `json:"plan_display_name"`
+	Status                string                `json:"status"`
+	TrialEnd              *string               `json:"trial_end"`
+	SeatCount             int                   `json:"seat_count"`
+	IncludedDevs          int                   `json:"included_devs"`
+	ExtraSeatPriceCents   int                   `json:"extra_seat_price_cents"`
+	CurrentPeriodEnd      *string               `json:"current_period_end"`
+	ActiveSubscriptions   int                   `json:"active_subscriptions"`
+	TotalMonthlyCostCents int                   `json:"total_monthly_cost_cents"`
+	Subscriptions         []SubscriptionSummary `json:"subscriptions"`
+	CurrentMonthUsage     UsageSummary          `json:"current_month_usage"`
+	Limits                BillingLimits         `json:"limits"`
 }
 
 type BillingLimits struct {

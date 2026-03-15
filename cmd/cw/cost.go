@@ -54,62 +54,78 @@ func costCmd() *cobra.Command {
 					continue
 				}
 
-				planInfo := overview.PlanDisplayName
-				if planInfo == "" {
-					planInfo = overview.Plan
-				}
-				costStr := fmt.Sprintf("$%d/mo", overview.TotalMonthlyCostCents/100)
+				fmt.Printf("# %s\n\n", org.Slug)
 
-				fmt.Printf("# %s (%s — %s)\n", org.Slug, planInfo, costStr)
-				fmt.Printf("  Status: %s", overview.Status)
-				if overview.CurrentPeriodEnd != nil {
-					fmt.Printf("    Period ends: %s", *overview.CurrentPeriodEnd)
+				// Build subscription lookup by resource ID
+				subByRes := map[string]platform.SubscriptionSummary{}
+				for _, s := range overview.Subscriptions {
+					subByRes[s.ResourceID] = s
 				}
-				fmt.Println()
-
-				if overview.IncludedDevs > 0 {
-					extra := ""
-					if overview.ExtraSeatPriceCents > 0 {
-						extra = fmt.Sprintf(" ($%d/extra)", overview.ExtraSeatPriceCents/100)
-					}
-					fmt.Printf("  Seats: %d/%d included%s\n", overview.SeatCount, overview.IncludedDevs, extra)
-				}
-				fmt.Println()
 
 				w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-				fmt.Fprintf(w, "  Resource\tCPU hrs\tMem GB·hrs\tDisk GB·hrs\tOverage\n")
+				fmt.Fprintf(w, "  Resource\tPlan\t$/mo\tCPU hrs\tMem GB·hrs\tDisk GB·hrs\tOverage\n")
 
 				var totalCPU, totalMem, totalDisk float64
 				var totalOverageCents int
+				var totalBaseCents int
 
 				for _, res := range org.Resources {
-					if res.Type != "coder" {
-						continue
+					sub, hasSub := subByRes[res.ID]
+					planName := "–"
+					baseCost := "–"
+					if hasSub {
+						planName = sub.PlanDisplayName
+						if planName == "" {
+							planName = sub.Plan
+						}
+						baseCost = fmt.Sprintf("$%d", sub.MonthlyCostCents/100)
+						totalBaseCents += sub.MonthlyCostCents
 					}
 
-					usage, err := pc.GetResourceUsage(res.ID)
-					if err != nil {
-						fmt.Fprintf(w, "  %s\t-\t-\t-\t-\n", res.Name)
-						continue
+					if res.Type == "coder" {
+						usage, err := pc.GetResourceUsage(res.ID)
+						if err != nil {
+							fmt.Fprintf(w, "  %s\t%s\t%s\t–\t–\t–\t–\n", res.Name, planName, baseCost)
+							continue
+						}
+						fmt.Fprintf(w, "  %s\t%s\t%s\t%.1f\t%.1f\t%.1f\t$%.2f\n",
+							res.Name, planName, baseCost,
+							usage.CPUHours, usage.MemoryGBHours, usage.DiskGBHours,
+							float64(usage.Overage.TotalCents)/100)
+						totalCPU += usage.CPUHours
+						totalMem += usage.MemoryGBHours
+						totalDisk += usage.DiskGBHours
+						totalOverageCents += usage.Overage.TotalCents
+					} else {
+						fmt.Fprintf(w, "  %s\t%s\t%s\t–\t–\t–\t–\n", res.Name, planName, baseCost)
 					}
-
-					fmt.Fprintf(w, "  %s\t%.1f\t%.1f\t%.1f\t$%.2f\n",
-						res.Name, usage.CPUHours, usage.MemoryGBHours, usage.DiskGBHours,
-						float64(usage.Overage.TotalCents)/100)
-
-					totalCPU += usage.CPUHours
-					totalMem += usage.MemoryGBHours
-					totalDisk += usage.DiskGBHours
-					totalOverageCents += usage.Overage.TotalCents
 				}
 
-				fmt.Fprintf(w, "  \t─────\t──────────\t───────────\t───────\n")
-				fmt.Fprintf(w, "  Total\t%.1f\t%.1f\t%.1f\t$%.2f\n",
-					totalCPU, totalMem, totalDisk, float64(totalOverageCents)/100)
+				// Include subscriptions for resources not in org.Resources (edge case)
+				seen := map[string]bool{}
+				for _, res := range org.Resources {
+					seen[res.ID] = true
+				}
+				for _, s := range overview.Subscriptions {
+					if seen[s.ResourceID] {
+						continue
+					}
+					planName := s.PlanDisplayName
+					if planName == "" {
+						planName = s.Plan
+					}
+					fmt.Fprintf(w, "  %s\t%s\t$%d\t–\t–\t–\t–\n",
+						s.ResourceName, planName, s.MonthlyCostCents/100)
+					totalBaseCents += s.MonthlyCostCents
+				}
+
+				fmt.Fprintf(w, "  \t\t────\t─────\t──────────\t───────────\t───────\n")
+				fmt.Fprintf(w, "  Total\t\t$%d\t%.1f\t%.1f\t%.1f\t$%.2f\n",
+					totalBaseCents/100, totalCPU, totalMem, totalDisk, float64(totalOverageCents)/100)
 				w.Flush()
 
-				estimated := float64(overview.TotalMonthlyCostCents+totalOverageCents) / 100
-				fmt.Printf("\n  Estimated total this month: $%.2f\n\n", estimated)
+				estimated := float64(totalBaseCents+totalOverageCents) / 100
+				fmt.Printf("\n  Estimated this month: $%.2f\n\n", estimated)
 			}
 
 			return nil
@@ -145,6 +161,8 @@ func costJSON(pc *platform.Client, orgs []platform.OrgWithRole, orgFilter string
 				entry.Usage[res.ID] = usage
 			}
 		}
+		// Usage endpoint only exists for coder resources, but subscriptions
+		// data flows through the billing overview automatically.
 		results = append(results, entry)
 	}
 
