@@ -41,7 +41,7 @@ Stdio mode (--stdio):
   For use as SSH ProxyCommand. Pipes stdin/stdout directly to the SSH proxy.
   Used by: ssh cw-<envid> (via ~/.ssh/config ProxyCommand)
 
-For VS Code Remote-SSH, run 'cw setup' to configure ~/.ssh/config.`,
+For VS Code Remote-SSH, run 'cw config-ssh' to configure ~/.ssh/config.`,
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: envCompletionFunc,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -52,7 +52,7 @@ For VS Code Remote-SSH, run 'cw setup' to configure ~/.ssh/config.`,
 				ref = ref[3:]
 			}
 
-			orgID, client, err := getDefaultOrg()
+			orgID, client, err := getOrgContext(cmd)
 			if err != nil {
 				return err
 			}
@@ -70,6 +70,7 @@ For VS Code Remote-SSH, run 'cw setup' to configure ~/.ssh/config.`,
 	}
 
 	cmd.Flags().BoolVar(&stdio, "stdio", false, "Stdio mode for ProxyCommand (pipe stdin/stdout to SSH proxy)")
+	cmd.Flags().String("org", "", "Organization ID or slug (default: current org)")
 	return cmd
 }
 
@@ -340,7 +341,7 @@ func sshOverWireGuard(client *platform.Client, orgID, envID string) error {
 		return fmt.Errorf("known_hosts callback: %w", err)
 	}
 
-	sshConn, chans, reqs, err := ssh.NewClientConn(tcpConn, "cw-"+envID, sshConfig)
+	sshConn, chans, reqs, err := ssh.NewClientConn(tcpConn, "cw-"+envID+":22", sshConfig)
 	if err != nil {
 		return fmt.Errorf("ssh handshake: %w", err)
 	}
@@ -434,7 +435,7 @@ func sshOverWebSocket(client *platform.Client, orgID, envID string) error {
 		return fmt.Errorf("known_hosts callback: %w", err)
 	}
 
-	sshConn, chans, reqs, err := ssh.NewClientConn(wsConn, "cw-"+envID, sshConfig)
+	sshConn, chans, reqs, err := ssh.NewClientConn(wsConn, "cw-"+envID+":22", sshConfig)
 	if err != nil {
 		return fmt.Errorf("ssh handshake: %w", err)
 	}
@@ -702,4 +703,4 @@ func (w *wsNetConn) SetWriteDeadline(t time.Time) error { return nil }
 type wsAddr struct{}
 
 func (wsAddr) Network() string { return "websocket" }
-func (wsAddr) String() string  { return "websocket" }
+func (wsAddr) String() string  { return "websocket:22" }

@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/spf13/cobra"
+
 	"github.com/codewiresh/codewire/internal/platform"
 )
 
@@ -62,10 +64,10 @@ func resolveOrgID(pc *platform.Client, orgFlag string) (string, error) {
 	if orgFlag == "" {
 		cfg, err := platform.LoadConfig()
 		if err != nil {
-			return "", fmt.Errorf("no org specified (pass --org or run 'cw setup')")
+			return "", fmt.Errorf("no org specified (pass --org, run 'cw org set <org>', or run 'cw setup')")
 		}
 		if cfg.DefaultOrg == "" {
-			return "", fmt.Errorf("no default org configured (pass --org or run 'cw setup')")
+			return "", fmt.Errorf("no default org configured (pass --org, run 'cw org set <org>', or run 'cw setup')")
 		}
 		return cfg.DefaultOrg, nil
 	}
@@ -81,6 +83,27 @@ func resolveOrgID(pc *platform.Client, orgFlag string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("organization %q not found", orgFlag)
+}
+
+func getOrgContext(cmd *cobra.Command) (string, *platform.Client, error) {
+	pc, err := platform.NewClient()
+	if err != nil {
+		return "", nil, err
+	}
+
+	orgFlag := ""
+	if cmd != nil {
+		if flag := cmd.Flags().Lookup("org"); flag != nil {
+			orgFlag = flag.Value.String()
+		}
+	}
+
+	orgID, err := resolveOrgID(pc, orgFlag)
+	if err != nil {
+		return "", nil, err
+	}
+
+	return orgID, pc, nil
 }
 
 // confirmDelete prompts the user to type the name to confirm deletion.

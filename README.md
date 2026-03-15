@@ -255,12 +255,12 @@ List all nodes registered with the relay.
 cw nodes
 ```
 
-### `cw setup [relay-url]`
+### `cw relay setup [relay-url]`
 
 Authorize this node with a relay using the device authorization flow.
 
 ```bash
-cw setup https://relay.codewire.sh
+cw relay setup https://relay.codewire.sh
 ```
 
 ### `cw relay`

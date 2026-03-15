@@ -172,7 +172,7 @@ Reply to a pending request.
 
 #### `codewire_list_nodes`
 
-List all registered nodes from the relay. Requires relay to be configured (`cw setup <relay-url>`).
+List all registered nodes from the relay. Requires relay to be configured (`cw relay setup <relay-url>`).
 
 No parameters.
 

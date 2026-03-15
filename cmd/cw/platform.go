@@ -242,11 +242,16 @@ func whoamiCmd() *cobra.Command {
 }
 
 func orgsCmd() *cobra.Command {
+	setCmd := orgSetCmd()
 	cmd := &cobra.Command{
-		Use:   "orgs",
-		Short: "Manage organizations",
+		Use:     "org",
+		Short:   "Manage organizations",
+		Aliases: []string{"orgs"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return setCmd.RunE(setCmd, nil)
+		},
 	}
-	cmd.AddCommand(orgsListCmd(), orgsCreateCmd(), orgsDeleteCmd(), orgsInviteCmd())
+	cmd.AddCommand(orgsListCmd(), orgCurrentCmd(), setCmd, orgsCreateCmd(), orgsDeleteCmd(), orgsInviteCmd())
 	return cmd
 }
 
@@ -294,6 +299,124 @@ func orgsListCmd() *cobra.Command {
 
 	cmd.Flags().BoolVarP(&jsonOutput, "json", "j", false, "Output as JSON")
 	return cmd
+}
+
+func orgCurrentCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "current",
+		Short: "Show the current organization",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			orgID, pc, err := getDefaultOrg()
+			if err != nil {
+				return err
+			}
+
+			orgs, err := pc.ListOrgs()
+			if err != nil {
+				return fmt.Errorf("list orgs: %w", err)
+			}
+
+			for _, org := range orgs {
+				if org.ID != orgID {
+					continue
+				}
+
+				fmt.Printf("%-10s %s\n", bold("Name:"), org.Name)
+				fmt.Printf("%-10s %s\n", bold("Slug:"), org.Slug)
+				fmt.Printf("%-10s %s\n", bold("ID:"), org.ID)
+				fmt.Printf("%-10s %s\n", bold("Role:"), org.Role)
+				return nil
+			}
+
+			return fmt.Errorf("current organization %q not found", orgID)
+		},
+	}
+}
+
+func orgSetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "set [id-or-slug]",
+		Short: "Set the current organization",
+		Long:  "Set the current organization by ID or slug. With no argument, presents an interactive selection list.",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			pc, err := platform.NewClient()
+			if err != nil {
+				return err
+			}
+
+			orgs, err := pc.ListOrgs()
+			if err != nil {
+				return fmt.Errorf("list orgs: %w", err)
+			}
+			if len(orgs) == 0 {
+				return fmt.Errorf("no organizations found")
+			}
+
+			var selected platform.OrgWithRole
+			switch len(args) {
+			case 1:
+				orgID, err := resolveOrgID(pc, args[0])
+				if err != nil {
+					return err
+				}
+
+				found := false
+				for i := range orgs {
+					if orgs[i].ID == orgID {
+						selected = orgs[i]
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("organization %q not found", args[0])
+				}
+			default:
+				if len(orgs) == 1 {
+					selected = orgs[0]
+					break
+				}
+
+				cfg, _ := platform.LoadConfig()
+				options := make([]string, len(orgs))
+				for i, org := range orgs {
+					marker := ""
+					if cfg != nil && cfg.DefaultOrg == org.ID {
+						marker = " (current)"
+					}
+					options[i] = fmt.Sprintf("%s [%s]%s", org.Name, org.Slug, marker)
+				}
+
+				idx, err := promptSelect("Select organization:", options)
+				if err != nil {
+					return err
+				}
+				selected = orgs[idx]
+			}
+
+			cfg, err := platform.LoadConfig()
+			if err != nil {
+				return err
+			}
+
+			resourceCleared := cfg.DefaultOrg != "" && cfg.DefaultOrg != selected.ID && cfg.DefaultResource != ""
+			cfg.DefaultOrg = selected.ID
+			if resourceCleared {
+				cfg.DefaultResource = ""
+			}
+
+			if err := platform.SaveConfig(cfg); err != nil {
+				return fmt.Errorf("save config: %w", err)
+			}
+
+			successMsg("Current org set to %s (%s).", selected.Name, selected.Slug)
+			if resourceCleared {
+				fmt.Println("Cleared the default resource because it belonged to a different org.")
+			}
+			return nil
+		},
+	}
 }
 
 func resourcesCmd() *cobra.Command {

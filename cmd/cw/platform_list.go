@@ -18,7 +18,7 @@ func platformListCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List environments and sessions",
-		Long:  "In platform mode: show environments grouped by org.\nIn standalone mode: list local sessions.",
+		Long:  "In platform mode: show environments in the current org.\nIn standalone mode: list local sessions.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// If not in platform mode, fall back to local session list
 			if !platform.HasConfig() {

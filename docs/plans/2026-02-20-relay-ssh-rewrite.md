@@ -1852,7 +1852,7 @@ anywhere and exposes them via SSH. Replaces Termius + tmux + Tailscale.
 
 ### Setup (node side)
 ```
-cw setup https://relay.codewire.sh --token <admin-token>
+cw relay setup https://relay.codewire.sh --token <admin-token>
 cw node -d
 ```
 

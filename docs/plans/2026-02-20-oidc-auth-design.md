@@ -29,17 +29,17 @@ Existing `token` and `none` modes are unchanged (backwards compat).
 6. Creates session cookie (`cw_session`), stores in SQLite sessions table
 7. Session uses `sub` (OIDC subject) as the user identifier
 
-### Node Registration (device flow via `cw setup`)
+### Node Registration (device flow via `cw relay setup`)
 
 ```bash
 # OIDC relay — no token needed
-cw setup https://user.relay.codewire.sh
+cw relay setup https://user.relay.codewire.sh
 
 # Token/invite relay — token as second positional arg (unchanged)
-cw setup https://user.relay.codewire.sh <invite-token>
+cw relay setup https://user.relay.codewire.sh <invite-token>
 ```
 
-1. `cw setup <relay-url>` calls `GET /api/v1/auth/config` (unauthenticated)
+1. `cw relay setup <relay-url>` calls `GET /api/v1/auth/config` (unauthenticated)
 2. Response: `{"auth_mode": "oidc"}` → device flow path
 3. CLI calls `POST /api/v1/device/authorize` on relay
 4. Relay initiates device auth with Dex, stores `device_code` in SQLite

@@ -684,7 +684,7 @@ registers via device auth.
 ### Connect a node to a relay
 
 ```bash
-cw setup https://relay.codewire.sh
+cw relay setup https://relay.codewire.sh
 # Opens browser for GitHub OAuth (or use --invite token for headless)
 ```
 
@@ -693,10 +693,10 @@ same relay become accessible via `--server`.
 
 ```bash
 # Headless / CI
-cw setup https://relay.codewire.sh --invite <token>
+cw relay setup https://relay.codewire.sh --invite <token>
 
 # With admin token
-cw setup https://relay.codewire.sh --token <admin-token>
+cw relay setup https://relay.codewire.sh --token <admin-token>
 ```
 
 ### Access remote nodes
@@ -760,7 +760,7 @@ cw invite --qr          # print QR code for mobile
 
 Share the resulting URL or run:
 ```bash
-cw setup https://relay.example.com --invite <token>
+cw relay setup https://relay.example.com --invite <token>
 ```
 
 ### Revoke a node

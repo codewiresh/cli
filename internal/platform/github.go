@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -22,6 +23,17 @@ type GitHubStatus struct {
 	Username       string  `json:"username,omitempty"`
 	InstallationID *int64  `json:"installation_id,omitempty"`
 	ConnectedAt    *string `json:"connected_at,omitempty"`
+}
+
+type GitHubRepo struct {
+	FullName      string `json:"full_name"`
+	HTMLURL       string `json:"html_url"`
+	CloneURL      string `json:"clone_url"`
+	Description   string `json:"description,omitempty"`
+	Language      string `json:"language,omitempty"`
+	Private       bool   `json:"private"`
+	DefaultBranch string `json:"default_branch"`
+	UpdatedAt     string `json:"updated_at"`
 }
 
 type GitHubDeviceCodeResponse struct {
@@ -71,6 +83,30 @@ func (c *Client) GetGitHubStatus() (*GitHubStatus, error) {
 		return nil, err
 	}
 	return &status, nil
+}
+
+func (c *Client) ListGitHubRepos(page, perPage int, search string) ([]GitHubRepo, error) {
+	params := url.Values{}
+	if page > 0 {
+		params.Set("page", strconv.Itoa(page))
+	}
+	if perPage > 0 {
+		params.Set("per_page", strconv.Itoa(perPage))
+	}
+	if strings.TrimSpace(search) != "" {
+		params.Set("search", search)
+	}
+
+	path := "/api/v1/github/repos"
+	if encoded := params.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+
+	var repos []GitHubRepo
+	if err := c.do("GET", path, nil, &repos); err != nil {
+		return nil, err
+	}
+	return repos, nil
 }
 
 // SaveGitHubToken stores the GitHub token on the server.

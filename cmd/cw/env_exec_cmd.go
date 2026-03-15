@@ -32,7 +32,7 @@ func envExecCmd() *cobra.Command {
 				return fmt.Errorf("no command specified. Usage: cw env exec <id-or-name> -- <command>")
 			}
 
-			orgID, client, err := getDefaultOrg()
+			orgID, client, err := getOrgContext(cmd)
 			if err != nil {
 				return err
 			}
@@ -83,7 +83,7 @@ Use <env_id>:<path> syntax for remote paths:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			src, dst := args[0], args[1]
 
-			orgID, client, err := getDefaultOrg()
+			orgID, client, err := getOrgContext(cmd)
 			if err != nil {
 				return err
 			}

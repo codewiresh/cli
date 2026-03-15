@@ -24,6 +24,7 @@ func envParentCmd() *cobra.Command {
 		Short:   "Manage environments",
 		Aliases: []string{"environment"},
 	}
+	cmd.PersistentFlags().String("org", "", "Organization ID or slug (default: current org)")
 	cmd.AddCommand(envCreateCmd())
 	cmd.AddCommand(envListCmd())
 	cmd.AddCommand(envInfoCmd())
@@ -57,19 +58,41 @@ func parseRepoSpec(spec string) (string, string) {
 	return url, branch
 }
 
+func strPtrOrNil(s string) *string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	return &s
+}
+
+func intPtrOrNil(v int) *int {
+	if v <= 0 {
+		return nil
+	}
+	return &v
+}
+
+func boolPtrOrNil(value bool, set bool) *bool {
+	if !set {
+		return nil
+	}
+	return &value
+}
+
+func durationSecondsPtr(raw string) *int {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return nil
+	}
+	secs := int(d.Seconds())
+	return &secs
+}
+
 func getDefaultOrg() (string, *platform.Client, error) {
-	client, err := platform.NewClient()
-	if err != nil {
-		return "", nil, err
-	}
-	cfg, err := platform.LoadConfig()
-	if err != nil {
-		return "", nil, err
-	}
-	if cfg.DefaultOrg == "" {
-		return "", nil, fmt.Errorf("no default org set. Run 'cw login' and set a default org")
-	}
-	return cfg.DefaultOrg, client, nil
+	return getOrgContext(nil)
 }
 
 func resolveEnvID(client *platform.Client, orgID, ref string) (string, error) {
@@ -108,7 +131,7 @@ func resolveEnvID(client *platform.Client, orgID, ref string) (string, error) {
 }
 
 func envCompletionFunc(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-	orgID, client, err := getDefaultOrg()
+	orgID, client, err := getOrgContext(cmd)
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
@@ -149,27 +172,67 @@ func timeAgo(s string) string {
 	}
 }
 
+func printDetectionSummary(detection *platform.DetectionResult) {
+	if detection == nil {
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "\nDetected: %s", detection.Language)
+	if detection.Framework != "" {
+		fmt.Fprintf(os.Stderr, " (%s)", detection.Framework)
+	}
+	if detection.ProjectType != "" {
+		fmt.Fprintf(os.Stderr, " [%s]", detection.ProjectType)
+	}
+	fmt.Fprintln(os.Stderr)
+	if detection.TemplateImage != "" {
+		fmt.Fprintf(os.Stderr, "  Image:    %s\n", detection.TemplateImage)
+	}
+	if detection.InstallCommand != "" {
+		fmt.Fprintf(os.Stderr, "  Install:  %s\n", detection.InstallCommand)
+	}
+	if detection.StartupScript != "" {
+		lines := strings.Split(detection.StartupScript, "\n")
+		if len(lines) == 1 {
+			fmt.Fprintf(os.Stderr, "  Script:   %s\n", detection.StartupScript)
+		} else {
+			fmt.Fprintf(os.Stderr, "  Script:   %s (+%d lines)\n", lines[0], len(lines)-1)
+		}
+	}
+	if len(detection.AppPorts) > 0 {
+		var portParts []string
+		for _, p := range detection.AppPorts {
+			portParts = append(portParts, fmt.Sprintf("%s:%d", p.Label, p.Port))
+		}
+		fmt.Fprintf(os.Stderr, "  Ports:    %s\n", strings.Join(portParts, ", "))
+	}
+	if detection.SetupNotes != "" {
+		fmt.Fprintf(os.Stderr, "  Notes:    %s\n", detection.SetupNotes)
+	}
+	fmt.Fprintln(os.Stderr)
+}
+
 func envCreateCmd() *cobra.Command {
 	var (
-		templateSlug   string
-		templateID     string
-		name           string
-		ttl            string
-		cpu            int
-		memory         int
-		disk           int
-		repoFlags      []string
-		branch         string
-		image          string
-		install        string
-		startup        string
-		agent          string
-		envVars        []string
-		secretProject  string
-		noOrgSecrets   bool
-		noUserSecrets  bool
-		follow         bool
-		yes            bool
+		templateSlug  string
+		templateID    string
+		name          string
+		ttl           string
+		cpu           int
+		memory        int
+		disk          int
+		repoFlags     []string
+		branch        string
+		image         string
+		install       string
+		startup       string
+		agent         string
+		envVars       []string
+		secretProject string
+		noOrgSecrets  bool
+		noUserSecrets bool
+		follow        bool
+		yes           bool
 	)
 
 	cmd := &cobra.Command{
@@ -249,131 +312,131 @@ Examples:
 					}
 				} else {
 					// No codewire.yaml — try to infer repo URL from git remote.
-				if url, b, err := detectLocalRepo("."); err == nil && url != "" {
-					repoURL = url
-					if branch == "" {
-						branch = b
+					if url, b, err := detectLocalRepo("."); err == nil && url != "" {
+						repoURL = url
+						if branch == "" {
+							branch = b
+						}
+						fmt.Printf("Using repo: %s\n", repoURL)
+					} else {
+						return fmt.Errorf("provide a repo URL, --image, or --template")
 					}
-					fmt.Printf("Using repo: %s\n", repoURL)
-				} else {
-					return fmt.Errorf("provide a repo URL, --image, or --template")
-				}
 				}
 			}
 
-			orgID, client, err := getDefaultOrg()
+			orgID, client, err := getOrgContext(cmd)
 			if err != nil {
 				return err
 			}
 
-			// Smart detection: analyze repo for optimal configuration.
-			var detection *platform.DetectionResult
-			if repoURL != "" && templateSlug == "" && templateID == "" && image == "" {
-				analyze := yes // --yes skips the prompt and auto-analyzes
-				if !yes {
+			var (
+				detection        *platform.DetectionResult
+				preparedAppPorts []platform.AppPort
+			)
+			if repoURL != "" || templateSlug != "" || templateID != "" || image != "" {
+				var analyze *bool
+				if repoURL != "" && templateSlug == "" && templateID == "" && image == "" && !yes {
 					idx, promptErr := promptSelect("Do you want to auto analyze for setup suggestions?", []string{"Yes", "No"})
 					if promptErr != nil {
 						return promptErr
 					}
-					analyze = idx == 0
+					v := idx == 0
+					analyze = &v
 				}
 
-				if analyze {
-					fmt.Fprintf(os.Stderr, "Analyzing %s...\n", repoURL)
+				prepared, prepErr := client.PrepareLaunch(orgID, &platform.PrepareLaunchRequest{
+					TemplateID:         strPtrOrNil(templateID),
+					TemplateSlug:       templateSlug,
+					Name:               strPtrOrNil(name),
+					CPUMillicores:      intPtrOrNil(cpu),
+					MemoryMB:           intPtrOrNil(memory),
+					DiskGB:             intPtrOrNil(disk),
+					TTLSeconds:         durationSecondsPtr(ttl),
+					RepoURL:            repoURL,
+					Branch:             branch,
+					Repos:              repos,
+					Image:              image,
+					InstallCommand:     install,
+					StartupScript:      startup,
+					Agent:              agent,
+					SecretProject:      secretProject,
+					IncludeOrgSecrets:  boolPtrOrNil(!noOrgSecrets, noOrgSecrets),
+					IncludeUserSecrets: boolPtrOrNil(!noUserSecrets, noUserSecrets),
+					Analyze:            analyze,
+				})
+				if prepErr != nil {
+					return fmt.Errorf("prepare launch: %w", prepErr)
+				}
 
-					ghStatus, ghErr := client.GetGitHubStatus()
-					if ghErr == nil && !ghStatus.Connected {
-						fmt.Fprintln(os.Stderr, "Tip: Connect GitHub for private repo access: cw github login")
+				if prepared.Draft.TemplateID != "" {
+					templateID = prepared.Draft.TemplateID
+				}
+				if templateSlug == "" {
+					templateSlug = prepared.Draft.TemplateSlug
+				}
+				if name == "" {
+					name = prepared.Draft.Name
+				}
+				if repoURL == "" {
+					repoURL = prepared.Draft.RepoURL
+				}
+				if branch == "" {
+					branch = prepared.Draft.Branch
+				}
+				if len(repos) == 0 && len(prepared.Draft.Repos) > 0 {
+					repos = prepared.Draft.Repos
+				}
+				if image == "" {
+					image = prepared.Draft.Image
+				}
+				if install == "" {
+					install = prepared.Draft.InstallCommand
+				}
+				if startup == "" {
+					startup = prepared.Draft.StartupScript
+				}
+				if secretProject == "" {
+					secretProject = prepared.Draft.SecretProject
+				}
+				if agent == "" {
+					agent = prepared.Draft.Agent
+				}
+				if cpu == 0 && prepared.Draft.CPUMillicores != nil {
+					cpu = *prepared.Draft.CPUMillicores
+				}
+				if memory == 0 && prepared.Draft.MemoryMB != nil {
+					memory = *prepared.Draft.MemoryMB
+				}
+				if disk == 0 && prepared.Draft.DiskGB != nil {
+					disk = *prepared.Draft.DiskGB
+				}
+				if ttl == "" && prepared.Draft.TTLSeconds != nil {
+					ttl = fmt.Sprintf("%ds", *prepared.Draft.TTLSeconds)
+				}
+				preparedAppPorts = prepared.Draft.AppPorts
+				detection = prepared.Detection
+				printDetectionSummary(detection)
+
+				if detection != nil && !yes {
+					idx, promptErr := promptSelect("Create environment?", []string{"Yes", "Edit options", "Cancel"})
+					if promptErr != nil {
+						return promptErr
 					}
-
-					detection, err = client.DetectRepo(repoURL, branch)
-					if err != nil {
-						errMsg := err.Error()
-						if (ghStatus == nil || !ghStatus.Connected) && (strings.Contains(errMsg, "404") || strings.Contains(errMsg, "failed to fetch repo")) {
-							fmt.Fprintf(os.Stderr, "Detection failed (possibly private repo): %v\n", err)
-							fmt.Fprintln(os.Stderr, "Connect GitHub for private repo access: cw github login")
-						} else {
-							fmt.Fprintf(os.Stderr, "Detection failed: %v\nFalling back to defaults.\n", err)
+					switch idx {
+					case 2:
+						return fmt.Errorf("canceled")
+					case 1:
+						if v, err := promptDefault("Image", image); err == nil {
+							image = v
 						}
-						detection = nil
-						err = nil // non-fatal
-					}
-
-					if detection != nil {
-						fmt.Fprintf(os.Stderr, "\nDetected: %s", detection.Language)
-						if detection.Framework != "" {
-							fmt.Fprintf(os.Stderr, " (%s)", detection.Framework)
+						if v, err := promptDefault("Install command", install); err == nil {
+							install = v
 						}
-						if detection.ProjectType != "" {
-							fmt.Fprintf(os.Stderr, " [%s]", detection.ProjectType)
+						if v, err := promptDefault("Startup script", startup); err == nil {
+							startup = v
 						}
-						fmt.Fprintln(os.Stderr)
-						if detection.TemplateImage != "" {
-							fmt.Fprintf(os.Stderr, "  Image:    %s\n", detection.TemplateImage)
-						}
-						if detection.InstallCommand != "" {
-							fmt.Fprintf(os.Stderr, "  Install:  %s\n", detection.InstallCommand)
-						}
-						if detection.StartupScript != "" {
-							lines := strings.Split(detection.StartupScript, "\n")
-							if len(lines) == 1 {
-								fmt.Fprintf(os.Stderr, "  Script:   %s\n", detection.StartupScript)
-							} else {
-								fmt.Fprintf(os.Stderr, "  Script:   %s (+%d lines)\n", lines[0], len(lines)-1)
-							}
-						}
-						if len(detection.AppPorts) > 0 {
-							var portParts []string
-							for _, p := range detection.AppPorts {
-								portParts = append(portParts, fmt.Sprintf("%s:%d", p.Label, p.Port))
-							}
-							fmt.Fprintf(os.Stderr, "  Ports:    %s\n", strings.Join(portParts, ", "))
-						}
-						if detection.SetupNotes != "" {
-							fmt.Fprintf(os.Stderr, "  Notes:    %s\n", detection.SetupNotes)
-						}
-						fmt.Fprintln(os.Stderr)
-
-						// Apply detection as defaults; CLI flags override.
-						if image == "" {
-							image = detection.TemplateImage
-						}
-						if install == "" {
-							install = detection.InstallCommand
-						}
-						if startup == "" {
-							startup = detection.StartupScript
-						}
-						if name == "" && detection.SuggestedName != "" {
-							name = detection.SuggestedName
-						}
-						if templateSlug == "" && detection.TemplateSlug != "" {
-							templateSlug = detection.TemplateSlug
-						}
-
-						// Interactive confirmation (unless --yes).
-						if !yes {
-							idx, promptErr := promptSelect("Create environment?", []string{"Yes", "Edit options", "Cancel"})
-							if promptErr != nil {
-								return promptErr
-							}
-							switch idx {
-							case 2: // Cancel
-								return fmt.Errorf("canceled")
-							case 1: // Edit options
-								if v, err := promptDefault("Image", image); err == nil {
-									image = v
-								}
-								if v, err := promptDefault("Install command", install); err == nil {
-									install = v
-								}
-								if v, err := promptDefault("Startup script", startup); err == nil {
-									startup = v
-								}
-								if v, err := promptDefault("Environment name", name); err == nil {
-									name = v
-								}
-							}
+						if v, err := promptDefault("Environment name", name); err == nil {
+							name = v
 						}
 					}
 				}
@@ -409,7 +472,9 @@ Examples:
 			if len(repos) > 0 {
 				req.Repos = repos
 			}
-			if detection != nil && len(detection.AppPorts) > 0 && len(req.AppPorts) == 0 {
+			if len(preparedAppPorts) > 0 {
+				req.AppPorts = preparedAppPorts
+			} else if detection != nil && len(detection.AppPorts) > 0 && len(req.AppPorts) == 0 {
 				req.AppPorts = detection.AppPorts
 			}
 			if len(parsedEnvVars) > 0 {
@@ -518,7 +583,7 @@ func envListCmd() *cobra.Command {
 		Short:   "List environments",
 		Aliases: []string{"ls"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			orgID, client, err := getDefaultOrg()
+			orgID, client, err := getOrgContext(cmd)
 			if err != nil {
 				return err
 			}
@@ -581,7 +646,7 @@ func envInfoCmd() *cobra.Command {
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: envCompletionFunc,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			orgID, client, err := getDefaultOrg()
+			orgID, client, err := getOrgContext(cmd)
 			if err != nil {
 				return err
 			}
@@ -641,7 +706,7 @@ func envStopCmd() *cobra.Command {
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: envCompletionFunc,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			orgID, client, err := getDefaultOrg()
+			orgID, client, err := getOrgContext(cmd)
 			if err != nil {
 				return err
 			}
@@ -668,7 +733,7 @@ func envStartCmd() *cobra.Command {
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: envCompletionFunc,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			orgID, client, err := getDefaultOrg()
+			orgID, client, err := getOrgContext(cmd)
 			if err != nil {
 				return err
 			}
@@ -696,7 +761,7 @@ func envRmCmd() *cobra.Command {
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: envCompletionFunc,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			orgID, client, err := getDefaultOrg()
+			orgID, client, err := getOrgContext(cmd)
 			if err != nil {
 				return err
 			}
@@ -727,7 +792,7 @@ func envPruneCmd() *cobra.Command {
 		Short: "Bulk delete stale environments",
 		Long:  "Delete environments stuck in error, creating, or pending states.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			orgID, client, err := getDefaultOrg()
+			orgID, client, err := getOrgContext(cmd)
 			if err != nil {
 				return err
 			}
@@ -818,7 +883,7 @@ func envNukeCmd() *cobra.Command {
 		Short: "Delete ALL environments",
 		Long:  "Delete every environment in the current org. Requires typed confirmation unless --yes is passed.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			orgID, client, err := getDefaultOrg()
+			orgID, client, err := getOrgContext(cmd)
 			if err != nil {
 				return err
 			}
@@ -897,7 +962,7 @@ func envLogsCmd() *cobra.Command {
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: envCompletionFunc,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			orgID, client, err := getDefaultOrg()
+			orgID, client, err := getOrgContext(cmd)
 			if err != nil {
 				return err
 			}
@@ -1009,4 +1074,3 @@ func expandImageRef(image string) string {
 	}
 	return ref + ":latest"
 }
-

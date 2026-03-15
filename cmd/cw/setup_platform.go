@@ -252,7 +252,7 @@ func setupSelectResource(client *platform.Client, org *platform.OrgWithRole) (st
 // setupCreateResource prompts the user to create a new resource with billing.
 func setupCreateResource(client *platform.Client, org *platform.OrgWithRole) (string, error) {
 	fmt.Println("[4/6] Resource")
-	ok, err := promptConfirm(fmt.Sprintf("      No resources in %q. Create a Coder instance? [Y/n]", org.Name))
+	ok, err := promptConfirm(fmt.Sprintf("      No resources in %q. Create a Codewire resource? [Y/n]", org.Name))
 	if err != nil {
 		return "", err
 	}
