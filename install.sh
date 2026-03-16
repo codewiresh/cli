@@ -150,7 +150,7 @@ main() {
 
   # Create temp dir for downloads
   tmp_dir="$(mktemp -d)"
-  trap 'rm -rf "$tmp_dir"' EXIT
+  trap 'rm -rf "${tmp_dir:-}"' EXIT
   verbose "Temp directory: $tmp_dir"
 
   local base_url="https://github.com/${REPO}/releases/download/${version}"
