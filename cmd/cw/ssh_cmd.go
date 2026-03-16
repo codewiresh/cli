@@ -171,7 +171,7 @@ func sshInteractive(client *platform.Client, orgID, envID string) error {
 	available, _ := client.CheckSSHProxy(orgID, envID)
 	if !available {
 		fmt.Fprintln(os.Stderr, "sshd not available — using terminal fallback")
-		fmt.Fprintln(os.Stderr, "For full SSH support, use a codewire base image")
+		fmt.Fprintln(os.Stderr, "SSH proxy could not reach sidecar (check server logs for port-forward errors)")
 		return terminalFallback(client, orgID, envID)
 	}
 
