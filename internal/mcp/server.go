@@ -432,85 +432,6 @@ func getNodeTools() []tool {
 				"properties": map[string]interface{}{},
 			},
 		},
-		{
-			Name:        "codewire_kv_set",
-			Description: "Set a key-value pair in the shared relay store",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"key": map[string]interface{}{
-						"type":        "string",
-						"description": "The key to set",
-					},
-					"value": map[string]interface{}{
-						"type":        "string",
-						"description": "The value to store",
-					},
-					"namespace": map[string]interface{}{
-						"type":        "string",
-						"description": "Namespace (default: 'default')",
-					},
-					"ttl": map[string]interface{}{
-						"type":        "string",
-						"description": "Time-to-live as Go duration (e.g. '60s', '5m')",
-					},
-				},
-				"required": []string{"key", "value"},
-			},
-		},
-		{
-			Name:        "codewire_kv_get",
-			Description: "Get a value from the shared relay store",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"key": map[string]interface{}{
-						"type":        "string",
-						"description": "The key to get",
-					},
-					"namespace": map[string]interface{}{
-						"type":        "string",
-						"description": "Namespace (default: 'default')",
-					},
-				},
-				"required": []string{"key"},
-			},
-		},
-		{
-			Name:        "codewire_kv_list",
-			Description: "List keys from the shared relay store",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"prefix": map[string]interface{}{
-						"type":        "string",
-						"description": "Key prefix to filter by",
-					},
-					"namespace": map[string]interface{}{
-						"type":        "string",
-						"description": "Namespace (default: 'default')",
-					},
-				},
-			},
-		},
-		{
-			Name:        "codewire_kv_delete",
-			Description: "Delete a key from the shared relay store",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"key": map[string]interface{}{
-						"type":        "string",
-						"description": "The key to delete",
-					},
-					"namespace": map[string]interface{}{
-						"type":        "string",
-						"description": "Namespace (default: 'default')",
-					},
-				},
-				"required": []string{"key"},
-			},
-		},
 	}
 }
 
@@ -559,14 +480,6 @@ func handleToolCall(dataDir string, params json.RawMessage) (string, error) {
 		return toolReply(dataDir, args)
 	case "codewire_list_nodes":
 		return toolListNodes(dataDir, args)
-	case "codewire_kv_set":
-		return toolKVSet(dataDir, args)
-	case "codewire_kv_get":
-		return toolKVGet(dataDir, args)
-	case "codewire_kv_list":
-		return toolKVList(dataDir, args)
-	case "codewire_kv_delete":
-		return toolKVDelete(dataDir, args)
 	// Platform environment tools (use API, not local node)
 	case "codewire_list_environments":
 		return toolListEnvironments(args)
@@ -1143,113 +1056,6 @@ func toolListNodes(dataDir string, _ map[string]interface{}) (string, error) {
 	return string(resp), nil
 }
 
-func toolKVSet(dataDir string, args map[string]interface{}) (string, error) {
-	key, _ := args["key"].(string)
-	if key == "" {
-		return "", fmt.Errorf("missing key")
-	}
-	value, _ := args["value"].(string)
-	namespace, _ := args["namespace"].(string)
-	if namespace == "" {
-		namespace = "default"
-	}
-	ttl, _ := args["ttl"].(string)
-
-	resp, err := nodeRequest(dataDir, &protocol.Request{
-		Type:      "KVSet",
-		Namespace: namespace,
-		Key:       key,
-		Value:     []byte(value),
-		TTL:       ttl,
-	})
-	if err != nil {
-		return "", err
-	}
-	if resp.Type == "Error" {
-		return fmt.Sprintf("Error: %s", resp.Message), nil
-	}
-	return fmt.Sprintf("Set %s/%s", namespace, key), nil
-}
-
-func toolKVGet(dataDir string, args map[string]interface{}) (string, error) {
-	key, _ := args["key"].(string)
-	if key == "" {
-		return "", fmt.Errorf("missing key")
-	}
-	namespace, _ := args["namespace"].(string)
-	if namespace == "" {
-		namespace = "default"
-	}
-
-	resp, err := nodeRequest(dataDir, &protocol.Request{
-		Type:      "KVGet",
-		Namespace: namespace,
-		Key:       key,
-	})
-	if err != nil {
-		return "", err
-	}
-	if resp.Type == "Error" {
-		return fmt.Sprintf("Error: %s", resp.Message), nil
-	}
-	if resp.Value == nil {
-		return "Key not found", nil
-	}
-	return string(resp.Value), nil
-}
-
-func toolKVList(dataDir string, args map[string]interface{}) (string, error) {
-	prefix, _ := args["prefix"].(string)
-	namespace, _ := args["namespace"].(string)
-	if namespace == "" {
-		namespace = "default"
-	}
-
-	resp, err := nodeRequest(dataDir, &protocol.Request{
-		Type:      "KVList",
-		Namespace: namespace,
-		Key:       prefix,
-	})
-	if err != nil {
-		return "", err
-	}
-	if resp.Type == "Error" {
-		return fmt.Sprintf("Error: %s", resp.Message), nil
-	}
-	if resp.Entries == nil {
-		return "[]", nil
-	}
-	out, err := json.MarshalIndent(resp.Entries, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	return string(out), nil
-}
-
-func toolKVDelete(dataDir string, args map[string]interface{}) (string, error) {
-	key, _ := args["key"].(string)
-	if key == "" {
-		return "", fmt.Errorf("missing key")
-	}
-	namespace, _ := args["namespace"].(string)
-	if namespace == "" {
-		namespace = "default"
-	}
-
-	resp, err := nodeRequest(dataDir, &protocol.Request{
-		Type:      "KVDelete",
-		Namespace: namespace,
-		Key:       key,
-	})
-	if err != nil {
-		return "", err
-	}
-	if resp.Type == "Error" {
-		return fmt.Sprintf("Error: %s", resp.Message), nil
-	}
-	return fmt.Sprintf("Deleted %s/%s", namespace, key), nil
-}
-
 // ---------------------------------------------------------------------------
 // Node communication
 // ---------------------------------------------------------------------------
@@ -1533,7 +1339,7 @@ func loadRelayConfig(dataDir string) (string, error) {
 		return "", fmt.Errorf("loading config: %w", err)
 	}
 	if cfg.RelayURL == nil || *cfg.RelayURL == "" {
-		return "", fmt.Errorf("relay not configured (run 'cw setup <relay-url>' or set CODEWIRE_RELAY_URL)")
+		return "", fmt.Errorf("relay not configured (run 'cw relay setup <relay-url> [token]' or set CODEWIRE_RELAY_URL)")
 	}
 	return *cfg.RelayURL, nil
 }

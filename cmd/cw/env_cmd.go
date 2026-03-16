@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	cwclient "github.com/codewiresh/codewire/internal/client"
 	cwconfig "github.com/codewiresh/codewire/internal/config"
 	"github.com/codewiresh/codewire/internal/platform"
 )
@@ -212,6 +213,78 @@ func printDetectionSummary(detection *platform.DetectionResult) {
 	fmt.Fprintln(os.Stderr)
 }
 
+type envRelayEnrollment struct {
+	RelayURL    string
+	NetworkID   string
+	InviteToken string
+}
+
+func resolveEnvRelayEnrollment(dir string, assumeYes bool, requestedNetwork string, disableNetwork bool) (*envRelayEnrollment, error) {
+	if disableNetwork {
+		return nil, nil
+	}
+	requestedNetwork = strings.TrimSpace(requestedNetwork)
+
+	cfg, err := cwconfig.LoadConfig(dir)
+	if err != nil {
+		if requestedNetwork != "" {
+			return nil, fmt.Errorf("relay is not configured locally (run 'cw relay setup' or 'cw relay create' first)")
+		}
+		return nil, nil
+	}
+	if cfg.RelayURL == nil || *cfg.RelayURL == "" {
+		if requestedNetwork != "" {
+			return nil, fmt.Errorf("relay URL is not configured locally")
+		}
+		return nil, nil
+	}
+	if cfg.RelaySession == nil || *cfg.RelaySession == "" {
+		if requestedNetwork != "" {
+			return nil, fmt.Errorf("relay auth is not configured locally (run 'cw login' or set CODEWIRE_RELAY_SESSION')")
+		}
+		return nil, nil
+	}
+
+	networkID := requestedNetwork
+	if networkID == "" {
+		if cfg.RelayNetwork == nil || strings.TrimSpace(*cfg.RelayNetwork) == "" {
+			return nil, nil
+		}
+		if cfg.RelayAutoJoinPrivate == nil {
+			approved := assumeYes
+			if !assumeYes {
+				approved, err = promptConfirm(fmt.Sprintf("New environments will auto-join your private network %q for remote access. Continue", *cfg.RelayNetwork))
+				if err != nil {
+					return nil, err
+				}
+			}
+			cfg.RelayAutoJoinPrivate = &approved
+			if err := cwconfig.SaveConfig(dir, cfg); err != nil {
+				return nil, fmt.Errorf("saving relay consent: %w", err)
+			}
+		}
+		if !*cfg.RelayAutoJoinPrivate {
+			return nil, nil
+		}
+		networkID = *cfg.RelayNetwork
+	}
+
+	invite, err := cwclient.CreateInvite(dir, cwclient.RelayAuthOptions{
+		RelayURL:  *cfg.RelayURL,
+		AuthToken: *cfg.RelaySession,
+		NetworkID: networkID,
+	}, 1, "24h")
+	if err != nil {
+		return nil, fmt.Errorf("create relay invite for env: %w", err)
+	}
+
+	return &envRelayEnrollment{
+		RelayURL:    *cfg.RelayURL,
+		NetworkID:   networkID,
+		InviteToken: invite.Token,
+	}, nil
+}
+
 func envCreateCmd() *cobra.Command {
 	var (
 		templateSlug  string
@@ -233,6 +306,8 @@ func envCreateCmd() *cobra.Command {
 		noUserSecrets bool
 		follow        bool
 		yes           bool
+		network       string
+		noNetwork     bool
 	)
 
 	cmd := &cobra.Command{
@@ -249,7 +324,8 @@ Examples:
   cw env create --repo github.com/foo/frontend@main --repo git.noel.sh/foo/backend
   cw env create --template go --name my-env
   cw env create --image go --name my-env
-  cw env create --secrets my-project https://github.com/foo/bar`,
+  cw env create --secrets my-project https://github.com/foo/bar
+  cw env create --network project-alpha https://github.com/foo/bar`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Collect repos from positional args + --repo flags.
@@ -480,6 +556,26 @@ Examples:
 			if len(parsedEnvVars) > 0 {
 				req.EnvVars = parsedEnvVars
 			}
+
+			enrollment, err := resolveEnvRelayEnrollment(dataDir(), yes, network, noNetwork)
+			if err != nil {
+				return err
+			}
+			if enrollment != nil {
+				if req.EnvVars == nil {
+					req.EnvVars = make(map[string]string)
+				}
+				for key, value := range map[string]string{
+					"CODEWIRE_RELAY_URL":          enrollment.RelayURL,
+					"CODEWIRE_RELAY_NETWORK":      enrollment.NetworkID,
+					"CODEWIRE_RELAY_INVITE_TOKEN": enrollment.InviteToken,
+				} {
+					if _, exists := req.EnvVars[key]; exists {
+						return fmt.Errorf("%s is reserved for relay bootstrap", key)
+					}
+					req.EnvVars[key] = value
+				}
+			}
 			if cpu > 0 {
 				req.CPUMillicores = &cpu
 			}
@@ -566,6 +662,8 @@ Examples:
 	cmd.Flags().StringVar(&secretProject, "secrets", "", "Secret project to bind")
 	cmd.Flags().BoolVar(&noOrgSecrets, "no-org-secrets", false, "Don't inject org-level secrets")
 	cmd.Flags().BoolVar(&noUserSecrets, "no-user-secrets", false, "Don't inject user-level secrets")
+	cmd.Flags().StringVar(&network, "network", "", "Join a specific relay network on boot (requires relay auth in local config)")
+	cmd.Flags().BoolVar(&noNetwork, "no-network", false, "Don't join the default private relay network")
 	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "Follow startup logs after creation")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Skip confirmation prompts")
 	return cmd

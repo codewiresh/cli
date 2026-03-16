@@ -36,7 +36,7 @@ spec:
           command: ["sh", "-c"]
           args:
             - |
-              exec cw relay \
+              exec cw relay serve \
                 --base-url={{ .Values.relay.baseURL | quote }} \
                 --listen={{ .Values.relay.listenAddr | quote }} \
                 --ssh-listen={{ .Values.relay.sshListen | quote }} \
@@ -47,7 +47,7 @@ spec:
           command: ["sh", "-c"]
           args:
             - |
-              exec cw relay \
+              exec cw relay serve \
                 --base-url={{ .Values.relay.baseURL | quote }} \
                 --listen={{ .Values.relay.listenAddr | quote }} \
                 --ssh-listen={{ .Values.relay.sshListen | quote }} \
@@ -62,6 +62,7 @@ spec:
           {{- else }}
           args:
             - relay
+            - serve
             - --base-url={{ .Values.relay.baseURL }}
             - --listen={{ .Values.relay.listenAddr }}
             - --ssh-listen={{ .Values.relay.sshListen }}

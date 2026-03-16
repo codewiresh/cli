@@ -247,12 +247,12 @@ cw wait --tag worker --condition all                 # Wait for ALL workers to c
 cw wait --tag worker --condition any --timeout 60    # Wait for ANY worker, 60s timeout
 ```
 
-### `cw nodes`
+### `cw relay nodes`
 
 List all nodes registered with the relay.
 
 ```bash
-cw nodes
+cw relay nodes
 ```
 
 ### `cw relay setup [relay-url]`
@@ -263,25 +263,12 @@ Authorize this node with a relay using the device authorization flow.
 cw relay setup https://relay.codewire.sh
 ```
 
-### `cw relay`
+### `cw relay serve`
 
 Run a relay server. The relay provides SSH gateway access, node discovery, and shared KV storage.
 
 ```bash
-cw relay --base-url https://relay.example.com --data-dir /data/relay
-```
-
-### `cw kv`
-
-Shared key-value store (requires relay connection).
-
-```bash
-cw kv set build_status done                          # Set key
-cw kv get build_status                               # Get key
-cw kv list task:                                     # List by prefix
-cw kv set --ttl 60s lock "node-a"                    # Auto-expiring key
-cw kv set --ns myproject key value                   # Namespaced
-cw kv delete build_status                            # Delete key
+cw relay serve --base-url https://relay.example.com --data-dir /data/relay
 ```
 
 ### `cw mcp-server`
@@ -397,10 +384,10 @@ Codewire uses an SSH gateway for remote access. Nodes establish persistent WebSo
 
 ```bash
 # Register your node with a relay
-cw setup --relay-url https://relay.codewire.sh
+cw relay setup https://relay.codewire.sh
 
 # Or with an invite token
-cw setup --relay-url https://relay.codewire.sh --invite <token>
+cw relay setup https://relay.codewire.sh <token>
 
 # That's it. Your node is now accessible remotely via SSH.
 ```

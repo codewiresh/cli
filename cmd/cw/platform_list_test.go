@@ -1,0 +1,118 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/codewiresh/codewire/internal/platform"
+)
+
+func TestListEnvironmentRunsUsesLocalSessionListing(t *testing.T) {
+	var (
+		gotMethod string
+		gotPath   string
+		gotBody   platform.ExecRequest
+	)
+
+	client := &platform.Client{
+		ServerURL:    "https://example.invalid",
+		SessionToken: "session-token",
+		HTTP: &http.Client{
+			Timeout: 5 * time.Second,
+			Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				gotMethod = r.Method
+				gotPath = r.URL.Path
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read request body: %v", err)
+				}
+				if err := json.Unmarshal(body, &gotBody); err != nil {
+					t.Fatalf("decode request body: %v", err)
+				}
+
+				respBody, _ := json.Marshal(platform.ExecResult{
+					ExitCode: 0,
+					Stdout: `[{
+						"id": 7,
+						"name": "planner",
+						"prompt": "claude -p plan",
+						"created_at": "2026-03-16T12:00:00Z",
+						"status": "running",
+						"attached_count": 0
+					}]`,
+				})
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(bytes.NewReader(respBody)),
+				}, nil
+			}),
+		},
+	}
+
+	env := platform.Environment{
+		ID:        "env_123",
+		Type:      "sandbox",
+		State:     "running",
+		CreatedAt: "2026-03-16T10:00:00Z",
+	}
+
+	sessions, lookup, errMsg := listEnvironmentRuns(client, "org_123", env)
+	if lookup != "available" {
+		t.Fatalf("lookup = %q, want available", lookup)
+	}
+	if errMsg != "" {
+		t.Fatalf("errMsg = %q, want empty", errMsg)
+	}
+	if len(sessions) != 1 || sessions[0].Name != "planner" {
+		t.Fatalf("sessions = %#v, want planner session", sessions)
+	}
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %q, want POST", gotMethod)
+	}
+	if gotPath != "/api/v1/organizations/org_123/environments/env_123/exec" {
+		t.Fatalf("path = %q", gotPath)
+	}
+	if len(gotBody.Command) != 4 {
+		t.Fatalf("command = %#v, want cw list --local --json", gotBody.Command)
+	}
+	if gotBody.Command[0] != "cw" || gotBody.Command[1] != "list" || gotBody.Command[2] != "--local" || gotBody.Command[3] != "--json" {
+		t.Fatalf("command = %#v, want cw list --local --json", gotBody.Command)
+	}
+}
+
+func TestListEnvironmentRunsSkipsStoppedEnvironment(t *testing.T) {
+	client := &platform.Client{
+		ServerURL:    "https://example.invalid",
+		SessionToken: "session-token",
+		HTTP: &http.Client{
+			Timeout: 5 * time.Second,
+			Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				t.Fatalf("unexpected HTTP request for stopped environment")
+				return nil, nil
+			}),
+		},
+	}
+
+	env := platform.Environment{
+		ID:        "env_123",
+		Type:      "sandbox",
+		State:     "stopped",
+		CreatedAt: "2026-03-16T10:00:00Z",
+	}
+
+	sessions, lookup, errMsg := listEnvironmentRuns(client, "org_123", env)
+	if lookup != "skipped" {
+		t.Fatalf("lookup = %q, want skipped", lookup)
+	}
+	if errMsg != "" {
+		t.Fatalf("errMsg = %q, want empty", errMsg)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("sessions = %#v, want none", sessions)
+	}
+}

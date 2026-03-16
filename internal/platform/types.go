@@ -7,10 +7,9 @@ import (
 
 // PlatformConfig is stored at ~/.config/cw/config.json.
 type PlatformConfig struct {
-	ServerURL        string `json:"server_url"`
-	SessionToken     string `json:"session_token"`
-	DefaultOrg       string `json:"default_org,omitempty"`
-	DefaultResource string `json:"default_resource,omitempty"`
+	ServerURL    string `json:"server_url"`
+	SessionToken string `json:"session_token"`
+	DefaultOrg   string `json:"default_org,omitempty"`
 }
 
 // Auth types

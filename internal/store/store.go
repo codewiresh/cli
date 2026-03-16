@@ -15,10 +15,19 @@ type KVEntry struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
+// Network describes a named relay network.
+type Network struct {
+	ID          string    `json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	NodeCount   int       `json:"node_count"`
+	InviteCount int       `json:"invite_count"`
+}
+
 // NodeRecord is a registered relay node.
 type NodeRecord struct {
+	FleetID      string    `json:"fleet_id"`
 	Name         string    `json:"name"`
-	Token        string    `json:"token"`          // random auth token (replaces WireGuard public key)
+	Token        string    `json:"token"` // random auth token (replaces WireGuard public key)
 	GitHubID     *int64    `json:"github_id,omitempty"`
 	AuthorizedAt time.Time `json:"authorized_at"`
 	LastSeenAt   time.Time `json:"last_seen_at"`
@@ -61,6 +70,7 @@ type OAuthState struct {
 
 // Invite is an invite code for device onboarding.
 type Invite struct {
+	FleetID       string    `json:"fleet_id"`
 	Token         string    `json:"token"`
 	CreatedBy     *int64    `json:"created_by"`
 	UsesRemaining int       `json:"uses_remaining"`
@@ -91,6 +101,7 @@ type OIDCSession struct {
 type OIDCDeviceFlow struct {
 	PollToken  string    `json:"poll_token"`
 	DeviceCode string    `json:"device_code"`
+	FleetID    string    `json:"fleet_id"`
 	NodeName   string    `json:"node_name"`
 	NodeToken  string    `json:"node_token"` // populated by OIDCDeviceFlowComplete
 	ExpiresAt  time.Time `json:"expires_at"`
@@ -116,18 +127,20 @@ type DeviceCode struct {
 // Store is the relay's storage interface. All methods are safe for concurrent use.
 type Store interface {
 	// KV store — shared across all nodes.
-	KVSet(ctx context.Context, namespace, key string, value []byte, ttl *time.Duration) error
-	KVGet(ctx context.Context, namespace, key string) ([]byte, error)
-	KVDelete(ctx context.Context, namespace, key string) error
-	KVList(ctx context.Context, namespace, prefix string) ([]KVEntry, error)
+	KVSet(ctx context.Context, fleetID, namespace, key string, value []byte, ttl *time.Duration) error
+	KVGet(ctx context.Context, fleetID, namespace, key string) ([]byte, error)
+	KVDelete(ctx context.Context, fleetID, namespace, key string) error
+	KVList(ctx context.Context, fleetID, namespace, prefix string) ([]KVEntry, error)
 
 	// Node registry — internal to relay.
+	NetworkEnsure(ctx context.Context, fleetID string) error
+	NetworkList(ctx context.Context) ([]Network, error)
 	NodeRegister(ctx context.Context, node NodeRecord) error
-	NodeList(ctx context.Context) ([]NodeRecord, error)
-	NodeGet(ctx context.Context, name string) (*NodeRecord, error)
+	NodeList(ctx context.Context, fleetID string) ([]NodeRecord, error)
+	NodeGet(ctx context.Context, fleetID, name string) (*NodeRecord, error)
 	NodeGetByToken(ctx context.Context, token string) (*NodeRecord, error)
-	NodeDelete(ctx context.Context, name string) error
-	NodeUpdateLastSeen(ctx context.Context, name string) error
+	NodeDelete(ctx context.Context, fleetID, name string) error
+	NodeUpdateLastSeen(ctx context.Context, fleetID, name string) error
 
 	// Device authorization flow.
 	DeviceCodeCreate(ctx context.Context, dc DeviceCode) error
@@ -158,8 +171,8 @@ type Store interface {
 	InviteCreate(ctx context.Context, invite Invite) error
 	InviteGet(ctx context.Context, token string) (*Invite, error)
 	InviteConsume(ctx context.Context, token string) error
-	InviteList(ctx context.Context) ([]Invite, error)
-	InviteDelete(ctx context.Context, token string) error
+	InviteList(ctx context.Context, fleetID string) ([]Invite, error)
+	InviteDelete(ctx context.Context, fleetID, token string) error
 
 	// OIDC Users.
 	OIDCUserUpsert(ctx context.Context, user OIDCUser) error

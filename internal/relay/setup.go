@@ -5,15 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	qrcode "github.com/skip2/go-qrcode"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"time"
-
-	"github.com/BurntSushi/toml"
-	qrcode "github.com/skip2/go-qrcode"
 
 	"github.com/codewiresh/codewire/internal/config"
 )
@@ -22,6 +19,7 @@ import (
 type SetupOptions struct {
 	RelayURL  string
 	DataDir   string
+	NetworkID string
 	Token     string // invite token or positional token (empty = auto-detect)
 	AuthToken string // admin/CI token (--token flag)
 	ShowQR    bool   // print SSH connection QR code after registration
@@ -43,11 +41,11 @@ func RunSetup(ctx context.Context, opts SetupOptions) error {
 
 	switch {
 	case opts.AuthToken != "":
-		nodeToken, err = registerWithToken(ctx, opts.RelayURL, nodeName, opts.AuthToken)
+		nodeToken, err = registerWithToken(ctx, opts.RelayURL, opts.NetworkID, nodeName, opts.AuthToken)
 	case opts.Token != "":
 		nodeToken, err = registerWithInvite(ctx, opts.RelayURL, nodeName, opts.Token)
 	default:
-		nodeToken, err = registerAutoDetect(ctx, opts.RelayURL, nodeName)
+		nodeToken, err = registerAutoDetect(ctx, opts.RelayURL, opts.NetworkID, nodeName)
 	}
 
 	if err != nil {
@@ -56,7 +54,7 @@ func RunSetup(ctx context.Context, opts SetupOptions) error {
 
 	fmt.Fprintf(os.Stderr, "→ Registered node %q with relay %s\n", nodeName, opts.RelayURL)
 
-	if err := writeRelayConfig(opts.DataDir, opts.RelayURL, nodeToken); err != nil {
+	if err := writeRelayConfig(opts.DataDir, opts.RelayURL, opts.NetworkID, nodeToken); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
 
@@ -65,13 +63,17 @@ func RunSetup(ctx context.Context, opts SetupOptions) error {
 		sshPort = 2222
 	}
 	relayHost := extractHost(opts.RelayURL)
+	sshUser := nodeName
+	if opts.NetworkID != "" {
+		sshUser = opts.NetworkID + "/" + nodeName
+	}
 
 	fmt.Fprintln(os.Stderr, "→ Configuration saved.")
 	fmt.Fprintf(os.Stderr, "→ Start node agent: cw node -d\n")
-	fmt.Fprintf(os.Stderr, "→ SSH access: ssh %s@%s -p %d\n", nodeName, relayHost, sshPort)
+	fmt.Fprintf(os.Stderr, "→ SSH access: ssh %s@%s -p %d\n", sshUser, relayHost, sshPort)
 
 	if opts.ShowQR {
-		uri := SSHURI(opts.RelayURL, nodeName, nodeToken, sshPort)
+		uri := SSHURI(opts.RelayURL, opts.NetworkID, nodeName, nodeToken, sshPort)
 		fmt.Fprintf(os.Stderr, "→ SSH URI: %s\n", uri)
 		printSetupQR(uri)
 	}
@@ -106,7 +108,7 @@ func getAuthConfig(ctx context.Context, relayURL string) (string, error) {
 }
 
 // registerAutoDetect auto-detects the relay's auth mode and runs the appropriate flow.
-func registerAutoDetect(ctx context.Context, relayURL, nodeName string) (string, error) {
+func registerAutoDetect(ctx context.Context, relayURL, fleetID, nodeName string) (string, error) {
 	authMode, err := getAuthConfig(ctx, relayURL)
 	if err != nil {
 		return "", fmt.Errorf("fetching relay auth config: %w", err)
@@ -114,17 +116,20 @@ func registerAutoDetect(ctx context.Context, relayURL, nodeName string) (string,
 
 	switch authMode {
 	case "oidc":
-		return registerWithDeviceFlow(ctx, relayURL, nodeName)
+		return registerWithDeviceFlow(ctx, relayURL, fleetID, nodeName)
 	default:
-		return "", fmt.Errorf("relay auth mode is %q — provide a token: cw setup %s <token>", authMode, relayURL)
+		return "", fmt.Errorf("relay auth mode is %q — provide a token: cw relay setup %s <token>", authMode, relayURL)
 	}
 }
 
 // registerWithDeviceFlow performs RFC 8628 device authorization against the relay
 // and returns the node token once the user approves in their browser.
-func registerWithDeviceFlow(ctx context.Context, relayURL, nodeName string) (string, error) {
+func registerWithDeviceFlow(ctx context.Context, relayURL, fleetID, nodeName string) (string, error) {
 	// Step 1: initiate device auth.
-	body, _ := json.Marshal(map[string]string{"node_name": nodeName})
+	body, _ := json.Marshal(map[string]string{
+		"node_name": nodeName,
+		"fleet_id":  fleetID,
+	})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, relayURL+"/api/v1/device/authorize", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -217,8 +222,11 @@ func registerWithDeviceFlow(ctx context.Context, relayURL, nodeName string) (str
 	return "", fmt.Errorf("timed out waiting for authorization")
 }
 
-func registerWithToken(ctx context.Context, relayURL, nodeName, adminToken string) (string, error) {
-	body, _ := json.Marshal(map[string]string{"node_name": nodeName})
+func registerWithToken(ctx context.Context, relayURL, fleetID, nodeName, adminToken string) (string, error) {
+	body, _ := json.Marshal(map[string]string{
+		"node_name": nodeName,
+		"fleet_id":  fleetID,
+	})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, relayURL+"/api/v1/nodes", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+adminToken)
@@ -267,31 +275,32 @@ func registerWithInvite(ctx context.Context, relayURL, nodeName, inviteToken str
 	return result.NodeToken, nil
 }
 
-func writeRelayConfig(dataDir, relayURL, nodeToken string) error {
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		return err
-	}
+// RegisterWithInvite exchanges an invite token for a node token.
+func RegisterWithInvite(ctx context.Context, relayURL, nodeName, inviteToken string) (string, error) {
+	return registerWithInvite(ctx, relayURL, nodeName, inviteToken)
+}
 
-	configPath := filepath.Join(dataDir, "config.toml")
-	cfg := &config.Config{}
-	// Load existing config if present (preserves node.name etc.).
-	toml.DecodeFile(configPath, cfg)
+func writeRelayConfig(dataDir, relayURL, networkID, nodeToken string) error {
+	cfg, err := config.LoadConfig(dataDir)
+	if err != nil {
+		cfg = &config.Config{}
+	}
 
 	cfg.RelayURL = &relayURL
+	cfg.RelayNetwork = &networkID
 	cfg.RelayToken = &nodeToken
 
-	f, err := os.Create(configPath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return toml.NewEncoder(f).Encode(cfg)
+	return config.SaveConfig(dataDir, cfg)
 }
 
 // SSHURI builds an ssh:// URI for the given relay and node credentials.
-func SSHURI(relayURL, nodeName, nodeToken string, port int) string {
+func SSHURI(relayURL, networkID, nodeName, nodeToken string, port int) string {
 	host := extractHost(relayURL)
-	return fmt.Sprintf("ssh://%s:%s@%s:%d", nodeName, nodeToken, host, port)
+	user := nodeName
+	if networkID != "" {
+		user = networkID + "/" + nodeName
+	}
+	return fmt.Sprintf("ssh://%s:%s@%s:%d", user, nodeToken, host, port)
 }
 
 // extractHost returns the hostname from a URL, falling back to the raw string.

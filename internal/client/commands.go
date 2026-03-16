@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	urlpkg "net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -978,9 +979,118 @@ func printSessionTable(sessions []protocol.SessionInfo) {
 // Nodes (relay discovery)
 // ---------------------------------------------------------------------------
 
-// Nodes fetches the list of registered nodes from a relay URL and prints them.
-func Nodes(relayURL string) error {
-	resp, err := fetchJSON(relayURL + "/api/v1/nodes")
+type RelayAuthOptions struct {
+	RelayURL  string
+	AuthToken string
+	NetworkID string
+}
+
+type relayNetwork struct {
+	ID          string    `json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	NodeCount   int       `json:"node_count"`
+	InviteCount int       `json:"invite_count"`
+}
+
+type RelayInvite struct {
+	Token         string    `json:"token"`
+	UsesRemaining int       `json:"uses_remaining"`
+	ExpiresAt     time.Time `json:"expires_at"`
+}
+
+// Networks fetches the list of relay networks and prints them.
+func Networks(dataDir string, opts RelayAuthOptions) error {
+	relayURL, authToken, currentNetworkID, err := loadRelayAuth(dataDir, opts)
+	if err != nil {
+		return err
+	}
+
+	resp, err := fetchJSONWithAuth(relayURL+"/api/v1/networks", authToken)
+	if err != nil {
+		return err
+	}
+
+	var networks []relayNetwork
+	if err := json.Unmarshal(resp, &networks); err != nil {
+		return fmt.Errorf("parsing networks: %w", err)
+	}
+
+	if len(networks) == 0 {
+		fmt.Println("No networks")
+		return nil
+	}
+
+	fmt.Printf("%-8s %-24s %-7s %-8s %-12s\n", "CURRENT", "NAME", "NODES", "INVITES", "CREATED")
+	for _, network := range networks {
+		current := ""
+		if network.ID == currentNetworkID {
+			current = "*"
+		}
+		created := formatRelativeTime(network.CreatedAt.Format(time.RFC3339))
+		fmt.Printf("%-8s %-24s %-7d %-8d %-12s\n", current, network.ID, network.NodeCount, network.InviteCount, created)
+	}
+	return nil
+}
+
+// CreateNetwork creates a named network on the relay and optionally saves it as the local default.
+func CreateNetwork(dataDir, networkID string, opts RelayAuthOptions, useAfter bool) error {
+	relayURL, authToken, _, err := loadRelayAuth(dataDir, opts)
+	if err != nil {
+		return err
+	}
+
+	reqBody, _ := json.Marshal(map[string]string{"network_id": networkID})
+	req, err := http.NewRequest(http.MethodPost, relayURL+"/api/v1/networks", strings.NewReader(string(reqBody)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+authToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("contacting relay: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("failed to create network: %s", strings.TrimSpace(string(body)))
+	}
+
+	if useAfter {
+		if err := saveRelayNetwork(dataDir, networkID); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Network %q created and selected\n", networkID)
+		return nil
+	}
+
+	fmt.Fprintf(os.Stderr, "Network %q created\n", networkID)
+	return nil
+}
+
+// UseNetwork updates the locally configured default relay network.
+func UseNetwork(dataDir, networkID string) error {
+	if err := saveRelayNetwork(dataDir, networkID); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "Selected network %q\n", networkID)
+	return nil
+}
+
+// Nodes fetches the list of registered nodes from the configured relay and prints them.
+func Nodes(dataDir string, opts RelayAuthOptions) error {
+	relayURL, authToken, networkID, err := loadRelayAuth(dataDir, opts)
+	if err != nil {
+		return err
+	}
+
+	url := relayURL + "/api/v1/nodes"
+	if networkID != "" {
+		url += "?fleet_id=" + urlpkg.QueryEscape(networkID)
+	}
+	resp, err := fetchJSONWithAuth(url, authToken)
 	if err != nil {
 		return err
 	}
@@ -1010,8 +1120,28 @@ func Nodes(relayURL string) error {
 	return nil
 }
 
-func fetchJSON(url string) ([]byte, error) {
-	resp, err := http.Get(url)
+func saveRelayNetwork(dataDir, networkID string) error {
+	cfg, err := config.LoadConfig(dataDir)
+	if err != nil {
+		cfg = &config.Config{}
+	}
+	cfg.RelayNetwork = &networkID
+	if err := config.SaveConfig(dataDir, cfg); err != nil {
+		return fmt.Errorf("saving relay config: %w", err)
+	}
+	return nil
+}
+
+func fetchJSONWithAuth(url, authToken string) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+authToken)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -1511,43 +1641,55 @@ func printMessageEvent(sessionID *uint32, event *protocol.SessionEvent) {
 // Invite — create an invite code via relay API
 // ---------------------------------------------------------------------------
 
-// Invite creates an invite code on the relay and optionally prints a QR code.
-func Invite(dataDir string, uses int, ttl string, showQR bool) error {
-	relayURL, authToken, err := loadRelayAuth(dataDir)
+// CreateInvite creates an invite code on the relay and returns it.
+func CreateInvite(dataDir string, opts RelayAuthOptions, uses int, ttl string) (*RelayInvite, error) {
+	relayURL, authToken, networkID, err := loadRelayAuth(dataDir, opts)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	reqBody, _ := json.Marshal(map[string]interface{}{
-		"uses": uses,
-		"ttl":  ttl,
+		"fleet_id": networkID,
+		"uses":     uses,
+		"ttl":      ttl,
 	})
 
 	req, err := http.NewRequest(http.MethodPost, relayURL+"/api/v1/invites", strings.NewReader(string(reqBody)))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+authToken)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("contacting relay: %w", err)
+		return nil, fmt.Errorf("contacting relay: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("failed to create invite: %s", string(body))
+		return nil, fmt.Errorf("failed to create invite: %s", string(body))
 	}
 
-	var invite struct {
-		Token         string    `json:"token"`
-		UsesRemaining int       `json:"uses_remaining"`
-		ExpiresAt     time.Time `json:"expires_at"`
-	}
+	var invite RelayInvite
 	if err := json.NewDecoder(resp.Body).Decode(&invite); err != nil {
-		return fmt.Errorf("parsing response: %w", err)
+		return nil, fmt.Errorf("parsing response: %w", err)
+	}
+
+	return &invite, nil
+}
+
+// Invite creates an invite code on the relay and optionally prints a QR code.
+func Invite(dataDir string, opts RelayAuthOptions, uses int, ttl string, showQR bool) error {
+	relayURL, _, _, err := loadRelayAuth(dataDir, opts)
+	if err != nil {
+		return err
+	}
+
+	invite, err := CreateInvite(dataDir, opts, uses, ttl)
+	if err != nil {
+		return err
 	}
 
 	joinURL := relayURL + "/join?invite=" + invite.Token
@@ -1558,7 +1700,7 @@ func Invite(dataDir string, uses int, ttl string, showQR bool) error {
 	fmt.Fprintf(os.Stderr, "  Expires: %s\n", invite.ExpiresAt.Format(time.RFC3339))
 	fmt.Fprintf(os.Stderr, "  URL:     %s\n\n", joinURL)
 	fmt.Fprintf(os.Stderr, "To setup another device:\n")
-	fmt.Fprintf(os.Stderr, "  cw setup %s --invite %s\n", relayURL, invite.Token)
+	fmt.Fprintf(os.Stderr, "  cw relay setup %s %s\n", relayURL, invite.Token)
 
 	if showQR {
 		PrintQR(joinURL)
@@ -1584,14 +1726,18 @@ func SSHQRCode(dataDir string, sshPort int) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 	if cfg.RelayURL == nil || *cfg.RelayURL == "" {
-		return fmt.Errorf("relay not configured (run 'cw setup <relay-url>')")
+		return fmt.Errorf("relay not configured (run 'cw relay setup <relay-url> [token]')")
 	}
 	if cfg.RelayToken == nil || *cfg.RelayToken == "" {
-		return fmt.Errorf("no relay token in config (run 'cw setup <relay-url>')")
+		return fmt.Errorf("no relay token in config (run 'cw relay setup <relay-url> [token]')")
 	}
 
 	nodeName := cfg.Node.Name
-	uri := relay.SSHURI(*cfg.RelayURL, nodeName, *cfg.RelayToken, sshPort)
+	networkID := ""
+	if cfg.RelayNetwork != nil {
+		networkID = *cfg.RelayNetwork
+	}
+	uri := relay.SSHURI(*cfg.RelayURL, networkID, nodeName, *cfg.RelayToken, sshPort)
 
 	fmt.Fprintf(os.Stderr, "SSH URI: %s\n", uri)
 	PrintQR(uri)
@@ -1603,13 +1749,17 @@ func SSHQRCode(dataDir string, sshPort int) error {
 // ---------------------------------------------------------------------------
 
 // Revoke removes a node from the relay and adds its key to the revoked list.
-func Revoke(dataDir string, nodeName string) error {
-	relayURL, authToken, err := loadRelayAuth(dataDir)
+func Revoke(dataDir string, nodeName string, opts RelayAuthOptions) error {
+	relayURL, authToken, networkID, err := loadRelayAuth(dataDir, opts)
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequest(http.MethodDelete, relayURL+"/api/v1/nodes/"+nodeName, nil)
+	url := relayURL + "/api/v1/nodes/" + nodeName
+	if networkID != "" {
+		url += "?fleet_id=" + urlpkg.QueryEscape(networkID)
+	}
+	req, err := http.NewRequest(http.MethodDelete, url, nil)
 	if err != nil {
 		return err
 	}
@@ -1630,47 +1780,83 @@ func Revoke(dataDir string, nodeName string) error {
 	return nil
 }
 
-// loadRelayAuth loads the relay URL and auth token from config.
-func loadRelayAuth(dataDir string) (relayURL, authToken string, err error) {
+// loadRelayAuth loads the relay URL, auth token, and network from config.
+func loadRelayAuth(dataDir string, opts RelayAuthOptions) (relayURL, authToken, networkID string, err error) {
 	cfg, err := loadConfigFromDir(dataDir)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	if cfg.relayURL == "" {
-		return "", "", fmt.Errorf("relay not configured (run 'cw setup <relay-url>')")
+	relayURL = cfg.relayURL
+	authToken = cfg.authToken
+	networkID = cfg.relayNetwork
+	if opts.RelayURL != "" {
+		relayURL = opts.RelayURL
 	}
-	return cfg.relayURL, cfg.authToken, nil
+	if opts.AuthToken != "" {
+		authToken = opts.AuthToken
+	}
+	if opts.NetworkID != "" {
+		networkID = opts.NetworkID
+	}
+	if relayURL == "" {
+		return "", "", "", fmt.Errorf("relay not configured (pass --relay-url, set CODEWIRE_RELAY_URL, or run 'cw relay setup <relay-url> [token]')")
+	}
+	if authToken == "" {
+		return "", "", "", fmt.Errorf("relay authentication not configured (pass --token, set CODEWIRE_RELAY_SESSION, or run 'cw login')")
+	}
+	return relayURL, authToken, networkID, nil
 }
 
 type relayAuthConfig struct {
-	relayURL  string
-	authToken string
+	relayURL     string
+	authToken    string
+	relayNetwork string
 }
 
 func loadConfigFromDir(dataDir string) (*relayAuthConfig, error) {
 	// Read config.toml for relay_url and relay_session.
 	configPath := dataDir + "/config.toml"
 	data, err := os.ReadFile(configPath)
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("reading config: %w", err)
 	}
 
 	// Simple extraction — parse the TOML manually for the fields we need.
 	var cfg struct {
 		RelayURL     *string `toml:"relay_url"`
+		RelayNetwork *string `toml:"relay_network"`
+		RelayFleet   *string `toml:"relay_fleet"`
 		RelaySession *string `toml:"relay_session"`
 	}
 
-	if _, err := toml.Decode(string(data), &cfg); err != nil {
-		return nil, fmt.Errorf("parsing config: %w", err)
+	if len(data) > 0 {
+		if _, err := toml.Decode(string(data), &cfg); err != nil {
+			return nil, fmt.Errorf("parsing config: %w", err)
+		}
 	}
 
 	result := &relayAuthConfig{}
 	if cfg.RelayURL != nil {
 		result.relayURL = *cfg.RelayURL
 	}
+	if cfg.RelayNetwork != nil {
+		result.relayNetwork = *cfg.RelayNetwork
+	} else if cfg.RelayFleet != nil {
+		result.relayNetwork = *cfg.RelayFleet
+	}
 	if cfg.RelaySession != nil {
 		result.authToken = *cfg.RelaySession
+	}
+	if relayURL := os.Getenv("CODEWIRE_RELAY_URL"); relayURL != "" {
+		result.relayURL = relayURL
+	}
+	if relayNetwork := os.Getenv("CODEWIRE_RELAY_NETWORK"); relayNetwork != "" {
+		result.relayNetwork = relayNetwork
+	} else if relayFleet := os.Getenv("CODEWIRE_RELAY_FLEET"); relayFleet != "" {
+		result.relayNetwork = relayFleet
+	}
+	if relaySession := os.Getenv("CODEWIRE_RELAY_SESSION"); relaySession != "" {
+		result.authToken = relaySession
 	}
 
 	return result, nil

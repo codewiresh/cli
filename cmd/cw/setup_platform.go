@@ -15,7 +15,7 @@ func platformSetupCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Interactive Codewire setup wizard",
-		Long:  "Connect to a Codewire server, sign in, and select your default organization and resource.",
+		Long:  "Connect to a Codewire server, sign in, set your default organization, and review available resources.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Println("Welcome to Codewire!")
 			fmt.Println()
@@ -34,11 +34,7 @@ func platformSetupCmd() *cobra.Command {
 					for _, org := range orgs {
 						if org.ID == existing.DefaultOrg {
 							fmt.Printf("  Org:      %s\n", org.Name)
-							for _, r := range org.Resources {
-								if r.ID == existing.DefaultResource {
-									fmt.Printf("  Resource: %s (%s)\n", r.Name, r.Status)
-								}
-							}
+							break
 						}
 					}
 				}
@@ -95,11 +91,9 @@ func platformSetupCmd() *cobra.Command {
 			}
 			fmt.Println()
 
-			// [4/6] Select or create resource
-			var selectedResourceID string
+			// [4/6] Show resource inventory
 			if selectedOrg.ID != "" {
-				selectedResourceID, err = setupSelectResource(client, &selectedOrg)
-				if err != nil {
+				if err := setupListResources(client, &selectedOrg); err != nil {
 					return err
 				}
 			}
@@ -129,10 +123,9 @@ func platformSetupCmd() *cobra.Command {
 
 			// Save config
 			cfg := &platform.PlatformConfig{
-				ServerURL:       serverURL,
-				SessionToken:    client.SessionToken,
-				DefaultOrg:      selectedOrg.ID,
-				DefaultResource: selectedResourceID,
+				ServerURL:    serverURL,
+				SessionToken: client.SessionToken,
+				DefaultOrg:   selectedOrg.ID,
 			}
 			if err := platform.SaveConfig(cfg); err != nil {
 				return fmt.Errorf("save config: %w", err)
@@ -219,122 +212,31 @@ func setupCreateOrg(client *platform.Client) (platform.OrgWithRole, error) {
 	}, nil
 }
 
-// setupSelectResource handles step 4: selecting or creating a resource.
-func setupSelectResource(client *platform.Client, org *platform.OrgWithRole) (string, error) {
+// setupListResources handles step 4: showing available resources in the selected org.
+func setupListResources(client *platform.Client, org *platform.OrgWithRole) error {
 	// Re-fetch org to get fresh resource list (in case we just created the org)
 	freshOrg, err := client.GetOrg(org.ID)
 	if err == nil {
 		org.Resources = freshOrg.Resources
 	}
 
+	fmt.Printf("[4/6] Resources in %s\n", org.Name)
 	if len(org.Resources) == 0 {
-		return setupCreateResource(client, org)
+		fmt.Println("      No resources found.")
+		fmt.Println("      Manage platform resources in the dashboard. The CLI manages sandbox environments.")
+		return nil
 	}
 
 	resources := org.Resources
-	if len(resources) == 1 {
-		fmt.Printf("[4/6] Resource: %s (%s, %s)\n", resources[0].Name, resources[0].Type, resources[0].Status)
-		return resources[0].ID, nil
-	}
-
-	options := make([]string, len(resources))
-	for i, r := range resources {
-		options[i] = fmt.Sprintf("%-20s %-12s %-10s %s", r.Name, r.Type, r.Status, r.HealthStatus)
-	}
-	idx, err := promptSelect("[4/6] Select resource:", options)
-	if err != nil {
-		return "", err
-	}
-	fmt.Printf("      Default resource: %s\n", resources[idx].Name)
-	return resources[idx].ID, nil
-}
-
-// setupCreateResource prompts the user to create a new resource with billing.
-func setupCreateResource(client *platform.Client, org *platform.OrgWithRole) (string, error) {
-	fmt.Println("[4/6] Resource")
-	ok, err := promptConfirm(fmt.Sprintf("      No resources in %q. Create a Codewire resource? [Y/n]", org.Name))
-	if err != nil {
-		return "", err
-	}
-	if !ok {
-		fmt.Println("      Skipped resource creation.")
-		return "", nil
-	}
-
-	// Fetch and display plans
-	planName, err := setupSelectPlan(client, "coder")
-	if err != nil {
-		return "", err
-	}
-
-	name, err := prompt("      Name: ")
-	if err != nil {
-		return "", err
-	}
-	if name == "" {
-		return "", fmt.Errorf("resource name is required")
-	}
-
-	defaultSlug := slugify(name)
-	slug, err := promptDefault("      Slug", defaultSlug)
-	if err != nil {
-		return "", err
-	}
-
-	result, err := client.CreateResource(&platform.CreateResourceRequest{
-		OrgID: org.ID,
-		Type:  "coder",
-		Name:  name,
-		Slug:  slug,
-		Plan:  planName,
+	sort.Slice(resources, func(i, j int) bool {
+		return resources[i].Name < resources[j].Name
 	})
-	if err != nil {
-		return "", fmt.Errorf("create resource: %w", err)
-	}
-
-	if err := handleCheckoutAndWait(client, result); err != nil {
-		return result.ID, err
-	}
-
-	return result.ID, nil
-}
-
-// setupSelectPlan fetches plans and prompts the user to select one.
-func setupSelectPlan(client *platform.Client, resourceType string) (string, error) {
-	plans, err := client.ListPlans(resourceType)
-	if err != nil {
-		return "", fmt.Errorf("fetch plans: %w", err)
-	}
-
-	// Filter out contact-us plans and sort by price
-	type namedPlan struct {
-		name string
-		plan platform.Plan
-	}
-	var available []namedPlan
-	for name, plan := range plans {
-		if !plan.IsContactUs {
-			available = append(available, namedPlan{name, plan})
+	for _, r := range resources {
+		health := r.HealthStatus
+		if health == "" {
+			health = "-"
 		}
+		fmt.Printf("      - %s (%s, %s, %s)\n", r.Name, r.Type, r.Status, health)
 	}
-	sort.Slice(available, func(i, j int) bool {
-		return available[i].plan.PriceCents < available[j].plan.PriceCents
-	})
-
-	if len(available) == 0 {
-		return "", fmt.Errorf("no plans available for %s", resourceType)
-	}
-
-	fmt.Println()
-	fmt.Println("      Select a plan:")
-	options := make([]string, len(available))
-	for i, np := range available {
-		options[i] = fmt.Sprintf("%-12s $%d/mo", np.plan.DisplayName, np.plan.PriceCents/100)
-	}
-	idx, err := promptSelect("", options)
-	if err != nil {
-		return "", err
-	}
-
-	return available[idx].name, nil
+	return nil
 }

@@ -49,6 +49,8 @@ type RelayConfig struct {
 	OIDCAllowedGroups []string
 }
 
+const defaultFleetID = "default"
+
 // RunRelay starts the relay server. It blocks until ctx is cancelled.
 func RunRelay(ctx context.Context, cfg RelayConfig) error {
 	if cfg.ListenAddr == "" {
@@ -170,9 +172,11 @@ func buildMux(hub *NodeHub, sessions *PendingSessions, st store.Store, cfg Relay
 	mux.HandleFunc("GET /api/v1/auth/config", authConfigHandler(cfg.AuthMode))
 
 	// Node registration (issues a random node token).
+	mux.Handle("GET /api/v1/networks", authMiddleware(http.HandlerFunc(networkListHandler(st))))
+	mux.Handle("POST /api/v1/networks", authMiddleware(http.HandlerFunc(networkCreateHandler(st))))
 	mux.Handle("POST /api/v1/nodes", authMiddleware(http.HandlerFunc(nodeRegisterHandler(st))))
 	mux.Handle("DELETE /api/v1/nodes/{name}", authMiddleware(http.HandlerFunc(nodeRevokeHandler(st))))
-	mux.HandleFunc("GET /api/v1/nodes", nodesListHandler(st))
+	mux.Handle("GET /api/v1/nodes", authMiddleware(http.HandlerFunc(nodesListHandler(st))))
 
 	// Invite management (admin-only).
 	mux.Handle("POST /api/v1/invites", authMiddleware(http.HandlerFunc(inviteCreateHandler(st))))
@@ -184,10 +188,10 @@ func buildMux(hub *NodeHub, sessions *PendingSessions, st store.Store, cfg Relay
 	mux.HandleFunc("GET /join", joinPageHandler(cfg.BaseURL))
 
 	// KV API.
-	mux.HandleFunc("PUT /api/v1/kv/{namespace}/{key}", kvSetHandler(st))
-	mux.HandleFunc("GET /api/v1/kv/{namespace}/{key}", kvGetHandler(st))
-	mux.HandleFunc("DELETE /api/v1/kv/{namespace}/{key}", kvDeleteHandler(st))
-	mux.HandleFunc("GET /api/v1/kv/{namespace}", kvListHandler(st))
+	mux.Handle("PUT /api/v1/kv/{namespace}/{key}", authMiddleware(http.HandlerFunc(kvSetHandler(st))))
+	mux.Handle("GET /api/v1/kv/{namespace}/{key}", authMiddleware(http.HandlerFunc(kvGetHandler(st))))
+	mux.Handle("DELETE /api/v1/kv/{namespace}/{key}", authMiddleware(http.HandlerFunc(kvDeleteHandler(st))))
+	mux.Handle("GET /api/v1/kv/{namespace}", authMiddleware(http.HandlerFunc(kvListHandler(st))))
 
 	// Health check.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -197,17 +201,110 @@ func buildMux(hub *NodeHub, sessions *PendingSessions, st store.Store, cfg Relay
 	return mux
 }
 
+func resolveFleetID(raw string) string {
+	fleetID := strings.TrimSpace(raw)
+	if fleetID == "" {
+		return defaultFleetID
+	}
+	return fleetID
+}
+
+func validateNetworkID(raw string) error {
+	if strings.TrimSpace(raw) == "" {
+		return fmt.Errorf("network id required")
+	}
+	for _, ch := range raw {
+		isLetter := ch >= 'a' && ch <= 'z'
+		isUpper := ch >= 'A' && ch <= 'Z'
+		isDigit := ch >= '0' && ch <= '9'
+		if isLetter || isUpper || isDigit || ch == '-' || ch == '_' {
+			continue
+		}
+		return fmt.Errorf("network id may only contain letters, numbers, '-' or '_'")
+	}
+	return nil
+}
+
+// --- Networks ---
+
+type networkResponse struct {
+	ID          string    `json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	NodeCount   int       `json:"node_count"`
+	InviteCount int       `json:"invite_count"`
+}
+
+func networkListHandler(st store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		networks, err := st.NetworkList(r.Context())
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+
+		resp := make([]networkResponse, 0, len(networks))
+		for _, network := range networks {
+			resp = append(resp, networkResponse{
+				ID:          network.ID,
+				CreatedAt:   network.CreatedAt,
+				NodeCount:   network.NodeCount,
+				InviteCount: network.InviteCount,
+			})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}
+}
+
+func networkCreateHandler(st store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			NetworkID string `json:"network_id"`
+			FleetID   string `json:"fleet_id,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "network_id required", http.StatusBadRequest)
+			return
+		}
+
+		networkID := strings.TrimSpace(req.NetworkID)
+		if networkID == "" {
+			networkID = strings.TrimSpace(req.FleetID)
+		}
+		networkID = resolveFleetID(networkID)
+		if err := validateNetworkID(networkID); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if err := st.NetworkEnsure(r.Context(), networkID); err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":     "created",
+			"network_id": networkID,
+			"fleet_id":   networkID,
+		})
+	}
+}
+
 // --- Node Registration ---
 
 func nodeRegisterHandler(st store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			NodeName string `json:"node_name"`
+			FleetID  string `json:"fleet_id,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NodeName == "" {
 			http.Error(w, "node_name required", http.StatusBadRequest)
 			return
 		}
+		fleetID := resolveFleetID(req.FleetID)
 
 		token := generateToken()
 
@@ -218,6 +315,7 @@ func nodeRegisterHandler(st store.Store) http.HandlerFunc {
 		}
 
 		node := store.NodeRecord{
+			FleetID:      fleetID,
 			Name:         req.NodeName,
 			Token:        token,
 			GitHubID:     githubID,
@@ -234,6 +332,7 @@ func nodeRegisterHandler(st store.Store) http.HandlerFunc {
 			"status":     "registered",
 			"node_token": token,
 			"node_name":  req.NodeName,
+			"fleet_id":   fleetID,
 		})
 	}
 }
@@ -243,14 +342,15 @@ func nodeRegisterHandler(st store.Store) http.HandlerFunc {
 func nodeRevokeHandler(st store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
+		fleetID := resolveFleetID(r.URL.Query().Get("fleet_id"))
 
-		node, err := st.NodeGet(r.Context(), name)
+		node, err := st.NodeGet(r.Context(), fleetID, name)
 		if err != nil || node == nil {
 			http.Error(w, "node not found", http.StatusNotFound)
 			return
 		}
 
-		if err := st.NodeDelete(r.Context(), name); err != nil {
+		if err := st.NodeDelete(r.Context(), fleetID, name); err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
@@ -272,7 +372,9 @@ type nodeResponse struct {
 
 func nodesListHandler(st store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		nodes, err := st.NodeList(r.Context())
+		fleetID := resolveFleetID(r.URL.Query().Get("fleet_id"))
+
+		nodes, err := st.NodeList(r.Context(), fleetID)
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
@@ -295,8 +397,9 @@ func nodesListHandler(st store.Store) http.HandlerFunc {
 // --- Invite Handlers ---
 
 type inviteCreateRequest struct {
-	Uses int    `json:"uses"`
-	TTL  string `json:"ttl"`
+	FleetID string `json:"fleet_id,omitempty"`
+	Uses    int    `json:"uses"`
+	TTL     string `json:"ttl"`
 }
 
 func inviteCreateHandler(st store.Store) http.HandlerFunc {
@@ -307,6 +410,7 @@ func inviteCreateHandler(st store.Store) http.HandlerFunc {
 		if req.Uses <= 0 {
 			req.Uses = 1
 		}
+		fleetID := resolveFleetID(req.FleetID)
 
 		ttl := time.Hour
 		if req.TTL != "" {
@@ -326,6 +430,7 @@ func inviteCreateHandler(st store.Store) http.HandlerFunc {
 
 		now := time.Now().UTC()
 		invite := store.Invite{
+			FleetID:       fleetID,
 			Token:         oauth.GenerateInviteToken(),
 			CreatedBy:     createdBy,
 			UsesRemaining: req.Uses,
@@ -345,7 +450,8 @@ func inviteCreateHandler(st store.Store) http.HandlerFunc {
 
 func inviteListHandler(st store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		invites, err := st.InviteList(r.Context())
+		fleetID := resolveFleetID(r.URL.Query().Get("fleet_id"))
+		invites, err := st.InviteList(r.Context(), fleetID)
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
@@ -358,7 +464,8 @@ func inviteListHandler(st store.Store) http.HandlerFunc {
 func inviteDeleteHandler(st store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := r.PathValue("token")
-		if err := st.InviteDelete(r.Context(), token); err != nil {
+		fleetID := resolveFleetID(r.URL.Query().Get("fleet_id"))
+		if err := st.InviteDelete(r.Context(), fleetID, token); err != nil {
 			http.Error(w, "invite not found", http.StatusNotFound)
 			return
 		}
@@ -396,12 +503,17 @@ func joinHandler(st store.Store) http.HandlerFunc {
 		}
 
 		var githubID *int64
+		fleetID := defaultFleetID
 		if invite != nil && invite.CreatedBy != nil {
 			githubID = invite.CreatedBy
+		}
+		if invite != nil && invite.FleetID != "" {
+			fleetID = invite.FleetID
 		}
 
 		token := generateToken()
 		node := store.NodeRecord{
+			FleetID:      fleetID,
 			Name:         req.NodeName,
 			Token:        token,
 			GitHubID:     githubID,
@@ -419,6 +531,7 @@ func joinHandler(st store.Store) http.HandlerFunc {
 			"status":     "registered",
 			"node_token": token,
 			"node_name":  req.NodeName,
+			"fleet_id":   fleetID,
 		})
 	}
 }
@@ -438,7 +551,7 @@ p{color:#525252;line-height:1.6}
 <p>Use this invite code to register your device:</p>
 <div class="code">%s</div>
 <p>Run on your device:</p>
-<div class="code">cw setup %s --invite %s</div>
+<div class="code">cw relay setup %s %s</div>
 </body></html>`, invite, baseURL, invite)
 	}
 }
@@ -449,6 +562,7 @@ func kvSetHandler(st store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ns := r.PathValue("namespace")
 		key := r.PathValue("key")
+		fleetID := resolveFleetID(r.URL.Query().Get("fleet_id"))
 
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
@@ -466,7 +580,7 @@ func kvSetHandler(st store.Store) http.HandlerFunc {
 			ttl = &d
 		}
 
-		if err := st.KVSet(r.Context(), ns, key, body, ttl); err != nil {
+		if err := st.KVSet(r.Context(), fleetID, ns, key, body, ttl); err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
@@ -478,8 +592,9 @@ func kvGetHandler(st store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ns := r.PathValue("namespace")
 		key := r.PathValue("key")
+		fleetID := resolveFleetID(r.URL.Query().Get("fleet_id"))
 
-		val, err := st.KVGet(r.Context(), ns, key)
+		val, err := st.KVGet(r.Context(), fleetID, ns, key)
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
@@ -497,8 +612,9 @@ func kvDeleteHandler(st store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ns := r.PathValue("namespace")
 		key := r.PathValue("key")
+		fleetID := resolveFleetID(r.URL.Query().Get("fleet_id"))
 
-		if err := st.KVDelete(r.Context(), ns, key); err != nil {
+		if err := st.KVDelete(r.Context(), fleetID, ns, key); err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
@@ -510,8 +626,9 @@ func kvListHandler(st store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ns := r.PathValue("namespace")
 		prefix := r.URL.Query().Get("prefix")
+		fleetID := resolveFleetID(r.URL.Query().Get("fleet_id"))
 
-		entries, err := st.KVList(r.Context(), ns, prefix)
+		entries, err := st.KVList(r.Context(), fleetID, ns, prefix)
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return

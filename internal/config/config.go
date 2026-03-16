@@ -11,19 +11,22 @@ import (
 
 // Config is the top-level configuration loaded from config.toml.
 type Config struct {
-	Node         NodeConfig `toml:"node"`
-	RelayURL     *string    `toml:"relay_url,omitempty"`
-	RelaySession *string    `toml:"relay_session,omitempty"` // OAuth session token
-	RelayToken   *string    `toml:"relay_token,omitempty"`   // node auth token for relay agent
+	Node                 NodeConfig `toml:"node"`
+	RelayURL             *string    `toml:"relay_url,omitempty"`
+	RelayNetwork         *string    `toml:"relay_network,omitempty"`
+	RelaySession         *string    `toml:"relay_session,omitempty"`           // OAuth session token
+	RelayToken           *string    `toml:"relay_token,omitempty"`             // node auth token for relay agent
+	RelayInviteToken     *string    `toml:"relay_invite_token,omitempty"`      // one-time invite token for bootstrap
+	RelayAutoJoinPrivate *bool      `toml:"relay_auto_join_private,omitempty"` // consent for default private-network join
 }
 
 // NodeConfig describes the local node identity and network settings.
 type NodeConfig struct {
-	// Human-readable name for this node (used in fleet discovery).
+	// Human-readable name for this node (used in relay discovery).
 	Name string `toml:"name"`
 	// WebSocket listen address (e.g. "0.0.0.0:9100"). Nil means no listener.
 	Listen *string `toml:"listen,omitempty"`
-	// Externally-accessible WSS URL for fleet discovery
+	// Externally-accessible WSS URL for relay discovery
 	// (e.g. "wss://9100--workspace.coder.codewire.sh/ws").
 	ExternalURL *string `toml:"external_url,omitempty"`
 }
@@ -86,8 +89,16 @@ func LoadConfig(dataDir string) (*Config, error) {
 	}
 
 	if _, err := os.Stat(path); err == nil {
-		if _, err := toml.DecodeFile(path, cfg); err != nil {
+		var raw struct {
+			Config
+			RelayFleet *string `toml:"relay_fleet,omitempty"`
+		}
+		if _, err := toml.DecodeFile(path, &raw); err != nil {
 			return nil, fmt.Errorf("parsing %s: %w", path, err)
+		}
+		*cfg = raw.Config
+		if cfg.RelayNetwork == nil && raw.RelayFleet != nil {
+			cfg.RelayNetwork = raw.RelayFleet
 		}
 		// If the file was parsed but node.name was empty/missing, apply default.
 		if cfg.Node.Name == "" {
@@ -116,10 +127,27 @@ func LoadConfig(dataDir string) (*Config, error) {
 			cfg.RelayURL = &relayURL
 		}
 	}
+	if cfg.RelaySession == nil {
+		if session := os.Getenv("CODEWIRE_RELAY_SESSION"); session != "" {
+			cfg.RelaySession = &session
+		}
+	}
 	// Relay token from env var.
 	if cfg.RelayToken == nil {
 		if t := os.Getenv("CODEWIRE_RELAY_TOKEN"); t != "" {
 			cfg.RelayToken = &t
+		}
+	}
+	if cfg.RelayInviteToken == nil {
+		if invite := os.Getenv("CODEWIRE_RELAY_INVITE_TOKEN"); invite != "" {
+			cfg.RelayInviteToken = &invite
+		}
+	}
+	if cfg.RelayNetwork == nil {
+		if network := os.Getenv("CODEWIRE_RELAY_NETWORK"); network != "" {
+			cfg.RelayNetwork = &network
+		} else if fleet := os.Getenv("CODEWIRE_RELAY_FLEET"); fleet != "" {
+			cfg.RelayNetwork = &fleet
 		}
 	}
 
@@ -128,6 +156,26 @@ func LoadConfig(dataDir string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// SaveConfig writes config.toml inside dataDir, creating the directory if needed.
+func SaveConfig(dataDir string, cfg *Config) error {
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return fmt.Errorf("creating data dir: %w", err)
+	}
+
+	path := filepath.Join(dataDir, "config.toml")
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("creating %s: %w", path, err)
+	}
+	defer f.Close()
+
+	if err := toml.NewEncoder(f).Encode(cfg); err != nil {
+		return fmt.Errorf("encoding %s: %w", path, err)
+	}
+
+	return nil
 }
 
 // LoadServersConfig reads servers.toml from dataDir. If the file does not

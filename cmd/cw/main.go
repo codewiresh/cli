@@ -86,12 +86,7 @@ func main() {
 		// Network & Relay
 		grouped(nodeCmd(), "network"),
 		grouped(relayCmd(), "network"),
-		grouped(relaySetupCmd(), "network"),
-		grouped(qrCmd(), "network"),
-		grouped(nodesCmd(), "network"),
 		grouped(serverCmd(), "network"),
-		grouped(inviteCmd(), "network"),
-		grouped(revokeCmd(), "network"),
 		// Messaging
 		grouped(msgCmd(), "messaging"),
 		grouped(inboxCmd(), "messaging"),
@@ -102,7 +97,6 @@ func main() {
 		grouped(gatewayCmd(), "agent"),
 		grouped(hookCmd(), "agent"),
 		grouped(mcpServerCmd(), "agent"),
-		grouped(kvCmd(), "agent"),
 		// System
 		grouped(completionCmd(rootCmd), "system"),
 		grouped(updateCmd(), "system"),
@@ -637,21 +631,97 @@ The MCP server does NOT auto-start a node.`,
 }
 
 // ---------------------------------------------------------------------------
+// networksCmd — list networks from relay
+// ---------------------------------------------------------------------------
+
+func networksCmd() *cobra.Command {
+	var (
+		relayURL  string
+		authToken string
+	)
+	cmd := &cobra.Command{
+		Use:     "networks",
+		Short:   "List networks on the relay",
+		Aliases: []string{"network"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return client.Networks(dataDir(), client.RelayAuthOptions{
+				RelayURL:  relayURL,
+				AuthToken: authToken,
+			})
+		},
+	}
+	cmd.Flags().StringVar(&relayURL, "relay-url", "", "Relay base URL override (useful for local token-auth relays)")
+	cmd.Flags().StringVar(&authToken, "token", "", "Relay auth token override (session token or token-mode admin token)")
+	return cmd
+}
+
+// ---------------------------------------------------------------------------
+// createNetworkCmd — create a relay network
+// ---------------------------------------------------------------------------
+
+func createNetworkCmd() *cobra.Command {
+	var (
+		relayURL  string
+		authToken string
+		noUse     bool
+	)
+	cmd := &cobra.Command{
+		Use:   "create <name>",
+		Short: "Create a new network on the relay",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return client.CreateNetwork(dataDir(), args[0], client.RelayAuthOptions{
+				RelayURL:  relayURL,
+				AuthToken: authToken,
+			}, !noUse)
+		},
+	}
+	cmd.Flags().StringVar(&relayURL, "relay-url", "", "Relay base URL override (useful for local token-auth relays)")
+	cmd.Flags().StringVar(&authToken, "token", "", "Relay auth token override (session token or token-mode admin token)")
+	cmd.Flags().BoolVar(&noUse, "no-use", false, "Create the network without selecting it locally")
+	return cmd
+}
+
+// ---------------------------------------------------------------------------
+// useNetworkCmd — select the local default relay network
+// ---------------------------------------------------------------------------
+
+func useNetworkCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "use <name>",
+		Short: "Select the default network for this machine",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return client.UseNetwork(dataDir(), args[0])
+		},
+	}
+}
+
+// ---------------------------------------------------------------------------
 // nodesCmd — list nodes from relay
 // ---------------------------------------------------------------------------
 
 func nodesCmd() *cobra.Command {
-	return &cobra.Command{
+	var (
+		networkID string
+		relayURL  string
+		authToken string
+	)
+	cmd := &cobra.Command{
 		Use:   "nodes",
-		Short: "List registered nodes from the relay",
+		Short: "List nodes in the selected network",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			relayURL, err := resolveRelayURL()
-			if err != nil {
-				return err
-			}
-			return client.Nodes(relayURL)
+			return client.Nodes(dataDir(), client.RelayAuthOptions{
+				RelayURL:  relayURL,
+				AuthToken: authToken,
+				NetworkID: networkID,
+			})
 		},
 	}
+	cmd.Flags().StringVar(&networkID, "network", "", "Network to list (default: configured network)")
+	cmd.Flags().StringVar(&relayURL, "relay-url", "", "Relay base URL override (useful for local token-auth relays)")
+	cmd.Flags().StringVar(&authToken, "token", "", "Relay auth token override (session token or token-mode admin token)")
+	return cmd
 }
 
 // ---------------------------------------------------------------------------
@@ -771,148 +841,6 @@ func waitSessionCmd() *cobra.Command {
 	return cmd
 }
 
-// ---------------------------------------------------------------------------
-// kvCmd — key-value store subcommand group
-// ---------------------------------------------------------------------------
-
-func kvCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "kv",
-		Short: "Key-value store for coordination",
-	}
-
-	cmd.AddCommand(
-		kvSetCmd(),
-		kvGetCmd(),
-		kvListCmd(),
-		kvDeleteCmd(),
-	)
-
-	return cmd
-}
-
-func kvSetCmd() *cobra.Command {
-	var (
-		namespace string
-		ttl       string
-	)
-
-	cmd := &cobra.Command{
-		Use:   "set <key> <value>",
-		Short: "Set a key-value pair",
-		Args:  cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			target, err := resolveTarget()
-			if err != nil {
-				return err
-			}
-
-			if target.IsLocal() {
-				if err := ensureNode(); err != nil {
-					return err
-				}
-			}
-
-			return client.KVSet(target, namespace, args[0], args[1], ttl)
-		},
-	}
-
-	cmd.Flags().StringVar(&namespace, "ns", "default", "Namespace")
-	cmd.Flags().StringVar(&ttl, "ttl", "", "Time-to-live (e.g. 60s, 5m)")
-
-	return cmd
-}
-
-func kvGetCmd() *cobra.Command {
-	var namespace string
-
-	cmd := &cobra.Command{
-		Use:   "get <key>",
-		Short: "Get a value by key",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			target, err := resolveTarget()
-			if err != nil {
-				return err
-			}
-
-			if target.IsLocal() {
-				if err := ensureNode(); err != nil {
-					return err
-				}
-			}
-
-			return client.KVGet(target, namespace, args[0])
-		},
-	}
-
-	cmd.Flags().StringVar(&namespace, "ns", "default", "Namespace")
-
-	return cmd
-}
-
-func kvListCmd() *cobra.Command {
-	var namespace string
-
-	cmd := &cobra.Command{
-		Use:   "list [prefix]",
-		Short: "List keys",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			target, err := resolveTarget()
-			if err != nil {
-				return err
-			}
-
-			if target.IsLocal() {
-				if err := ensureNode(); err != nil {
-					return err
-				}
-			}
-
-			prefix := ""
-			if len(args) > 0 {
-				prefix = args[0]
-			}
-
-			return client.KVList(target, namespace, prefix)
-		},
-	}
-
-	cmd.Flags().StringVar(&namespace, "ns", "default", "Namespace")
-
-	return cmd
-}
-
-func kvDeleteCmd() *cobra.Command {
-	var namespace string
-
-	cmd := &cobra.Command{
-		Use:   "delete <key>",
-		Short: "Delete a key",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			target, err := resolveTarget()
-			if err != nil {
-				return err
-			}
-
-			if target.IsLocal() {
-				if err := ensureNode(); err != nil {
-					return err
-				}
-			}
-
-			return client.KVDelete(target, namespace, args[0])
-		},
-	}
-
-	cmd.Flags().StringVar(&namespace, "ns", "default", "Namespace")
-
-	return cmd
-}
-
-// ---------------------------------------------------------------------------
 // serverCmd — subcommand group
 // ---------------------------------------------------------------------------
 
@@ -1028,13 +956,14 @@ func serverListCmd() *cobra.Command {
 func relaySetupCmd() *cobra.Command {
 	var (
 		authToken string
+		networkID string
 		qr        bool
 	)
 
 	cmd := &cobra.Command{
-		Use:   "relay-setup <relay-url> [token]",
-		Short: "Connect this node to a relay",
-		Long:  "Connect this node to a relay. With no token, uses OIDC device flow if the relay supports it.",
+		Use:   "setup <relay-url> [token]",
+		Short: "Connect this node to a relay network",
+		Long:  "Connect this node to a relay network. With no token, uses OIDC device flow if the relay supports it.",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			relayURL := args[0]
@@ -1061,6 +990,7 @@ func relaySetupCmd() *cobra.Command {
 			return relay.RunSetup(ctx, relay.SetupOptions{
 				RelayURL:  relayURL,
 				DataDir:   dir,
+				NetworkID: networkID,
 				Token:     token,
 				AuthToken: authToken,
 				ShowQR:    qr,
@@ -1069,6 +999,7 @@ func relaySetupCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&authToken, "token", "", "Admin auth token (for headless/CI use)")
+	cmd.Flags().StringVar(&networkID, "network", "", "Network to join or manage (default: relay default network)")
 	cmd.Flags().BoolVar(&qr, "qr", false, "Print QR code with SSH connection URI (for Termius iOS)")
 
 	return cmd
@@ -1095,10 +1026,10 @@ func qrCmd() *cobra.Command {
 }
 
 // ---------------------------------------------------------------------------
-// relayCmd
+// relayServeCmd
 // ---------------------------------------------------------------------------
 
-func relayCmd() *cobra.Command {
+func relayServeCmd() *cobra.Command {
 	var (
 		baseURL            string
 		listen             string
@@ -1116,7 +1047,7 @@ func relayCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "relay",
+		Use:   "serve",
 		Short: "Run a CodeWire relay server",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if baseURL == "" {
@@ -1181,26 +1112,61 @@ func relayCmd() *cobra.Command {
 }
 
 // ---------------------------------------------------------------------------
+// relayCmd
+// ---------------------------------------------------------------------------
+
+func relayCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "relay",
+		Short: "Hosted and self-hosted remote access",
+	}
+
+	cmd.AddCommand(
+		relayServeCmd(),
+		networksCmd(),
+		createNetworkCmd(),
+		useNetworkCmd(),
+		relaySetupCmd(),
+		qrCmd(),
+		nodesCmd(),
+		inviteCmd(),
+		revokeCmd(),
+	)
+
+	return cmd
+}
+
+// ---------------------------------------------------------------------------
 // inviteCmd — create an invite code for device onboarding
 // ---------------------------------------------------------------------------
 
 func inviteCmd() *cobra.Command {
 	var (
-		uses int
-		ttl  string
-		qr   bool
+		uses      int
+		ttl       string
+		qr        bool
+		networkID string
+		relayURL  string
+		authToken string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "invite",
-		Short: "Create an invite code for device onboarding",
+		Short: "Create an invite for the selected network",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return client.Invite(dataDir(), uses, ttl, qr)
+			return client.Invite(dataDir(), client.RelayAuthOptions{
+				RelayURL:  relayURL,
+				AuthToken: authToken,
+				NetworkID: networkID,
+			}, uses, ttl, qr)
 		},
 	}
 
 	cmd.Flags().IntVar(&uses, "uses", 1, "Number of times the invite can be used")
 	cmd.Flags().StringVar(&ttl, "ttl", "1h", "Time-to-live for the invite (e.g. 5m, 1h, 24h)")
+	cmd.Flags().StringVar(&networkID, "network", "", "Network to create the invite in (default: configured network)")
+	cmd.Flags().StringVar(&relayURL, "relay-url", "", "Relay base URL override (useful for local token-auth relays)")
+	cmd.Flags().StringVar(&authToken, "token", "", "Relay auth token override (session token or token-mode admin token)")
 	cmd.Flags().BoolVar(&qr, "qr", false, "Print QR code for the invite URL")
 
 	return cmd
@@ -1211,14 +1177,27 @@ func inviteCmd() *cobra.Command {
 // ---------------------------------------------------------------------------
 
 func revokeCmd() *cobra.Command {
-	return &cobra.Command{
+	var (
+		networkID string
+		relayURL  string
+		authToken string
+	)
+	cmd := &cobra.Command{
 		Use:   "revoke <node-name>",
-		Short: "Revoke a node's relay access",
+		Short: "Revoke a node from the selected network",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return client.Revoke(dataDir(), args[0])
+			return client.Revoke(dataDir(), args[0], client.RelayAuthOptions{
+				RelayURL:  relayURL,
+				AuthToken: authToken,
+				NetworkID: networkID,
+			})
 		},
 	}
+	cmd.Flags().StringVar(&networkID, "network", "", "Network for the target node (default: configured network)")
+	cmd.Flags().StringVar(&relayURL, "relay-url", "", "Relay base URL override (useful for local token-auth relays)")
+	cmd.Flags().StringVar(&authToken, "token", "", "Relay auth token override (session token or token-mode admin token)")
+	return cmd
 }
 
 // ---------------------------------------------------------------------------
@@ -1891,7 +1870,7 @@ func resolveRelayURL() (string, error) {
 		return "", fmt.Errorf("loading config: %w", err)
 	}
 	if cfg.RelayURL == nil || *cfg.RelayURL == "" {
-		return "", fmt.Errorf("relay not configured (run 'cw setup <relay-url>' or set CODEWIRE_RELAY_URL)")
+		return "", fmt.Errorf("relay not configured (run 'cw relay setup <relay-url> [token]' or set CODEWIRE_RELAY_URL)")
 	}
 	return *cfg.RelayURL, nil
 }

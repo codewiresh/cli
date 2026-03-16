@@ -118,5 +118,5 @@ resource "coder_app" "codewire" {
   agent_id     = var.agent_id
   icon         = var.icon
   order        = var.order
-  command      = "cw launch --dir ${var.folder} -- bash"
+  command      = "cw run --dir ${var.folder} -- bash"
 }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codewire Development"
+  short_description: "Work on the current Codewire codebase"
+  default_prompt: "Use $codewire-dev to implement or debug the current Codewire CLI and backend codebase."

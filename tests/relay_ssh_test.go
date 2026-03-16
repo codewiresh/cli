@@ -20,7 +20,7 @@ func TestSSHConnectAndShell(t *testing.T) {
 
 	// Setup store with a node.
 	st, _ := store.NewSQLiteStore(t.TempDir())
-	_ = st.NodeRegister(ctx, store.NodeRecord{Name: "n1", Token: "tok1", AuthorizedAt: time.Now(), LastSeenAt: time.Now()})
+	_ = st.NodeRegister(ctx, store.NodeRecord{FleetID: "default", Name: "n1", Token: "tok1", AuthorizedAt: time.Now(), LastSeenAt: time.Now()})
 
 	hub := localrelay.NewNodeHub()
 	sessions := localrelay.NewPendingSessions()
@@ -36,7 +36,7 @@ func TestSSHConnectAndShell(t *testing.T) {
 	// Simulate a node back-connecting (echo server).
 	// When hub receives SSHRequest for n1, the node dials back.
 	msgCh := make(chan localrelay.HubMessage, 4)
-	hub.Register("n1", msgCh)
+	hub.Register("default", "n1", msgCh)
 	go func() {
 		for msg := range msgCh {
 			if msg.Type == "SSHRequest" {

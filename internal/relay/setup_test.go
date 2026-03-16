@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -103,7 +106,7 @@ func TestRegisterWithDeviceFlow(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	nodeToken, err := registerWithDeviceFlow(context.Background(), srv.URL, "test-node")
+	nodeToken, err := registerWithDeviceFlow(context.Background(), srv.URL, "network-test", "test-node")
 	if err != nil {
 		t.Fatalf("registerWithDeviceFlow: %v", err)
 	}
@@ -135,8 +138,38 @@ func TestRegisterWithDeviceFlow_Expired(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := registerWithDeviceFlow(context.Background(), srv.URL, "test-node")
+	_, err := registerWithDeviceFlow(context.Background(), srv.URL, "network-test", "test-node")
 	if err == nil {
 		t.Fatal("expected error for expired device code, got nil")
+	}
+}
+
+func TestWriteRelayConfigPersistsNetwork(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeRelayConfig(dir, "https://relay.example.com", "network-alpha", "node-token"); err != nil {
+		t.Fatalf("writeRelayConfig: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "config.toml"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, `relay_url = "https://relay.example.com"`) {
+		t.Fatalf("config missing relay_url: %s", content)
+	}
+	if !strings.Contains(content, `relay_network = "network-alpha"`) {
+		t.Fatalf("config missing relay_network: %s", content)
+	}
+	if !strings.Contains(content, `relay_token = "node-token"`) {
+		t.Fatalf("config missing relay_token: %s", content)
+	}
+}
+
+func TestSSHURIIncludesNetworkPrefix(t *testing.T) {
+	got := SSHURI("https://relay.example.com", "network-alpha", "builder", "node-token", 2222)
+	want := "ssh://network-alpha/builder:node-token@relay.example.com:2222"
+	if got != want {
+		t.Fatalf("SSHURI = %q, want %q", got, want)
 	}
 }

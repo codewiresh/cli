@@ -24,13 +24,34 @@ type Client struct {
 
 // NewClient creates a client from a saved config.
 func NewClient() (*Client, error) {
-	cfg, err := LoadConfig()
-	if err != nil {
-		return nil, fmt.Errorf("not logged in (run 'cw setup' or 'cw login'): %w", err)
+	serverURL := strings.TrimSpace(os.Getenv("CODEWIRE_SERVER_URL"))
+	token := strings.TrimSpace(os.Getenv("CODEWIRE_API_KEY"))
+
+	cfg, cfgErr := LoadConfig()
+	if cfgErr == nil {
+		if serverURL == "" {
+			serverURL = cfg.ServerURL
+		}
+		if token == "" {
+			token = cfg.SessionToken
+		}
+	}
+
+	if serverURL == "" {
+		if cfgErr != nil {
+			return nil, fmt.Errorf("no server configured (set CODEWIRE_SERVER_URL, run 'cw setup', or run 'cw login'): %w", cfgErr)
+		}
+		return nil, fmt.Errorf("no server configured (set CODEWIRE_SERVER_URL, run 'cw setup', or run 'cw login')")
+	}
+	if token == "" {
+		if cfgErr != nil {
+			return nil, fmt.Errorf("not logged in (set CODEWIRE_API_KEY, run 'cw setup', or run 'cw login'): %w", cfgErr)
+		}
+		return nil, fmt.Errorf("not logged in (set CODEWIRE_API_KEY, run 'cw setup', or run 'cw login')")
 	}
 	return &Client{
-		ServerURL:    cfg.ServerURL,
-		SessionToken: cfg.SessionToken,
+		ServerURL:    strings.TrimRight(serverURL, "/"),
+		SessionToken: token,
 		HTTP:         &http.Client{Timeout: 30 * time.Second},
 	}, nil
 }
@@ -331,4 +352,3 @@ func HasConfig() bool {
 	_, err := os.Stat(configPath())
 	return err == nil
 }
-

@@ -19,7 +19,7 @@ func TestNodeConnect(t *testing.T) {
 	st, _ := store.NewSQLiteStore(t.TempDir())
 	defer st.Close()
 	ctx := context.Background()
-	_ = st.NodeRegister(ctx, store.NodeRecord{Name: "n1", Token: "tok1", AuthorizedAt: time.Now(), LastSeenAt: time.Now()})
+	_ = st.NodeRegister(ctx, store.NodeRecord{FleetID: "default", Name: "n1", Token: "tok1", AuthorizedAt: time.Now(), LastSeenAt: time.Now()})
 
 	hub := relay.NewNodeHub()
 	mux := http.NewServeMux()
@@ -39,16 +39,16 @@ func TestNodeConnect(t *testing.T) {
 
 	// Poll briefly — handler goroutine registers asynchronously.
 	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) && !hub.Has("n1") {
+	for time.Now().Before(deadline) && !hub.Has("default", "n1") {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if !hub.Has("n1") {
+	if !hub.Has("default", "n1") {
 		t.Fatal("expected n1 in hub")
 	}
 
 	conn.Close(websocket.StatusNormalClosure, "")
 	time.Sleep(100 * time.Millisecond)
-	if hub.Has("n1") {
+	if hub.Has("default", "n1") {
 		t.Fatal("expected n1 removed from hub after disconnect")
 	}
 }
@@ -57,7 +57,7 @@ func TestBackConnect(t *testing.T) {
 	st, _ := store.NewSQLiteStore(t.TempDir())
 	defer st.Close()
 	ctx := context.Background()
-	_ = st.NodeRegister(ctx, store.NodeRecord{Name: "n1", Token: "tok1", AuthorizedAt: time.Now(), LastSeenAt: time.Now()})
+	_ = st.NodeRegister(ctx, store.NodeRecord{FleetID: "default", Name: "n1", Token: "tok1", AuthorizedAt: time.Now(), LastSeenAt: time.Now()})
 
 	sessions := relay.NewPendingSessions()
 	mux := http.NewServeMux()

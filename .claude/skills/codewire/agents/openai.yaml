@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codewire CLI"
+  short_description: "Use the current Codewire CLI correctly"
+  default_prompt: "Use $codewire to help with current cw commands, session orchestration, or environment operations."

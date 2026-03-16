@@ -71,6 +71,3 @@ affinity: {}
 
 monitoring:
   enabled: false
-  serviceMonitor:
-    interval: 30s
-    labels: {}

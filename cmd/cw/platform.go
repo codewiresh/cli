@@ -56,7 +56,6 @@ func loginCmd() *cobra.Command {
 			// Preserve existing defaults if re-logging in
 			if existing, err := platform.LoadConfig(); err == nil {
 				cfg.DefaultOrg = existing.DefaultOrg
-				cfg.DefaultResource = existing.DefaultResource
 			}
 			if err := platform.SaveConfig(cfg); err != nil {
 				return fmt.Errorf("save config: %w", err)
@@ -230,9 +229,6 @@ func whoamiCmd() *cobra.Command {
 			if cfg != nil && cfg.DefaultOrg != "" {
 				fmt.Printf("%-10s %s\n", bold("Org:"), cfg.DefaultOrg)
 			}
-			if cfg != nil && cfg.DefaultResource != "" {
-				fmt.Printf("%-10s %s\n", bold("Resource:"), cfg.DefaultResource)
-			}
 			return nil
 		},
 	}
@@ -400,40 +396,38 @@ func orgSetCmd() *cobra.Command {
 				return err
 			}
 
-			resourceCleared := cfg.DefaultOrg != "" && cfg.DefaultOrg != selected.ID && cfg.DefaultResource != ""
 			cfg.DefaultOrg = selected.ID
-			if resourceCleared {
-				cfg.DefaultResource = ""
-			}
 
 			if err := platform.SaveConfig(cfg); err != nil {
 				return fmt.Errorf("save config: %w", err)
 			}
 
 			successMsg("Current org set to %s (%s).", selected.Name, selected.Slug)
-			if resourceCleared {
-				fmt.Println("Cleared the default resource because it belonged to a different org.")
-			}
 			return nil
 		},
 	}
 }
 
 func resourcesCmd() *cobra.Command {
+	listCmd := resourcesListCmd()
 	cmd := &cobra.Command{
 		Use:   "resources",
-		Short: "Manage resources",
+		Short: "List platform resources",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return listCmd.RunE(listCmd, nil)
+		},
 	}
-	cmd.AddCommand(resourcesListCmd(), resourcesGetCmd(), resourcesCreateCmd(), resourcesDeleteCmd(), resourceStatusCmd())
+	cmd.AddCommand(listCmd)
 	return cmd
 }
 
 func resourcesListCmd() *cobra.Command {
 	var jsonOutput bool
+	var orgFlag string
 
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List all resources",
+		Short: "List resources",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := platform.NewClient()
 			if err != nil {
@@ -443,6 +437,31 @@ func resourcesListCmd() *cobra.Command {
 			resources, err := client.ListResources()
 			if err != nil {
 				return fmt.Errorf("list resources: %w", err)
+			}
+
+			orgLabels := map[string]string{}
+			if orgs, err := client.ListOrgs(); err == nil {
+				for _, org := range orgs {
+					label := org.Slug
+					if label == "" {
+						label = org.Name
+					}
+					orgLabels[org.ID] = label
+				}
+			}
+
+			if orgFlag != "" {
+				orgID, err := resolveOrgID(client, orgFlag)
+				if err != nil {
+					return err
+				}
+				filtered := resources[:0]
+				for _, r := range resources {
+					if r.OrgID == orgID {
+						filtered = append(filtered, r)
+					}
+				}
+				resources = filtered
 			}
 
 			if jsonOutput {
@@ -456,21 +475,21 @@ func resourcesListCmd() *cobra.Command {
 				return nil
 			}
 
-			cfg, _ := platform.LoadConfig()
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			tableHeader(w, "NAME", "SLUG", "TYPE", "STATUS", "HEALTH")
+			tableHeader(w, "ORG", "NAME", "SLUG", "TYPE", "STATUS", "HEALTH")
 			for _, r := range resources {
-				marker := ""
-				if cfg != nil && cfg.DefaultResource == r.ID {
-					marker = " *"
+				orgLabel := orgLabels[r.OrgID]
+				if orgLabel == "" {
+					orgLabel = r.OrgID
 				}
-				fmt.Fprintf(w, "%s%s\t%s\t%s\t%s\t%s\n", r.Name, marker, r.Slug, r.Type, stateColor(r.Status), stateColor(r.HealthStatus))
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", orgLabel, r.Name, r.Slug, r.Type, stateColor(r.Status), stateColor(r.HealthStatus))
 			}
 			return w.Flush()
 		},
 	}
 
 	cmd.Flags().BoolVarP(&jsonOutput, "json", "j", false, "Output as JSON")
+	cmd.Flags().StringVar(&orgFlag, "org", "", "Organization ID or slug")
 	return cmd
 }
 

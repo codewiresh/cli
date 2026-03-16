@@ -50,3 +50,37 @@ func TestOrgCommandShape(t *testing.T) {
 
 	t.Fatal("expected org command to include a set subcommand")
 }
+
+func TestResourcesCommandShape(t *testing.T) {
+	cmd := resourcesCmd()
+	if cmd.RunE == nil {
+		t.Fatal("expected bare resources command to have a default action")
+	}
+
+	subcommands := map[string]bool{}
+	for _, sub := range cmd.Commands() {
+		subcommands[sub.Name()] = true
+	}
+
+	if !subcommands["list"] {
+		t.Fatal("expected resources command to include list")
+	}
+	if subcommands["create"] || subcommands["delete"] || subcommands["get"] || subcommands["status"] {
+		t.Fatalf("expected resources command to stay read-only, got subcommands: %#v", subcommands)
+	}
+}
+
+func TestRelayCommandShape(t *testing.T) {
+	cmd := relayCmd()
+
+	subcommands := map[string]bool{}
+	for _, sub := range cmd.Commands() {
+		subcommands[sub.Name()] = true
+	}
+
+	for _, required := range []string{"serve", "networks", "create", "use", "setup", "nodes", "invite", "revoke", "qr"} {
+		if !subcommands[required] {
+			t.Fatalf("expected relay command to include %q, got %#v", required, subcommands)
+		}
+	}
+}

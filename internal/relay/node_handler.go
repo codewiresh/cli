@@ -42,10 +42,10 @@ func RegisterNodeConnectHandler(mux *http.ServeMux, hub *NodeHub, st store.Store
 
 		// Register in hub — messages from SSH handler flow here.
 		msgCh := make(chan HubMessage, 16)
-		hub.Register(node.Name, msgCh)
-		defer hub.Unregister(node.Name)
+		hub.Register(node.FleetID, node.Name, msgCh)
+		defer hub.Unregister(node.FleetID, node.Name)
 
-		_ = st.NodeUpdateLastSeen(r.Context(), node.Name)
+		_ = st.NodeUpdateLastSeen(r.Context(), node.FleetID, node.Name)
 
 		ctx := r.Context()
 

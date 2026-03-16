@@ -91,12 +91,27 @@ func (n *Node) Run(ctx context.Context) error {
 	}
 
 	// Start relay agent if relay URL and token are configured.
-	if n.config.RelayURL != nil && n.config.RelayToken != nil {
-		go relay.RunAgent(ctx, relay.AgentConfig{
-			RelayURL:  *n.config.RelayURL,
-			NodeName:  n.config.Node.Name,
-			NodeToken: *n.config.RelayToken,
-		})
+	if n.config.RelayURL != nil {
+		if (n.config.RelayToken == nil || *n.config.RelayToken == "") && n.config.RelayInviteToken != nil && *n.config.RelayInviteToken != "" {
+			nodeToken, err := relay.RegisterWithInvite(ctx, *n.config.RelayURL, n.config.Node.Name, *n.config.RelayInviteToken)
+			if err != nil {
+				slog.Error("relay invite bootstrap failed", "err", err)
+			} else {
+				n.config.RelayToken = &nodeToken
+				n.config.RelayInviteToken = nil
+				if err := config.SaveConfig(n.dataDir, n.config); err != nil {
+					slog.Error("saving relay bootstrap config failed", "err", err)
+				}
+			}
+		}
+
+		if n.config.RelayToken != nil && *n.config.RelayToken != "" {
+			go relay.RunAgent(ctx, relay.AgentConfig{
+				RelayURL:  *n.config.RelayURL,
+				NodeName:  n.config.Node.Name,
+				NodeToken: *n.config.RelayToken,
+			})
+		}
 	}
 
 	// Start periodic status refresh (every 5 seconds).

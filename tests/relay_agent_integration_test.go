@@ -18,7 +18,7 @@ func TestAgentConnectsToHub(t *testing.T) {
 	defer cancel()
 
 	st, _ := store.NewSQLiteStore(t.TempDir())
-	_ = st.NodeRegister(ctx, store.NodeRecord{Name: "n1", Token: "tok1", AuthorizedAt: time.Now(), LastSeenAt: time.Now()})
+	_ = st.NodeRegister(ctx, store.NodeRecord{FleetID: "default", Name: "n1", Token: "tok1", AuthorizedAt: time.Now(), LastSeenAt: time.Now()})
 
 	hub := localrelay.NewNodeHub()
 	sessions := localrelay.NewPendingSessions()
@@ -39,12 +39,12 @@ func TestAgentConnectsToHub(t *testing.T) {
 	// Wait for agent to connect.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if hub.Has("n1") {
+		if hub.Has("default", "n1") {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if !hub.Has("n1") {
+	if !hub.Has("default", "n1") {
 		t.Fatal("agent did not connect to hub")
 	}
 }

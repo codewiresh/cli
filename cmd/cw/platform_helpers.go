@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 
@@ -62,14 +63,25 @@ func slugify(name string) string {
 // If orgFlag is a slug, it looks up the ID via ListOrgs.
 func resolveOrgID(pc *platform.Client, orgFlag string) (string, error) {
 	if orgFlag == "" {
-		cfg, err := platform.LoadConfig()
+		if strings.TrimSpace(os.Getenv("CODEWIRE_API_KEY")) == "" {
+			cfg, err := platform.LoadConfig()
+			if err == nil && cfg.DefaultOrg != "" {
+				return cfg.DefaultOrg, nil
+			}
+		}
+
+		orgs, err := pc.ListOrgs()
 		if err != nil {
+			return "", fmt.Errorf("list orgs: %w", err)
+		}
+		switch len(orgs) {
+		case 0:
+			return "", fmt.Errorf("no organizations found")
+		case 1:
+			return orgs[0].ID, nil
+		default:
 			return "", fmt.Errorf("no org specified (pass --org, run 'cw org set <org>', or run 'cw setup')")
 		}
-		if cfg.DefaultOrg == "" {
-			return "", fmt.Errorf("no default org configured (pass --org, run 'cw org set <org>', or run 'cw setup')")
-		}
-		return cfg.DefaultOrg, nil
 	}
 
 	// Could be an ID (UUID) or slug — try listing orgs to resolve
