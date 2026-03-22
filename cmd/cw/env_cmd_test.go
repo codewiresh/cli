@@ -1,6 +1,8 @@
 package main
 
 import (
+	"io"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -22,18 +24,20 @@ func TestShortEnvID(t *testing.T) {
 
 func TestFilterEnvCompletionsIncludesNamesShortIDsAndUUIDs(t *testing.T) {
 	alpha := "alpha"
+	created1 := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
+	created2 := time.Now().UTC().Add(-3 * time.Hour).Format(time.RFC3339)
 	envs := []platform.Environment{
-		{ID: "12345678-1234-1234-1234-123456789abc", Name: &alpha},
-		{ID: "87654321-1234-1234-1234-123456789abc"},
+		{ID: "12345678-1234-1234-1234-123456789abc", Name: &alpha, CreatedAt: created1},
+		{ID: "87654321-1234-1234-1234-123456789abc", CreatedAt: created2},
 	}
 
 	got := filterEnvCompletions(envs, "")
 	want := []string{
-		"alpha",
-		"12345678",
-		"12345678-1234-1234-1234-123456789abc",
-		"87654321",
-		"87654321-1234-1234-1234-123456789abc",
+		"alpha\t12345678-1234-1234-1234-123456789abc " + timeAgo(created1),
+		"12345678\t12345678-1234-1234-1234-123456789abc alpha " + timeAgo(created1),
+		"12345678-1234-1234-1234-123456789abc\talpha " + timeAgo(created1),
+		"87654321\t87654321-1234-1234-1234-123456789abc " + timeAgo(created2),
+		"87654321-1234-1234-1234-123456789abc\t" + timeAgo(created2),
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected completions:\nwant %#v\ngot  %#v", want, got)
@@ -42,14 +46,15 @@ func TestFilterEnvCompletionsIncludesNamesShortIDsAndUUIDs(t *testing.T) {
 
 func TestFilterEnvCompletionsMatchesShortIDPrefix(t *testing.T) {
 	alpha := "alpha"
+	created := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
 	envs := []platform.Environment{
-		{ID: "12345678-1234-1234-1234-123456789abc", Name: &alpha},
+		{ID: "12345678-1234-1234-1234-123456789abc", Name: &alpha, CreatedAt: created},
 	}
 
 	got := filterEnvCompletions(envs, "1234")
 	want := []string{
-		"12345678",
-		"12345678-1234-1234-1234-123456789abc",
+		"12345678\t12345678-1234-1234-1234-123456789abc alpha " + timeAgo(created),
+		"12345678-1234-1234-1234-123456789abc\talpha " + timeAgo(created),
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected completions for short ID prefix:\nwant %#v\ngot  %#v", want, got)
@@ -116,11 +121,13 @@ func TestEnvCreateDefaultsToWaiting(t *testing.T) {
 
 func TestSSHCmdCompletionUsesEnvironmentRefs(t *testing.T) {
 	alpha := "alpha"
+	created1 := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
+	created2 := time.Now().UTC().Add(-3 * time.Hour).Format(time.RFC3339)
 	orig := listEnvironmentsForCompletion
 	listEnvironmentsForCompletion = func(cmd *cobra.Command) ([]platform.Environment, error) {
 		return []platform.Environment{
-			{ID: "f062947a-60e2-405c-b89d-5f48b493d8fb", Name: &alpha},
-			{ID: "f8396bb0-18b4-42a0-8151-2dd2b41cd41f"},
+			{ID: "f062947a-60e2-405c-b89d-5f48b493d8fb", Name: &alpha, CreatedAt: created1},
+			{ID: "f8396bb0-18b4-42a0-8151-2dd2b41cd41f", CreatedAt: created2},
 		}, nil
 	}
 	defer func() { listEnvironmentsForCompletion = orig }()
@@ -128,16 +135,55 @@ func TestSSHCmdCompletionUsesEnvironmentRefs(t *testing.T) {
 	cmd := sshCmd()
 	got, directive := cmd.ValidArgsFunction(cmd, nil, "f")
 	want := []string{
-		"f062947a",
-		"f062947a-60e2-405c-b89d-5f48b493d8fb",
-		"f8396bb0",
-		"f8396bb0-18b4-42a0-8151-2dd2b41cd41f",
+		"f062947a\tf062947a-60e2-405c-b89d-5f48b493d8fb alpha " + timeAgo(created1),
+		"f062947a-60e2-405c-b89d-5f48b493d8fb\talpha " + timeAgo(created1),
+		"f8396bb0\tf8396bb0-18b4-42a0-8151-2dd2b41cd41f " + timeAgo(created2),
+		"f8396bb0-18b4-42a0-8151-2dd2b41cd41f\t" + timeAgo(created2),
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected ssh completions:\nwant %#v\ngot  %#v", want, got)
 	}
 	if directive != cobra.ShellCompDirectiveNoFileComp {
 		t.Fatalf("expected no-file completion directive, got %v", directive)
+	}
+}
+
+func TestPrintEnvListEntriesUsesUnifiedBlockLayout(t *testing.T) {
+	alpha := "alpha"
+	envs := []platform.Environment{
+		{
+			ID:            "12345678-1234-1234-1234-123456789abc",
+			Name:          &alpha,
+			State:         "running",
+			Type:          "sandbox",
+			CPUMillicores: 2000,
+			MemoryMB:      4096,
+			CreatedAt:     time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339),
+		},
+	}
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = oldStdout }()
+
+	printEnvListEntries(envs)
+
+	_ = w.Close()
+	output, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+
+	got := string(output)
+	if !strings.Contains(got, "alpha (12345678-1234-1234-1234-123456789abc)") {
+		t.Fatalf("expected unified header, got %q", got)
+	}
+	if !strings.Contains(got, "state: running  type: sandbox  size: 2000m/4096MB  ttl: --  ssh: 12345678  created:") {
+		t.Fatalf("expected unified detail line, got %q", got)
 	}
 }
 

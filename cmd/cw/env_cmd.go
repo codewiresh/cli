@@ -12,7 +12,6 @@ import (
 	cwclient "github.com/codewiresh/codewire/internal/client"
 	cwconfig "github.com/codewiresh/codewire/internal/config"
 	"github.com/codewiresh/codewire/internal/platform"
-	"github.com/codewiresh/codewire/internal/terminal"
 )
 
 // loadCodewireYAML is a convenience wrapper around config.LoadCodewireConfig.
@@ -122,15 +121,18 @@ func envDisplayRefs(env platform.Environment) []string {
 	return refs
 }
 
-func envListUsesCompactLayout() bool {
-	if !stdoutColor {
-		return false
+func envCompletionDescription(env platform.Environment, ref string) string {
+	var parts []string
+	if ref != env.ID {
+		parts = append(parts, env.ID)
 	}
-	cols, _, err := terminal.TerminalSize()
-	if err != nil {
-		return false
+	if env.Name != nil && *env.Name != "" && ref != *env.Name {
+		parts = append(parts, *env.Name)
 	}
-	return cols < 120
+	if env.CreatedAt != "" {
+		parts = append(parts, timeAgo(env.CreatedAt))
+	}
+	return strings.Join(parts, " ")
 }
 
 func envSSHRef(env platform.Environment) string {
@@ -155,16 +157,16 @@ func envTTLString(env platform.Environment) string {
 	return "expired"
 }
 
-func printCompactEnvList(envs []platform.Environment) {
+func printEnvListEntries(envs []platform.Environment) {
 	for i, e := range envs {
-		envName := "--"
-		if e.Name != nil {
-			envName = bold(*e.Name)
+		envName := e.ID
+		if e.Name != nil && strings.TrimSpace(*e.Name) != "" {
+			envName = *e.Name
 		}
 
-		fmt.Printf("%s  %s\n", dim(shortEnvID(e.ID)), envName)
-		fmt.Printf("  %s  %s  %s\n", stateColor(e.State), e.Type, timeAgo(e.CreatedAt))
-		fmt.Printf("  %dm/%dMB  ttl %s  ssh %s\n", e.CPUMillicores, e.MemoryMB, envTTLString(e), envSSHRef(e))
+		fmt.Printf("%s (%s)\n", bold(envName), dim(e.ID))
+		fmt.Printf("  state: %s  type: %s  size: %dm/%dMB  ttl: %s  ssh: %s  created: %s\n",
+			stateColor(e.State), e.Type, e.CPUMillicores, e.MemoryMB, envTTLString(e), envSSHRef(e), timeAgo(e.CreatedAt))
 		if i < len(envs)-1 {
 			fmt.Println()
 		}
@@ -185,6 +187,11 @@ func filterEnvCompletions(envs []platform.Environment, toComplete string) []stri
 				continue
 			}
 			seen[ref] = true
+			description := envCompletionDescription(env, ref)
+			if description != "" {
+				completions = append(completions, ref+"\t"+description)
+				continue
+			}
 			completions = append(completions, ref)
 		}
 	}
@@ -821,25 +828,8 @@ func envListCmd() *cobra.Command {
 				return nil
 			}
 
-			if envListUsesCompactLayout() {
-				printCompactEnvList(envs)
-				return nil
-			}
-
-			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			tableHeader(w, "ID", "NAME", "STATE", "TYPE", "CPU/MEM", "TTL", "SSH", "CREATED")
-			for _, e := range envs {
-				envName := "--"
-				if e.Name != nil {
-					envName = bold(*e.Name)
-				}
-
-				cpuMem := fmt.Sprintf("%dm/%dMB", e.CPUMillicores, e.MemoryMB)
-
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-					dim(e.ID), envName, stateColor(e.State), e.Type, cpuMem, envTTLString(e), envSSHRef(e), timeAgo(e.CreatedAt))
-			}
-			return w.Flush()
+			printEnvListEntries(envs)
+			return nil
 		},
 	}
 
