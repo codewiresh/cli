@@ -69,10 +69,11 @@ func TestDeviceAuthorizeHandler(t *testing.T) {
 
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
+	client := srv.Client()
 
 	// POST /api/v1/device/authorize with node_name.
 	body, _ := json.Marshal(map[string]string{"node_name": "my-node"})
-	resp, err := http.Post(srv.URL+"/api/v1/device/authorize", "application/json", bytes.NewReader(body))
+	resp, err := client.Post(srv.URL+"/api/v1/device/authorize", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST /api/v1/device/authorize: %v", err)
 	}
@@ -138,10 +139,11 @@ func TestDevicePollHandler_Pending(t *testing.T) {
 	relay.RegisterDeviceHandlersForTest(mux, st, p)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
+	client := srv.Client()
 
 	// First: authorize to get a poll_token.
 	authBody, _ := json.Marshal(map[string]string{"node_name": "pending-node"})
-	authResp, err := http.Post(srv.URL+"/api/v1/device/authorize", "application/json", bytes.NewReader(authBody))
+	authResp, err := client.Post(srv.URL+"/api/v1/device/authorize", "application/json", bytes.NewReader(authBody))
 	if err != nil {
 		t.Fatalf("authorize: %v", err)
 	}
@@ -159,7 +161,7 @@ func TestDevicePollHandler_Pending(t *testing.T) {
 
 	// Now poll — Dex says authorization_pending.
 	pollBody, _ := json.Marshal(map[string]string{"poll_token": authGot.PollToken})
-	pollResp, err := http.Post(srv.URL+"/api/v1/device/poll", "application/json", bytes.NewReader(pollBody))
+	pollResp, err := client.Post(srv.URL+"/api/v1/device/poll", "application/json", bytes.NewReader(pollBody))
 	if err != nil {
 		t.Fatalf("poll: %v", err)
 	}
@@ -223,10 +225,11 @@ func TestDevicePollHandler_Authorized(t *testing.T) {
 	relay.RegisterDeviceHandlersForTest(mux, st, p)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
+	client := srv.Client()
 
 	// Step 1: authorize.
 	authBody, _ := json.Marshal(map[string]string{"node_name": "auth-node"})
-	authResp, err := http.Post(srv.URL+"/api/v1/device/authorize", "application/json", bytes.NewReader(authBody))
+	authResp, err := client.Post(srv.URL+"/api/v1/device/authorize", "application/json", bytes.NewReader(authBody))
 	if err != nil {
 		t.Fatalf("authorize: %v", err)
 	}
@@ -244,7 +247,7 @@ func TestDevicePollHandler_Authorized(t *testing.T) {
 
 	// Step 2: poll — Dex returns an access token this time.
 	pollBody, _ := json.Marshal(map[string]string{"poll_token": authGot.PollToken})
-	pollResp, err := http.Post(srv.URL+"/api/v1/device/poll", "application/json", bytes.NewReader(pollBody))
+	pollResp, err := client.Post(srv.URL+"/api/v1/device/poll", "application/json", bytes.NewReader(pollBody))
 	if err != nil {
 		t.Fatalf("poll: %v", err)
 	}
@@ -286,7 +289,7 @@ func TestDevicePollHandler_Authorized(t *testing.T) {
 
 	// Step 4: poll again — should return cached authorized result.
 	pollBody2, _ := json.Marshal(map[string]string{"poll_token": authGot.PollToken})
-	pollResp2, err := http.Post(srv.URL+"/api/v1/device/poll", "application/json", bytes.NewReader(pollBody2))
+	pollResp2, err := client.Post(srv.URL+"/api/v1/device/poll", "application/json", bytes.NewReader(pollBody2))
 	if err != nil {
 		t.Fatalf("second poll: %v", err)
 	}

@@ -27,6 +27,7 @@ func TestNodesListRequiresAuthAndScopesByFleet(t *testing.T) {
 		AuthToken: "admin-token",
 	}))
 	defer srv.Close()
+	client := srv.Client()
 
 	registerNode := func(fleetID, nodeName string) {
 		t.Helper()
@@ -37,7 +38,7 @@ func TestNodesListRequiresAuthAndScopesByFleet(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/nodes", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer admin-token")
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatalf("register node: %v", err)
 		}
@@ -51,7 +52,7 @@ func TestNodesListRequiresAuthAndScopesByFleet(t *testing.T) {
 	registerNode("fleet-b", "shared-node")
 
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/nodes?fleet_id=fleet-a", nil)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("unauthenticated list nodes: %v", err)
 	}
@@ -62,7 +63,7 @@ func TestNodesListRequiresAuthAndScopesByFleet(t *testing.T) {
 
 	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/api/v1/nodes?fleet_id=fleet-a", nil)
 	req.Header.Set("Authorization", "Bearer admin-token")
-	resp, err = http.DefaultClient.Do(req)
+	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatalf("authenticated list nodes: %v", err)
 	}
@@ -93,12 +94,13 @@ func TestKVIsFleetScopedAndRequiresAuth(t *testing.T) {
 		AuthToken: "admin-token",
 	}))
 	defer srv.Close()
+	client := srv.Client()
 
 	putKV := func(fleetID, value string) {
 		t.Helper()
 		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/kv/tasks/build?fleet_id="+fleetID, bytes.NewBufferString(value))
 		req.Header.Set("Authorization", "Bearer admin-token")
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatalf("put kv: %v", err)
 		}
@@ -112,7 +114,7 @@ func TestKVIsFleetScopedAndRequiresAuth(t *testing.T) {
 	putKV("fleet-b", "beta")
 
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/kv/tasks/build?fleet_id=fleet-a", nil)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("unauthenticated kv get: %v", err)
 	}
@@ -123,7 +125,7 @@ func TestKVIsFleetScopedAndRequiresAuth(t *testing.T) {
 
 	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/api/v1/kv/tasks/build?fleet_id=fleet-a", nil)
 	req.Header.Set("Authorization", "Bearer admin-token")
-	resp, err = http.DefaultClient.Do(req)
+	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatalf("fleet-a kv get: %v", err)
 	}
@@ -138,7 +140,7 @@ func TestKVIsFleetScopedAndRequiresAuth(t *testing.T) {
 
 	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/api/v1/kv/tasks/build?fleet_id=fleet-b", nil)
 	req.Header.Set("Authorization", "Bearer admin-token")
-	resp, err = http.DefaultClient.Do(req)
+	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatalf("fleet-b kv get: %v", err)
 	}
@@ -175,12 +177,13 @@ func TestJoinRegistersNodeIntoInviteFleet(t *testing.T) {
 		AuthMode: "none",
 	}))
 	defer srv.Close()
+	client := srv.Client()
 
 	body, _ := json.Marshal(map[string]string{
 		"node_name":    "joined-node",
 		"invite_token": "CW-INV-TEST",
 	})
-	resp, err := http.Post(srv.URL+"/api/v1/join", "application/json", bytes.NewReader(body))
+	resp, err := client.Post(srv.URL+"/api/v1/join", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("join: %v", err)
 	}
@@ -211,12 +214,13 @@ func TestNetworksCanBeCreatedAndListed(t *testing.T) {
 		AuthToken: "admin-token",
 	}))
 	defer srv.Close()
+	client := srv.Client()
 
 	createBody, _ := json.Marshal(map[string]string{"network_id": "project-alpha"})
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/networks", bytes.NewReader(createBody))
 	req.Header.Set("Authorization", "Bearer admin-token")
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("create network: %v", err)
 	}
@@ -227,7 +231,7 @@ func TestNetworksCanBeCreatedAndListed(t *testing.T) {
 
 	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/api/v1/networks", nil)
 	req.Header.Set("Authorization", "Bearer admin-token")
-	resp, err = http.DefaultClient.Do(req)
+	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatalf("list networks: %v", err)
 	}

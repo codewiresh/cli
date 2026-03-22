@@ -103,6 +103,7 @@ func main() {
 		// System
 		grouped(completionCmd(rootCmd), "system"),
 		grouped(updateCmd(), "system"),
+		grouped(doctorCmd(), "system"),
 	)
 
 	printUpdateNotice := update.BackgroundCheck(version)
@@ -314,6 +315,7 @@ func runCmd() *cobra.Command {
 				if workDir == "" {
 					workDir = "/workspace"
 				}
+				printEnvironmentRunPreamble(execTarget)
 				result, err := runInEnvironmentTarget(execTarget.Ref, workDir, name, envVars, tags, command)
 				if err != nil {
 					return fmt.Errorf("run: %w", err)

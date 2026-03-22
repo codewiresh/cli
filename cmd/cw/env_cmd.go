@@ -399,6 +399,8 @@ type envRelayEnrollment struct {
 	InviteToken string
 }
 
+var createRelayInvite = cwclient.CreateInvite
+
 func resolveEnvRelayEnrollment(dir string, assumeYes bool, requestedNetwork string, disableNetwork bool) (*envRelayEnrollment, error) {
 	if disableNetwork {
 		return nil, nil
@@ -449,7 +451,7 @@ func resolveEnvRelayEnrollment(dir string, assumeYes bool, requestedNetwork stri
 		networkID = *cfg.RelayNetwork
 	}
 
-	invite, err := cwclient.CreateInvite(dir, cwclient.RelayAuthOptions{
+	invite, err := createRelayInvite(dir, cwclient.RelayAuthOptions{
 		RelayURL:  *cfg.RelayURL,
 		AuthToken: *cfg.RelaySession,
 		NetworkID: networkID,

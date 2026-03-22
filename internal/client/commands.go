@@ -31,6 +31,8 @@ import (
 	"github.com/codewiresh/codewire/internal/terminal"
 )
 
+var relayHTTPClient = http.DefaultClient
+
 // ResolveSessionArg resolves a session argument that can be either a numeric ID
 // or a session name (optionally prefixed with @). It queries the node to
 // resolve names to IDs.
@@ -1047,7 +1049,7 @@ func CreateNetwork(dataDir, networkID string, opts RelayAuthOptions, useAfter bo
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+authToken)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := relayHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("contacting relay: %w", err)
 	}
@@ -1141,7 +1143,7 @@ func fetchJSONWithAuth(url, authToken string) ([]byte, error) {
 		req.Header.Set("Authorization", "Bearer "+authToken)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := relayHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -1661,7 +1663,7 @@ func CreateInvite(dataDir string, opts RelayAuthOptions, uses int, ttl string) (
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+authToken)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := relayHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("contacting relay: %w", err)
 	}
@@ -1765,7 +1767,7 @@ func Revoke(dataDir string, nodeName string, opts RelayAuthOptions) error {
 	}
 	req.Header.Set("Authorization", "Bearer "+authToken)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := relayHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("contacting relay: %w", err)
 	}

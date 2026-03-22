@@ -85,9 +85,42 @@ func TestCurrentCmdPrintsLocalTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read output: %v", err)
 	}
-	got := string(output)
-	if !strings.Contains(got, "Kind:") || !strings.Contains(got, "local") {
+	got := strings.TrimSpace(string(output))
+	if got != "local" {
 		t.Fatalf("unexpected output %q", got)
+	}
+}
+
+func TestCurrentCmdVerbosePrintsFullDetails(t *testing.T) {
+	origLoad := loadCLIConfigForTarget
+	defer func() { loadCLIConfigForTarget = origLoad }()
+
+	loadCLIConfigForTarget = func() (*cwconfig.Config, error) {
+		return &cwconfig.Config{}, nil
+	}
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = oldStdout }()
+
+	cmd := currentCmd()
+	cmd.SetArgs([]string{"--verbose"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("current --verbose failed: %v", err)
+	}
+
+	_ = w.Close()
+	output, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	got := string(output)
+	if !strings.Contains(got, "Kind:") || !strings.Contains(got, "Target:") {
+		t.Fatalf("unexpected verbose output %q", got)
 	}
 }
 

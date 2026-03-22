@@ -4,13 +4,18 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	cwclient "github.com/codewiresh/codewire/internal/client"
 	cwconfig "github.com/codewiresh/codewire/internal/config"
 )
 
 func TestResolveEnvRelayEnrollmentExplicitNetwork(t *testing.T) {
+	origCreateInvite := createRelayInvite
+	defer func() { createRelayInvite = origCreateInvite }()
+
 	dir := t.TempDir()
 	relayURL := ""
 	relaySession := "relay-session"
@@ -47,6 +52,30 @@ func TestResolveEnvRelayEnrollmentExplicitNetwork(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	createRelayInvite = func(dataDir string, opts cwclient.RelayAuthOptions, uses int, ttl string) (*cwclient.RelayInvite, error) {
+		reqBody, _ := json.Marshal(map[string]any{
+			"fleet_id": opts.NetworkID,
+			"uses":     uses,
+			"ttl":      ttl,
+		})
+		req, err := http.NewRequest(http.MethodPost, opts.RelayURL+"/api/v1/invites", strings.NewReader(string(reqBody)))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+opts.AuthToken)
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		var invite cwclient.RelayInvite
+		if err := json.NewDecoder(resp.Body).Decode(&invite); err != nil {
+			return nil, err
+		}
+		return &invite, nil
+	}
+
 	relayURL = srv.URL
 	if err := cwconfig.SaveConfig(dir, &cwconfig.Config{
 		RelayURL:     &relayURL,
@@ -72,6 +101,9 @@ func TestResolveEnvRelayEnrollmentExplicitNetwork(t *testing.T) {
 }
 
 func TestResolveEnvRelayEnrollmentPersistsConsent(t *testing.T) {
+	origCreateInvite := createRelayInvite
+	defer func() { createRelayInvite = origCreateInvite }()
+
 	dir := t.TempDir()
 	relaySession := "relay-session"
 	defaultNetwork := "private-default"
@@ -88,6 +120,30 @@ func TestResolveEnvRelayEnrollmentPersistsConsent(t *testing.T) {
 	}))
 	defer srv.Close()
 	relayURL = srv.URL
+
+	createRelayInvite = func(dataDir string, opts cwclient.RelayAuthOptions, uses int, ttl string) (*cwclient.RelayInvite, error) {
+		reqBody, _ := json.Marshal(map[string]any{
+			"fleet_id": opts.NetworkID,
+			"uses":     uses,
+			"ttl":      ttl,
+		})
+		req, err := http.NewRequest(http.MethodPost, opts.RelayURL+"/api/v1/invites", strings.NewReader(string(reqBody)))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+opts.AuthToken)
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		var invite cwclient.RelayInvite
+		if err := json.NewDecoder(resp.Body).Decode(&invite); err != nil {
+			return nil, err
+		}
+		return &invite, nil
+	}
 
 	if err := cwconfig.SaveConfig(dir, &cwconfig.Config{
 		RelayURL:             &relayURL,

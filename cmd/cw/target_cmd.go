@@ -55,6 +55,45 @@ var (
 	}
 )
 
+func targetSummaryLine(target *cwconfig.CurrentTargetConfig, env *platform.Environment) string {
+	if target == nil || target.Kind == "local" {
+		return "local"
+	}
+
+	name := target.Name
+	if env != nil && env.Name != nil && strings.TrimSpace(*env.Name) != "" {
+		name = *env.Name
+	}
+	if strings.TrimSpace(name) == "" {
+		name = target.Ref
+	}
+
+	summary := fmt.Sprintf("%s [%s]", name, shortEnvID(target.Ref))
+	if env != nil && strings.TrimSpace(env.State) != "" {
+		summary += " " + env.State
+	}
+	return summary
+}
+
+func lookupEnvironmentForTarget(target *cwconfig.CurrentTargetConfig) *platform.Environment {
+	if target == nil || target.Kind != "env" {
+		return nil
+	}
+	client, err := platform.NewClient()
+	if err != nil {
+		return nil
+	}
+	orgID, err := resolveOrgID(client, "")
+	if err != nil {
+		return nil
+	}
+	env, err := client.GetEnvironment(orgID, target.Ref)
+	if err != nil {
+		return nil
+	}
+	return env
+}
+
 func currentTargetConfig(cfg *cwconfig.Config) *cwconfig.CurrentTargetConfig {
 	if cfg == nil || cfg.CurrentTarget == nil || strings.TrimSpace(cfg.CurrentTarget.Kind) == "" {
 		return &cwconfig.CurrentTargetConfig{
@@ -131,7 +170,9 @@ func useCmd() *cobra.Command {
 }
 
 func currentCmd() *cobra.Command {
-	return &cobra.Command{
+	var verbose bool
+
+	cmd := &cobra.Command{
 		Use:   "current",
 		Short: "Show the current execution target",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -140,6 +181,12 @@ func currentCmd() *cobra.Command {
 				cfg = &cwconfig.Config{}
 			}
 			target := currentTargetConfig(cfg)
+			env := lookupEnvironmentForTarget(target)
+
+			if !verbose {
+				fmt.Println(targetSummaryLine(target, env))
+				return nil
+			}
 
 			fmt.Printf("%-10s %s\n", bold("Kind:"), target.Kind)
 			if target.Kind == "local" {
@@ -151,18 +198,17 @@ func currentCmd() *cobra.Command {
 			fmt.Printf("%-10s %s\n", bold("ID:"), target.Ref)
 			fmt.Printf("%-10s %s\n", bold("ShortID:"), shortEnvID(target.Ref))
 
-			if client, err := platform.NewClient(); err == nil {
-				if orgID, orgErr := resolveOrgID(client, ""); orgErr == nil {
-					if env, envErr := client.GetEnvironment(orgID, target.Ref); envErr == nil {
-						if env.Name != nil && strings.TrimSpace(*env.Name) != "" {
-							fmt.Printf("%-10s %s\n", bold("Name:"), *env.Name)
-						}
-						fmt.Printf("%-10s %s\n", bold("State:"), stateColor(env.State))
-					}
+			if env != nil {
+				if env.Name != nil && strings.TrimSpace(*env.Name) != "" {
+					fmt.Printf("%-10s %s\n", bold("Name:"), *env.Name)
 				}
+				fmt.Printf("%-10s %s\n", bold("State:"), stateColor(env.State))
 			}
 
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show full target details")
+	return cmd
 }

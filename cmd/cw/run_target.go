@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	cwconfig "github.com/codewiresh/codewire/internal/config"
 	"github.com/codewiresh/codewire/internal/platform"
 )
 
@@ -60,4 +61,11 @@ func printEnvironmentRunResult(result *platform.ExecResult) error {
 		return fmt.Errorf("environment image does not include the codewire CLI; use a Codewire base image for 'cw run' support or fall back to 'cw exec'")
 	}
 	return fmt.Errorf("environment run exited with code %d", result.ExitCode)
+}
+
+func printEnvironmentRunPreamble(target *cwconfig.CurrentTargetConfig) {
+	if target == nil || target.Kind != "env" {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "  target: %s [%s] via env runtime\n", target.Name, shortEnvID(target.Ref))
 }

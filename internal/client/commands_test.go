@@ -106,6 +106,9 @@ func TestUseNetworkPersistsConfig(t *testing.T) {
 }
 
 func TestCreateNetworkCreatesAndSelectsNetwork(t *testing.T) {
+	origClient := relayHTTPClient
+	defer func() { relayHTTPClient = origClient }()
+
 	dir := t.TempDir()
 
 	sawCreate := false
@@ -134,6 +137,7 @@ func TestCreateNetworkCreatesAndSelectsNetwork(t *testing.T) {
 		})
 	}))
 	defer srv.Close()
+	relayHTTPClient = srv.Client()
 
 	if err := CreateNetwork(dir, "project-beta", RelayAuthOptions{
 		RelayURL:  srv.URL,

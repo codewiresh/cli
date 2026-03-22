@@ -237,6 +237,16 @@ func TestPrintPlatformEntriesUsesSameEnvironmentCardLayout(t *testing.T) {
 	}
 }
 
+func TestSummarizeExecErrorNormalizesMissingCodewireCLI(t *testing.T) {
+	got := summarizeExecError(&platform.ExecResult{
+		ExitCode: 127,
+		Stderr:   "sh: 1: exec: cw: not found",
+	})
+	if got != "codewire CLI missing in image" {
+		t.Fatalf("unexpected summary %q", got)
+	}
+}
+
 func TestPrintPlatformEntriesNestsRunsUnderEnvironmentCard(t *testing.T) {
 	alpha := "alpha"
 	entries := []platformListEntry{{

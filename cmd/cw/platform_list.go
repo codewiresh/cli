@@ -159,6 +159,14 @@ func listEnvironmentRuns(pc *platform.Client, orgID string, env platform.Environ
 }
 
 func summarizeExecError(result *platform.ExecResult) string {
+	combined := strings.TrimSpace(strings.Join([]string{
+		strings.TrimSpace(result.Stdout),
+		strings.TrimSpace(result.Stderr),
+	}, "\n"))
+	lower := strings.ToLower(combined)
+	if strings.Contains(lower, "exec: cw: not found") || strings.Contains(lower, "cw: not found") {
+		return "codewire CLI missing in image"
+	}
 	msg := strings.TrimSpace(result.Stderr)
 	if msg == "" {
 		msg = strings.TrimSpace(result.Stdout)
