@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -25,6 +26,7 @@ func platformListCmd() *cobra.Command {
 	var jsonOutput bool
 	var statusFilter string
 	var localOnly bool
+	var includeRuns bool
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -55,7 +57,7 @@ func platformListCmd() *cobra.Command {
 				return fmt.Errorf("list environments: %w", err)
 			}
 
-			entries := listPlatformEntries(pc, orgID, envs)
+			entries := listPlatformEntries(pc, orgID, envs, includeRuns)
 
 			if jsonOutput {
 				enc := json.NewEncoder(os.Stdout)
@@ -78,6 +80,7 @@ func platformListCmd() *cobra.Command {
 
 	cmd.Flags().BoolVarP(&jsonOutput, "json", "j", false, "Output as JSON")
 	cmd.Flags().BoolVar(&localOnly, "local", false, "Force local session listing even when platform config exists")
+	cmd.Flags().BoolVar(&includeRuns, "runs", false, "Include Codewire runs from inside running sandbox environments")
 	cmd.Flags().String("org", "", "Organization ID or slug (default: current org)")
 	cmd.Flags().StringVar(&statusFilter, "status", "all", "Filter by status (standalone mode): all, running, completed, killed")
 	_ = cmd.RegisterFlagCompletionFunc("status", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -86,15 +89,44 @@ func platformListCmd() *cobra.Command {
 	return cmd
 }
 
-func listPlatformEntries(pc *platform.Client, orgID string, envs []platform.Environment) []platformListEntry {
+func listPlatformEntries(pc *platform.Client, orgID string, envs []platform.Environment, includeRuns bool) []platformListEntry {
 	entries := make([]platformListEntry, 0, len(envs))
+	if !includeRuns {
+		for _, env := range envs {
+			entries = append(entries, platformListEntry{Environment: env})
+		}
+		return entries
+	}
+
+	type result struct {
+		index int
+		entry platformListEntry
+	}
+	results := make(chan result, len(envs))
+	var wg sync.WaitGroup
 	for _, env := range envs {
-		entry := platformListEntry{Environment: env}
-		sessions, lookup, errMsg := listEnvironmentRuns(pc, orgID, env)
-		entry.Sessions = sessions
-		entry.SessionLookup = lookup
-		entry.SessionError = errMsg
-		entries = append(entries, entry)
+		entries = append(entries, platformListEntry{Environment: env})
+	}
+	for i, env := range envs {
+		wg.Add(1)
+		go func(index int, env platform.Environment) {
+			defer wg.Done()
+			sessions, lookup, errMsg := listEnvironmentRuns(pc, orgID, env)
+			results <- result{
+				index: index,
+				entry: platformListEntry{
+					Environment:   env,
+					Sessions:      sessions,
+					SessionLookup: lookup,
+					SessionError:  errMsg,
+				},
+			}
+		}(i, env)
+	}
+	wg.Wait()
+	close(results)
+	for result := range results {
+		entries[result.index] = result.entry
 	}
 	return entries
 }
@@ -155,11 +187,16 @@ func printPlatformEntries(entries []platformListEntry) error {
 			runSummary = fmt.Sprintf("%d", len(entry.Sessions))
 		case "unavailable":
 			runSummary = "?"
+		case "":
+			runSummary = "--"
 		}
 
 		fmt.Printf("%s (%s)\n", bold(envName), dim(env.ID))
-		fmt.Printf("  state: %s  type: %s  size: %dm/%dMB  runs: %s  created: %s\n",
-			stateColor(env.State), env.Type, env.CPUMillicores, env.MemoryMB, runSummary, timeAgo(env.CreatedAt))
+		fmt.Printf("  state: %s  type: %s  size: %dm/%dMB", stateColor(env.State), env.Type, env.CPUMillicores, env.MemoryMB)
+		if entry.SessionLookup != "" {
+			fmt.Printf("  runs: %s", runSummary)
+		}
+		fmt.Printf("  created: %s\n", timeAgo(env.CreatedAt))
 
 		if entry.SessionLookup == "unavailable" && entry.SessionError != "" {
 			fmt.Printf("  runs: unavailable (%s)\n", entry.SessionError)

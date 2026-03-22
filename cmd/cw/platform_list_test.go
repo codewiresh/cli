@@ -116,3 +116,73 @@ func TestListEnvironmentRunsSkipsStoppedEnvironment(t *testing.T) {
 		t.Fatalf("sessions = %#v, want none", sessions)
 	}
 }
+
+func TestListPlatformEntriesSkipsRunInspectionByDefault(t *testing.T) {
+	client := &platform.Client{
+		ServerURL:    "https://example.invalid",
+		SessionToken: "session-token",
+		HTTP: &http.Client{
+			Timeout: 5 * time.Second,
+			Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				t.Fatalf("unexpected HTTP request when run inspection is disabled")
+				return nil, nil
+			}),
+		},
+	}
+
+	envs := []platform.Environment{{
+		ID:        "env_123",
+		Type:      "sandbox",
+		State:     "running",
+		CreatedAt: "2026-03-16T10:00:00Z",
+	}}
+
+	entries := listPlatformEntries(client, "org_123", envs, false)
+	if len(entries) != 1 {
+		t.Fatalf("entries = %#v, want one entry", entries)
+	}
+	if entries[0].SessionLookup != "" {
+		t.Fatalf("SessionLookup = %q, want empty when run inspection is disabled", entries[0].SessionLookup)
+	}
+}
+
+func TestListPlatformEntriesIncludesRunInspectionWhenRequested(t *testing.T) {
+	var requests int
+	client := &platform.Client{
+		ServerURL:    "https://example.invalid",
+		SessionToken: "session-token",
+		HTTP: &http.Client{
+			Timeout: 5 * time.Second,
+			Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				requests++
+				respBody, _ := json.Marshal(platform.ExecResult{
+					ExitCode: 0,
+					Stdout:   `[]`,
+				})
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(bytes.NewReader(respBody)),
+				}, nil
+			}),
+		},
+	}
+
+	envs := []platform.Environment{{
+		ID:        "env_123",
+		Type:      "sandbox",
+		State:     "running",
+		CreatedAt: "2026-03-16T10:00:00Z",
+	}}
+
+	entries := listPlatformEntries(client, "org_123", envs, true)
+	if len(entries) != 1 {
+		t.Fatalf("entries = %#v, want one entry", entries)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1 run inspection request", requests)
+	}
+	if entries[0].SessionLookup != "available" {
+		t.Fatalf("SessionLookup = %q, want available", entries[0].SessionLookup)
+	}
+}

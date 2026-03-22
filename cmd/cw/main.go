@@ -59,6 +59,8 @@ func main() {
 		// Environments
 		grouped(envParentCmd(), "environment"),
 		grouped(tmplParentCmd(), "environment"),
+		grouped(useCmd(), "environment"),
+		grouped(currentCmd(), "environment"),
 		grouped(sshCmd(), "environment"),
 		// Sessions
 		grouped(runCmd(), "session"),

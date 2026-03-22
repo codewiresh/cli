@@ -11,13 +11,20 @@ import (
 
 // Config is the top-level configuration loaded from config.toml.
 type Config struct {
-	Node                 NodeConfig `toml:"node"`
-	RelayURL             *string    `toml:"relay_url,omitempty"`
-	RelayNetwork         *string    `toml:"relay_network,omitempty"`
-	RelaySession         *string    `toml:"relay_session,omitempty"`           // OAuth session token
-	RelayToken           *string    `toml:"relay_token,omitempty"`             // node auth token for relay agent
-	RelayInviteToken     *string    `toml:"relay_invite_token,omitempty"`      // one-time invite token for bootstrap
-	RelayAutoJoinPrivate *bool      `toml:"relay_auto_join_private,omitempty"` // consent for default private-network join
+	Node                 NodeConfig           `toml:"node"`
+	RelayURL             *string              `toml:"relay_url,omitempty"`
+	RelayNetwork         *string              `toml:"relay_network,omitempty"`
+	RelaySession         *string              `toml:"relay_session,omitempty"`           // OAuth session token
+	RelayToken           *string              `toml:"relay_token,omitempty"`             // node auth token for relay agent
+	RelayInviteToken     *string              `toml:"relay_invite_token,omitempty"`      // one-time invite token for bootstrap
+	RelayAutoJoinPrivate *bool                `toml:"relay_auto_join_private,omitempty"` // consent for default private-network join
+	CurrentTarget        *CurrentTargetConfig `toml:"current_target,omitempty"`
+}
+
+type CurrentTargetConfig struct {
+	Kind string `toml:"kind"`
+	Ref  string `toml:"ref"`
+	Name string `toml:"name,omitempty"`
 }
 
 // NodeConfig describes the local node identity and network settings.
