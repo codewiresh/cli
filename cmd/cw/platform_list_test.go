@@ -12,6 +12,7 @@ import (
 
 	cwconfig "github.com/codewiresh/codewire/internal/config"
 	"github.com/codewiresh/codewire/internal/platform"
+	"github.com/codewiresh/codewire/internal/protocol"
 )
 
 func TestListEnvironmentRunsUsesLocalSessionListing(t *testing.T) {
@@ -233,5 +234,56 @@ func TestPrintPlatformEntriesUsesSameEnvironmentCardLayout(t *testing.T) {
 	}
 	if !strings.Contains(got, "connect: cw ssh 12345678") {
 		t.Fatalf("expected shared connect hint, got %q", got)
+	}
+}
+
+func TestPrintPlatformEntriesNestsRunsUnderEnvironmentCard(t *testing.T) {
+	alpha := "alpha"
+	entries := []platformListEntry{{
+		Environment: platform.Environment{
+			ID:            "12345678-1234-1234-1234-123456789abc",
+			Name:          &alpha,
+			State:         "running",
+			Type:          "sandbox",
+			CPUMillicores: 2000,
+			MemoryMB:      4096,
+			CreatedAt:     time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339),
+		},
+		SessionLookup: "available",
+		Sessions: []protocol.SessionInfo{{
+			ID:        7,
+			Name:      "planner",
+			Status:    "running",
+			Prompt:    "claude -p plan",
+			CreatedAt: time.Now().UTC().Add(-20 * time.Minute).Format(time.RFC3339),
+		}},
+	}}
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = oldStdout }()
+
+	if err := printPlatformEntries(entries); err != nil {
+		t.Fatalf("printPlatformEntries: %v", err)
+	}
+
+	_ = w.Close()
+	output, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	got := string(output)
+	if !strings.Contains(got, "  runs: 1\n") {
+		t.Fatalf("expected runs summary line, got %q", got)
+	}
+	if !strings.Contains(got, "    ID") {
+		t.Fatalf("expected nested runs table header, got %q", got)
+	}
+	if !strings.Contains(got, "    7") {
+		t.Fatalf("expected nested session row, got %q", got)
 	}
 }

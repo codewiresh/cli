@@ -198,13 +198,13 @@ func printPlatformEntries(entries []platformListEntry) error {
 			} else {
 				fmt.Printf("  runs: %s\n", runSummary)
 				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-				tableHeader(w, "  ID", "NAME", "STATUS", "AGE", "COMMAND")
+				tableHeader(w, "    ID", "NAME", "STATUS", "AGE", "COMMAND")
 				for _, session := range entry.Sessions {
 					name := session.Name
 					if name == "" {
 						name = "-"
 					}
-					fmt.Fprintf(w, "  %d\t%s\t%s\t%s\t%s\n",
+					fmt.Fprintf(w, "    %d\t%s\t%s\t%s\t%s\n",
 						session.ID,
 						name,
 						stateColor(session.Status),
