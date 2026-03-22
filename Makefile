@@ -1,4 +1,4 @@
-.PHONY: build test test-all test-manual lint clean install \
+.PHONY: build test test-cli test-all test-manual lint clean install \
        demo-build broker-build demo-push broker-push
 
 BINARY := cw
@@ -13,9 +13,13 @@ IMAGE_TAG ?= latest
 build:
 	go build -ldflags="$(LDFLAGS)" -o $(BINARY) $(BUILD_DIR)
 
-# Run unit tests
+# Run fast automated tests
 test:
-	go test ./internal/...
+	go test ./cmd/cw ./internal/... ./tests/... -timeout 120s -count=1
+
+# Run CLI command-layer tests only
+test-cli:
+	go test ./cmd/cw -timeout 120s -count=1
 
 # Run all tests including manual CLI tests
 test-all: test test-manual

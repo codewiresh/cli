@@ -19,7 +19,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go test ./internal/... ./tests/... -timeout 120s -count=1
+      - run: go test ./cmd/cw ./internal/... ./tests/... -timeout 120s -count=1
 
   build:
     runs-on: ubuntu-latest
