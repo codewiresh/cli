@@ -12,6 +12,7 @@ import (
 	cwclient "github.com/codewiresh/codewire/internal/client"
 	cwconfig "github.com/codewiresh/codewire/internal/config"
 	"github.com/codewiresh/codewire/internal/platform"
+	"github.com/codewiresh/codewire/internal/terminal"
 )
 
 // loadCodewireYAML is a convenience wrapper around config.LoadCodewireConfig.
@@ -119,6 +120,55 @@ func envDisplayRefs(env platform.Environment) []string {
 		refs = append(refs, shortEnvID(env.ID), env.ID)
 	}
 	return refs
+}
+
+func envListUsesCompactLayout() bool {
+	if !stdoutColor {
+		return false
+	}
+	cols, _, err := terminal.TerminalSize()
+	if err != nil {
+		return false
+	}
+	return cols < 120
+}
+
+func envSSHRef(env platform.Environment) string {
+	if env.Type != "sandbox" || env.State != "running" {
+		return "--"
+	}
+	return shortEnvID(env.ID)
+}
+
+func envTTLString(env platform.Environment) string {
+	if env.ShutdownAt == nil {
+		return "--"
+	}
+	shutdownTime, err := time.Parse(time.RFC3339, *env.ShutdownAt)
+	if err != nil {
+		return "--"
+	}
+	remaining := time.Until(shutdownTime)
+	if remaining > 0 {
+		return fmt.Sprintf("%dm", int(remaining.Minutes()))
+	}
+	return "expired"
+}
+
+func printCompactEnvList(envs []platform.Environment) {
+	for i, e := range envs {
+		envName := "--"
+		if e.Name != nil {
+			envName = bold(*e.Name)
+		}
+
+		fmt.Printf("%s  %s\n", dim(shortEnvID(e.ID)), envName)
+		fmt.Printf("  %s  %s  %s\n", stateColor(e.State), e.Type, timeAgo(e.CreatedAt))
+		fmt.Printf("  %dm/%dMB  ttl %s  ssh %s\n", e.CPUMillicores, e.MemoryMB, envTTLString(e), envSSHRef(e))
+		if i < len(envs)-1 {
+			fmt.Println()
+		}
+	}
 }
 
 func filterEnvCompletions(envs []platform.Environment, toComplete string) []string {
@@ -767,6 +817,11 @@ func envListCmd() *cobra.Command {
 				return nil
 			}
 
+			if envListUsesCompactLayout() {
+				printCompactEnvList(envs)
+				return nil
+			}
+
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			tableHeader(w, "ID", "NAME", "STATE", "TYPE", "CPU/MEM", "TTL", "SSH", "CREATED")
 			for _, e := range envs {
@@ -777,26 +832,8 @@ func envListCmd() *cobra.Command {
 
 				cpuMem := fmt.Sprintf("%dm/%dMB", e.CPUMillicores, e.MemoryMB)
 
-				ttlStr := "--"
-				if e.ShutdownAt != nil {
-					shutdownTime, err := time.Parse(time.RFC3339, *e.ShutdownAt)
-					if err == nil {
-						remaining := time.Until(shutdownTime)
-						if remaining > 0 {
-							ttlStr = fmt.Sprintf("%dm", int(remaining.Minutes()))
-						} else {
-							ttlStr = "expired"
-						}
-					}
-				}
-
-				sshHost := ""
-				if e.Type == "sandbox" && e.State == "running" {
-					sshHost = "cw-" + e.ID
-				}
-
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-					dim(e.ID), envName, stateColor(e.State), e.Type, cpuMem, ttlStr, sshHost, timeAgo(e.CreatedAt))
+					dim(e.ID), envName, stateColor(e.State), e.Type, cpuMem, envTTLString(e), envSSHRef(e), timeAgo(e.CreatedAt))
 			}
 			return w.Flush()
 		},

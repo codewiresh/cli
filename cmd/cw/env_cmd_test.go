@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codewiresh/codewire/internal/platform"
 )
@@ -108,5 +109,35 @@ func TestEnvCreateDefaultsToWaiting(t *testing.T) {
 	}
 	if noWaitFlag.DefValue != "false" {
 		t.Fatalf("expected --no-wait default false, got %q", noWaitFlag.DefValue)
+	}
+}
+
+func TestEnvSSHRefUsesShortIDForRunningSandboxes(t *testing.T) {
+	env := platform.Environment{
+		ID:    "12345678-1234-1234-1234-123456789abc",
+		Type:  "sandbox",
+		State: "running",
+	}
+	if got := envSSHRef(env); got != "12345678" {
+		t.Fatalf("expected running sandbox ssh ref to use short ID, got %q", got)
+	}
+
+	env.State = "stopped"
+	if got := envSSHRef(env); got != "--" {
+		t.Fatalf("expected stopped sandbox ssh ref to be unavailable, got %q", got)
+	}
+}
+
+func TestEnvTTLString(t *testing.T) {
+	future := time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339)
+	env := platform.Environment{ShutdownAt: &future}
+	if got := envTTLString(env); got == "--" || got == "expired" {
+		t.Fatalf("expected future shutdown time to produce a remaining TTL, got %q", got)
+	}
+
+	past := time.Now().Add(-1 * time.Minute).UTC().Format(time.RFC3339)
+	env.ShutdownAt = &past
+	if got := envTTLString(env); got != "expired" {
+		t.Fatalf("expected past shutdown time to be expired, got %q", got)
 	}
 }
