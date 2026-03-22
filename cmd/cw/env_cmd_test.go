@@ -179,11 +179,14 @@ func TestPrintEnvListEntriesUsesUnifiedBlockLayout(t *testing.T) {
 	}
 
 	got := string(output)
-	if !strings.Contains(got, "alpha (12345678-1234-1234-1234-123456789abc)") {
+	if !strings.Contains(got, "alpha [12345678]  running") {
 		t.Fatalf("expected unified header, got %q", got)
 	}
-	if !strings.Contains(got, "state: running  type: sandbox  size: 2000m/4096MB  ttl: --  ssh: 12345678  created:") {
-		t.Fatalf("expected unified detail line, got %q", got)
+	if !strings.Contains(got, "sandbox  2000m/4096MB  ttl --") {
+		t.Fatalf("expected detail line, got %q", got)
+	}
+	if !strings.Contains(got, "connect: cw ssh 12345678") {
+		t.Fatalf("expected connect hint, got %q", got)
 	}
 }
 

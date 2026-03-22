@@ -142,6 +142,14 @@ func envSSHRef(env platform.Environment) string {
 	return shortEnvID(env.ID)
 }
 
+func envConnectHint(env platform.Environment) string {
+	ref := envSSHRef(env)
+	if ref == "--" {
+		return "--"
+	}
+	return "cw ssh " + ref
+}
+
 func envTTLString(env platform.Environment) string {
 	if env.ShutdownAt == nil {
 		return "--"
@@ -158,15 +166,42 @@ func envTTLString(env platform.Environment) string {
 }
 
 func printEnvListEntries(envs []platform.Environment) {
+	currentRef := ""
+	if cfg, err := loadCLIConfigForTarget(); err == nil {
+		if target := currentTargetConfig(cfg); target.Kind == "env" {
+			currentRef = target.Ref
+		}
+	}
+
 	for i, e := range envs {
 		envName := e.ID
 		if e.Name != nil && strings.TrimSpace(*e.Name) != "" {
 			envName = *e.Name
 		}
 
-		fmt.Printf("%s (%s)\n", bold(envName), dim(e.ID))
-		fmt.Printf("  state: %s  type: %s  size: %dm/%dMB  ttl: %s  ssh: %s  created: %s\n",
-			stateColor(e.State), e.Type, e.CPUMillicores, e.MemoryMB, envTTLString(e), envSSHRef(e), timeAgo(e.CreatedAt))
+		marker := ""
+		if currentRef != "" && e.ID == currentRef {
+			marker = " " + green("(current)")
+		}
+
+		fmt.Printf("%s [%s]  %s  %s%s\n",
+			bold(envName),
+			dim(shortEnvID(e.ID)),
+			stateColor(e.State),
+			timeAgo(e.CreatedAt),
+			marker,
+		)
+		fmt.Printf("  %s  %dm/%dMB  ttl %s\n",
+			e.Type,
+			e.CPUMillicores,
+			e.MemoryMB,
+			envTTLString(e),
+		)
+		if hint := envConnectHint(e); hint != "--" {
+			fmt.Printf("  connect: %s\n", hint)
+		} else {
+			fmt.Printf("  connect: --\n")
+		}
 		if i < len(envs)-1 {
 			fmt.Println()
 		}
