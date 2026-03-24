@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"text/tabwriter"
@@ -27,6 +28,7 @@ func platformListCmd() *cobra.Command {
 	var statusFilter string
 	var localOnly bool
 	var includeRuns bool
+	var networkFilter string
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -57,7 +59,7 @@ func platformListCmd() *cobra.Command {
 				return fmt.Errorf("list environments: %w", err)
 			}
 
-			entries := listPlatformEntries(pc, orgID, envs, includeRuns)
+			entries := listPlatformEntries(pc, orgID, filterEnvironmentsByNetwork(envs, networkFilter), includeRuns)
 
 			if jsonOutput {
 				enc := json.NewEncoder(os.Stdout)
@@ -81,12 +83,31 @@ func platformListCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&jsonOutput, "json", "j", false, "Output as JSON")
 	cmd.Flags().BoolVar(&localOnly, "local", false, "Force local session listing even when platform config exists")
 	cmd.Flags().BoolVar(&includeRuns, "runs", false, "Include Codewire runs from inside running sandbox environments")
+	cmd.Flags().StringVar(&networkFilter, "network", "", "Only show environments in the specified network")
 	cmd.Flags().String("org", "", "Organization ID or slug (default: current org)")
 	cmd.Flags().StringVar(&statusFilter, "status", "all", "Filter by status (standalone mode): all, running, completed, killed")
 	_ = cmd.RegisterFlagCompletionFunc("status", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"all", "running", "completed", "killed"}, cobra.ShellCompDirectiveNoFileComp
 	})
 	return cmd
+}
+
+func filterEnvironmentsByNetwork(envs []platform.Environment, network string) []platform.Environment {
+	network = strings.TrimSpace(network)
+	if network == "" {
+		return envs
+	}
+
+	filtered := make([]platform.Environment, 0, len(envs))
+	for _, env := range envs {
+		if env.Network == nil {
+			continue
+		}
+		if strings.TrimSpace(*env.Network) == network {
+			filtered = append(filtered, env)
+		}
+	}
+	return filtered
 }
 
 func listPlatformEntries(pc *platform.Client, orgID string, envs []platform.Environment, includeRuns bool) []platformListEntry {
@@ -183,54 +204,101 @@ func summarizeExecError(result *platform.ExecResult) string {
 
 func printPlatformEntries(entries []platformListEntry) error {
 	currentRef := currentEnvironmentTargetRef()
+	grouped, order := groupPlatformEntriesByNetwork(entries)
+	showNetworkHeaders := len(order) > 1
 
-	for _, entry := range entries {
-		env := entry.Environment
-		for _, line := range environmentCardLines(env, currentRef) {
-			fmt.Println(line)
-		}
-
-		runSummary := "n/a"
-		switch entry.SessionLookup {
-		case "available":
-			runSummary = fmt.Sprintf("%d", len(entry.Sessions))
-		case "unavailable":
-			runSummary = "?"
-		case "":
-			runSummary = "--"
-		}
-
-		if entry.SessionLookup == "available" {
-			if len(entry.Sessions) == 0 {
-				fmt.Println("  runs: none")
-			} else {
-				fmt.Printf("  runs: %s\n", runSummary)
-				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-				tableHeader(w, "    ID", "NAME", "STATUS", "AGE", "COMMAND")
-				for _, session := range entry.Sessions {
-					name := session.Name
-					if name == "" {
-						name = "-"
-					}
-					fmt.Fprintf(w, "    %d\t%s\t%s\t%s\t%s\n",
-						session.ID,
-						name,
-						stateColor(session.Status),
-						timeAgo(session.CreatedAt),
-						truncateRunCommand(session.Prompt),
-					)
-				}
-				if err := w.Flush(); err != nil {
-					return err
-				}
+	firstGroup := true
+	for _, network := range order {
+		if showNetworkHeaders {
+			if !firstGroup {
+				fmt.Println()
 			}
-		} else if entry.SessionLookup == "unavailable" && entry.SessionError != "" {
-			fmt.Printf("  runs: unavailable (%s)\n", entry.SessionError)
+			fmt.Printf("Network: %s\n\n", network)
+			firstGroup = false
 		}
 
-		fmt.Println()
+		for _, entry := range grouped[network] {
+			env := entry.Environment
+			for _, line := range environmentCardLines(env, currentRef) {
+				fmt.Println(line)
+			}
+
+			runSummary := "n/a"
+			switch entry.SessionLookup {
+			case "available":
+				runSummary = fmt.Sprintf("%d", len(entry.Sessions))
+			case "unavailable":
+				runSummary = "?"
+			case "":
+				runSummary = "--"
+			}
+
+			if entry.SessionLookup == "available" {
+				if len(entry.Sessions) == 0 {
+					fmt.Println("  runs: none")
+				} else {
+					fmt.Printf("  runs: %s\n", runSummary)
+					w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+					tableHeader(w, "    ID", "NAME", "STATUS", "AGE", "COMMAND")
+					for _, session := range entry.Sessions {
+						name := session.Name
+						if name == "" {
+							name = "-"
+						}
+						fmt.Fprintf(w, "    %d\t%s\t%s\t%s\t%s\n",
+							session.ID,
+							name,
+							stateColor(session.Status),
+							timeAgo(session.CreatedAt),
+							truncateRunCommand(session.Prompt),
+						)
+					}
+					if err := w.Flush(); err != nil {
+						return err
+					}
+				}
+			} else if entry.SessionLookup == "unavailable" && entry.SessionError != "" {
+				fmt.Printf("  runs: unavailable (%s)\n", entry.SessionError)
+			}
+
+			fmt.Println()
+		}
 	}
 	return nil
+}
+
+func groupPlatformEntriesByNetwork(entries []platformListEntry) (map[string][]platformListEntry, []string) {
+	grouped := make(map[string][]platformListEntry, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		network := platformEntryNetworkLabel(entry)
+		grouped[network] = append(grouped[network], entry)
+		seen[network] = struct{}{}
+	}
+
+	order := make([]string, 0, len(seen))
+	for network := range seen {
+		order = append(order, network)
+	}
+	sort.Slice(order, func(i, j int) bool {
+		left := order[i]
+		right := order[j]
+		if left == "No Network" {
+			return false
+		}
+		if right == "No Network" {
+			return true
+		}
+		return left < right
+	})
+	return grouped, order
+}
+
+func platformEntryNetworkLabel(entry platformListEntry) string {
+	if entry.Environment.Network == nil || strings.TrimSpace(*entry.Environment.Network) == "" {
+		return "No Network"
+	}
+	return strings.TrimSpace(*entry.Environment.Network)
 }
 
 func truncateRunCommand(prompt string) string {

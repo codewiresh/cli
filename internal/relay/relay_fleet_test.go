@@ -79,6 +79,32 @@ func TestNodesListRequiresAuthAndScopesByFleet(t *testing.T) {
 	if len(nodes) != 1 || nodes[0].Name != "shared-node" {
 		t.Fatalf("nodes = %#v, want one fleet-a node", nodes)
 	}
+
+	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/api/v1/nodes?all=true", nil)
+	req.Header.Set("Authorization", "Bearer admin-token")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("authenticated list all nodes: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("authenticated all status = %d", resp.StatusCode)
+	}
+
+	nodes = nil
+	if err := json.NewDecoder(resp.Body).Decode(&nodes); err != nil {
+		t.Fatalf("decode all nodes: %v", err)
+	}
+	if len(nodes) != 2 {
+		t.Fatalf("all nodes len = %d, want 2", len(nodes))
+	}
+	foundFleets := map[string]bool{}
+	for _, node := range nodes {
+		foundFleets[node.FleetID] = true
+	}
+	if !foundFleets["fleet-a"] || !foundFleets["fleet-b"] {
+		t.Fatalf("all nodes fleets = %#v, want fleet-a and fleet-b", foundFleets)
+	}
 }
 
 func TestKVIsFleetScopedAndRequiresAuth(t *testing.T) {

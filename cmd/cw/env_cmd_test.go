@@ -157,6 +157,7 @@ func TestSSHCmdCompletionUsesEnvironmentRefs(t *testing.T) {
 
 func TestPrintEnvListEntriesUsesUnifiedBlockLayout(t *testing.T) {
 	alpha := "alpha"
+	network := "project-alpha"
 	envs := []platform.Environment{
 		{
 			ID:            "12345678-1234-1234-1234-123456789abc",
@@ -166,6 +167,7 @@ func TestPrintEnvListEntriesUsesUnifiedBlockLayout(t *testing.T) {
 			CPUMillicores: 2000,
 			MemoryMB:      4096,
 			CreatedAt:     time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339),
+			Network:       &network,
 		},
 	}
 
@@ -191,6 +193,9 @@ func TestPrintEnvListEntriesUsesUnifiedBlockLayout(t *testing.T) {
 	}
 	if !strings.Contains(got, "sandbox  2000m/4096MB  ttl --") {
 		t.Fatalf("expected detail line, got %q", got)
+	}
+	if !strings.Contains(got, "network: project-alpha") {
+		t.Fatalf("expected network line, got %q", got)
 	}
 	if !strings.Contains(got, "connect: cw ssh 12345678") {
 		t.Fatalf("expected connect hint, got %q", got)

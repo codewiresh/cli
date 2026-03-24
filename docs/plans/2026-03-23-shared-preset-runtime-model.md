@@ -463,6 +463,38 @@ Preset persistence should be explicit:
 
 This keeps environment creation and preset management conceptually separate while still making `cw env create` a convenient entry point.
 
+### Networks as the user-facing group model
+
+For multi-environment agent workflows, the primary user-facing grouping concept should be `network`.
+
+In this model:
+
+- `network` is the group or swarm users select
+- `env` is a machine that may join a network
+- `run` is a session inside one environment
+- `relay` is the infrastructure that powers network membership and connectivity
+
+Recommended command split:
+
+- `cw network list`
+- `cw network create <name>`
+- `cw network use <name>`
+- `cw network nodes`
+- `cw network invite`
+- `cw network revoke`
+- `cw node qr`
+- `cw relay setup <url> [token]`
+- `cw relay serve`
+
+Recommended semantics:
+
+- `cw network use <name>` selects the current user-facing group
+- `cw env create` joins the selected network by default unless `--network` or `--no-network` says otherwise
+- `cw current` should show both the current execution target and current network when set
+- `cw list --runs` should eventually annotate or group environments by network when that metadata is available
+
+This keeps daily workflow centered on networks while preserving `relay` as an implementation and operations surface.
+
 ### Preset authoring
 
 Preset authoring should also have a dedicated explicit CLI:

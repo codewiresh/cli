@@ -102,6 +102,13 @@ func targetSummaryLine(target *cwconfig.CurrentTargetConfig, env *platform.Envir
 	return summary
 }
 
+func configuredNetwork(cfg *cwconfig.Config) string {
+	if cfg == nil || cfg.RelayNetwork == nil {
+		return ""
+	}
+	return strings.TrimSpace(*cfg.RelayNetwork)
+}
+
 func lookupEnvironmentForTarget(target *cwconfig.CurrentTargetConfig) *platform.Environment {
 	if target == nil || target.Kind != "env" {
 		return nil
@@ -235,13 +242,21 @@ func currentCmd() *cobra.Command {
 			}
 			target := currentTargetConfig(cfg)
 			env := lookupEnvironmentForTarget(target)
+			network := configuredNetwork(cfg)
 
 			if !verbose {
-				fmt.Println(targetSummaryLine(target, env))
+				summary := targetSummaryLine(target, env)
+				if network != "" {
+					summary += "  network: " + network
+				}
+				fmt.Println(summary)
 				return nil
 			}
 
 			fmt.Printf("%-10s %s\n", bold("Kind:"), target.Kind)
+			if network != "" {
+				fmt.Printf("%-10s %s\n", bold("Network:"), network)
+			}
 			if target.Kind == "local" && target.Ref == "local" {
 				fmt.Printf("%-10s %s\n", bold("Target:"), "local")
 				return nil
@@ -267,6 +282,12 @@ func currentCmd() *cobra.Command {
 					fmt.Printf("%-10s %s\n", bold("Name:"), *env.Name)
 				}
 				fmt.Printf("%-10s %s\n", bold("State:"), stateColor(env.State))
+				if env.Network != nil {
+					joined := strings.TrimSpace(*env.Network)
+					if joined != "" && joined != network {
+						fmt.Printf("%-10s %s\n", bold("Joined:"), joined)
+					}
+				}
 			}
 
 			return nil

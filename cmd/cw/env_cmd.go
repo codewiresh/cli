@@ -187,6 +187,9 @@ func environmentCardLines(env platform.Environment, currentRef string) []string 
 			envTTLString(env),
 		),
 	}
+	if env.Network != nil && strings.TrimSpace(*env.Network) != "" {
+		lines = append(lines, fmt.Sprintf("  network: %s", *env.Network))
+	}
 	if hint := envConnectHint(env); hint != "--" {
 		lines = append(lines, fmt.Sprintf("  connect: %s", hint))
 	} else {
@@ -410,7 +413,7 @@ func resolveEnvRelayEnrollment(dir string, assumeYes bool, requestedNetwork stri
 	cfg, err := cwconfig.LoadConfig(dir)
 	if err != nil {
 		if requestedNetwork != "" {
-			return nil, fmt.Errorf("relay is not configured locally (run 'cw relay setup' or 'cw relay create' first)")
+			return nil, fmt.Errorf("relay is not configured locally (run 'cw relay setup' or 'cw network create' first)")
 		}
 		return nil, nil
 	}
@@ -748,6 +751,9 @@ func envInfoCmd() *cobra.Command {
 			fmt.Printf("%-14s %s\n", bold("State:"), stateColor(env.State))
 			fmt.Printf("%-14s %s\n", bold("DesiredState:"), stateColor(env.DesiredState))
 			fmt.Printf("%-14s %s\n", bold("PresetID:"), dim(env.PresetID))
+			if env.Network != nil && strings.TrimSpace(*env.Network) != "" {
+				fmt.Printf("%-14s %s\n", bold("Network:"), *env.Network)
+			}
 			fmt.Printf("CPU:           %dm\n", env.CPUMillicores)
 			fmt.Printf("Memory:        %dMB\n", env.MemoryMB)
 			fmt.Printf("Disk:          %dGB\n", env.DiskGB)

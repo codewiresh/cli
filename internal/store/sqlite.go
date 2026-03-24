@@ -475,6 +475,27 @@ func (s *SQLiteStore) NodeList(_ context.Context, fleetID string) ([]NodeRecord,
 	return nodes, rows.Err()
 }
 
+func (s *SQLiteStore) NodeListAll(_ context.Context) ([]NodeRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query("SELECT fleet_id, name, token, github_id, authorized_at, last_seen_at FROM nodes ORDER BY fleet_id, name")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var nodes []NodeRecord
+	for rows.Next() {
+		var n NodeRecord
+		if err := rows.Scan(&n.FleetID, &n.Name, &n.Token, &n.GitHubID, &n.AuthorizedAt, &n.LastSeenAt); err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, n)
+	}
+	return nodes, rows.Err()
+}
+
 func (s *SQLiteStore) NodeGet(_ context.Context, fleetID, name string) (*NodeRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

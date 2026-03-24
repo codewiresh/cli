@@ -366,15 +366,26 @@ func nodeRevokeHandler(st store.Store) http.HandlerFunc {
 // --- Node Discovery ---
 
 type nodeResponse struct {
+	FleetID   string `json:"fleet_id,omitempty"`
 	Name      string `json:"name"`
 	Connected bool   `json:"connected"`
 }
 
 func nodesListHandler(st store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		fleetID := resolveFleetID(r.URL.Query().Get("fleet_id"))
+		all := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("all")), "true")
 
-		nodes, err := st.NodeList(r.Context(), fleetID)
+		var (
+			fleetID string
+			nodes   []store.NodeRecord
+			err     error
+		)
+		if all {
+			nodes, err = st.NodeListAll(r.Context())
+		} else {
+			fleetID = resolveFleetID(r.URL.Query().Get("fleet_id"))
+			nodes, err = st.NodeList(r.Context(), fleetID)
+		}
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
@@ -384,6 +395,7 @@ func nodesListHandler(st store.Store) http.HandlerFunc {
 		for _, n := range nodes {
 			connected := time.Since(n.LastSeenAt) < 2*time.Minute
 			resp = append(resp, nodeResponse{
+				FleetID:   n.FleetID,
 				Name:      n.Name,
 				Connected: connected,
 			})

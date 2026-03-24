@@ -70,6 +70,36 @@ func TestResourcesCommandShape(t *testing.T) {
 	}
 }
 
+func TestNetworkCommandShape(t *testing.T) {
+	cmd := networkCmd()
+
+	subcommands := map[string]bool{}
+	for _, sub := range cmd.Commands() {
+		subcommands[sub.Name()] = true
+	}
+
+	for _, required := range []string{"list", "create", "use", "nodes", "invite", "revoke"} {
+		if !subcommands[required] {
+			t.Fatalf("expected network command to include %q, got %#v", required, subcommands)
+		}
+	}
+}
+
+func TestNodeCommandShape(t *testing.T) {
+	cmd := nodeCmd()
+
+	subcommands := map[string]bool{}
+	for _, sub := range cmd.Commands() {
+		subcommands[sub.Name()] = true
+	}
+
+	for _, required := range []string{"stop", "qr", "list"} {
+		if !subcommands[required] {
+			t.Fatalf("expected node command to include %q, got %#v", required, subcommands)
+		}
+	}
+}
+
 func TestRelayCommandShape(t *testing.T) {
 	cmd := relayCmd()
 
@@ -78,7 +108,7 @@ func TestRelayCommandShape(t *testing.T) {
 		subcommands[sub.Name()] = true
 	}
 
-	for _, required := range []string{"serve", "networks", "create", "use", "setup", "nodes", "invite", "revoke", "qr"} {
+	for _, required := range []string{"serve", "setup"} {
 		if !subcommands[required] {
 			t.Fatalf("expected relay command to include %q, got %#v", required, subcommands)
 		}

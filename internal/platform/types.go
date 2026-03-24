@@ -267,6 +267,7 @@ type Environment struct {
 	StartedAt           *string `json:"started_at,omitempty"`
 	StoppedAt           *string `json:"stopped_at,omitempty"`
 	DestroyedAt         *string `json:"destroyed_at,omitempty"`
+	Network             *string `json:"network,omitempty"`
 }
 
 type Preset struct {

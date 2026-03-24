@@ -985,6 +985,7 @@ type RelayAuthOptions struct {
 	RelayURL  string
 	AuthToken string
 	NetworkID string
+	All       bool
 }
 
 type relayNetwork struct {
@@ -1089,7 +1090,9 @@ func Nodes(dataDir string, opts RelayAuthOptions) error {
 	}
 
 	url := relayURL + "/api/v1/nodes"
-	if networkID != "" {
+	if opts.All {
+		url += "?all=true"
+	} else if networkID != "" {
 		url += "?fleet_id=" + urlpkg.QueryEscape(networkID)
 	}
 	resp, err := fetchJSONWithAuth(url, authToken)
@@ -1098,6 +1101,7 @@ func Nodes(dataDir string, opts RelayAuthOptions) error {
 	}
 
 	var nodes []struct {
+		FleetID   string `json:"fleet_id,omitempty"`
 		Name      string `json:"name"`
 		TunnelURL string `json:"tunnel_url"`
 		Connected bool   `json:"connected"`
@@ -1111,11 +1115,38 @@ func Nodes(dataDir string, opts RelayAuthOptions) error {
 		return nil
 	}
 
-	fmt.Printf("%-20s %-40s %-10s\n", "NAME", "TUNNEL URL", "STATUS")
+	showNetwork := opts.All
+	if !showNetwork {
+		seen := map[string]struct{}{}
+		for _, n := range nodes {
+			if n.FleetID == "" {
+				continue
+			}
+			seen[n.FleetID] = struct{}{}
+			if len(seen) > 1 {
+				showNetwork = true
+				break
+			}
+		}
+	}
+
+	if showNetwork {
+		fmt.Printf("%-20s %-20s %-40s %-10s\n", "NETWORK", "NAME", "TUNNEL URL", "STATUS")
+	} else {
+		fmt.Printf("%-20s %-40s %-10s\n", "NAME", "TUNNEL URL", "STATUS")
+	}
 	for _, n := range nodes {
 		status := "offline"
 		if n.Connected {
 			status = "online"
+		}
+		if showNetwork {
+			network := n.FleetID
+			if network == "" {
+				network = "-"
+			}
+			fmt.Printf("%-20s %-20s %-40s %-10s\n", network, n.Name, n.TunnelURL, status)
+			continue
 		}
 		fmt.Printf("%-20s %-40s %-10s\n", n.Name, n.TunnelURL, status)
 	}

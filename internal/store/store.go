@@ -137,6 +137,7 @@ type Store interface {
 	NetworkList(ctx context.Context) ([]Network, error)
 	NodeRegister(ctx context.Context, node NodeRecord) error
 	NodeList(ctx context.Context, fleetID string) ([]NodeRecord, error)
+	NodeListAll(ctx context.Context) ([]NodeRecord, error)
 	NodeGet(ctx context.Context, fleetID, name string) (*NodeRecord, error)
 	NodeGetByToken(ctx context.Context, token string) (*NodeRecord, error)
 	NodeDelete(ctx context.Context, fleetID, name string) error

@@ -302,17 +302,35 @@ cw wait --tag worker --condition all                 # Wait for ALL workers to c
 cw wait --tag worker --condition any --timeout 60    # Wait for ANY worker, 60s timeout
 ```
 
-### `cw relay nodes`
+### `cw node list`
 
-List all nodes registered with the relay.
+List nodes. By default this uses the current network. Use `--network` to scope explicitly or `--all` to widen across networks.
 
 ```bash
-cw relay nodes
+cw node list
+cw node list --network project-alpha
+cw node list --all
+```
+
+### `cw network use <name>`
+
+Select the current network. New environments join this network by default unless you pass `--network` or `--no-network`.
+
+```bash
+cw network use project-alpha
+```
+
+### `cw node qr`
+
+Show a QR code for SSH access to this node, routed through the current network when one is selected.
+
+```bash
+cw node qr
 ```
 
 ### `cw relay setup [relay-url]`
 
-Authorize this node with a relay using the device authorization flow.
+Connect this machine to relay infrastructure using the device authorization flow.
 
 ```bash
 cw relay setup https://relay.codewire.sh
@@ -429,7 +447,7 @@ external_url = "wss://host/ws"            # CODEWIRE_EXTERNAL_URL
 relay_url = "https://relay.codewire.sh"  # CODEWIRE_RELAY_URL — opt-in remote access
 ```
 
-When no config file exists, codewire runs in standalone mode (Unix socket only, no relay).
+When no config file exists, codewire runs in standalone mode (Unix socket only, no relay-backed networking).
 
 ## Remote Access (SSH Relay)
 
@@ -438,28 +456,32 @@ Codewire uses an SSH gateway for remote access. Nodes establish persistent WebSo
 ### Quick Setup
 
 ```bash
-# Register your node with a relay
+# Connect this machine to a relay
 cw relay setup https://relay.codewire.sh
 
 # Or with an invite token
 cw relay setup https://relay.codewire.sh <token>
 
-# That's it. Your node is now accessible remotely via SSH.
+# Pick the current network / swarm
+cw network use project-alpha
 ```
 
-The setup flow registers the node, receives a node token, and persists the relay config. The node then maintains a persistent WebSocket connection to the relay.
+The setup flow registers the node, receives a node token, and persists the relay config. The node then maintains a persistent WebSocket connection to the relay. `cw network use` selects the user-facing group/scope that new environments and nodes should join.
 
 ### Remote Commands
 
 All commands accept an optional node prefix for remote access:
 
 ```bash
-# Local (no prefix)
-cw list                                    # Local sessions
-cw attach 3                                # Local session
+# Current network
+cw node list                              # Nodes in the current network
+cw node list --all                        # Nodes across all networks
+
+# Current environment target
+cw list --runs                             # Envs and runs in the current org
+cw attach 3                                # Attach to a local/current-target session
 
 # Remote (node prefix)
-cw nodes                                   # List all nodes from relay
 cw list dev-1                              # Sessions on dev-1
 cw attach dev-1:3                          # Session 3 on dev-1
 cw launch dev-1 -- claude -p "fix bug"     # Launch on dev-1
@@ -497,7 +519,8 @@ cw --server my-server attach 1
                 +----------+  +-----------+
 ```
 
-- **Relay** = SSH gateway + HTTP API (node discovery, shared KV, device auth)
+- **Network** = user-facing group/scope for related envs and nodes
+- **Relay** = SSH gateway + HTTP API backing those networks (node discovery, shared KV, device auth)
 - **Nodes** = connect outward via persistent WebSocket agents (no inbound ports needed)
 - **Clients** = SSH into `<node>@relay:2222`; same PTY experience
 
