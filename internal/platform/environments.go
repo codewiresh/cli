@@ -4,7 +4,35 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
+
+const (
+	minExecHTTPTimeout   = 10 * time.Minute
+	execHTTPTimeoutSlack = 30 * time.Second
+)
+
+func execRequestHTTPTimeout(timeoutSeconds int) time.Duration {
+	timeout := minExecHTTPTimeout
+	if timeoutSeconds > 0 {
+		requestTimeout := time.Duration(timeoutSeconds)*time.Second + execHTTPTimeoutSlack
+		if requestTimeout > timeout {
+			timeout = requestTimeout
+		}
+	}
+	return timeout
+}
+
+func (c *Client) withHTTPTimeout(timeout time.Duration) *Client {
+	if c == nil || c.HTTP == nil {
+		return c
+	}
+	httpClient := *c.HTTP
+	httpClient.Timeout = timeout
+	clone := *c
+	clone.HTTP = &httpClient
+	return &clone
+}
 
 func (c *Client) CreateEnvironment(orgID string, req *CreateEnvironmentRequest) (*Environment, error) {
 	var env Environment
@@ -86,7 +114,8 @@ func (c *Client) DeletePreset(orgID, presetID string) error {
 
 func (c *Client) ExecInEnvironment(orgID, envID string, req *ExecRequest) (*ExecResult, error) {
 	var result ExecResult
-	if err := c.do("POST", fmt.Sprintf("/api/v1/organizations/%s/environments/%s/exec", orgID, envID), req, &result); err != nil {
+	client := c.withHTTPTimeout(execRequestHTTPTimeout(req.Timeout))
+	if err := client.do("POST", fmt.Sprintf("/api/v1/organizations/%s/environments/%s/exec", orgID, envID), req, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
