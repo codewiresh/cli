@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codewiresh/codewire/internal/networkauth"
 	"github.com/codewiresh/codewire/internal/oauth"
 	"github.com/codewiresh/codewire/internal/store"
 	tailnetlib "github.com/codewiresh/tailnet"
@@ -71,6 +72,7 @@ func RunRelay(ctx context.Context, cfg RelayConfig) error {
 	hub := NewNodeHub()
 	sessions := NewPendingSessions()
 	tailnetCoord := tailnetlib.NewCoordinator(slog.Default())
+	runtimeReplay := networkauth.NewReplayCache()
 	defer tailnetCoord.Close()
 	derpSrv := tailnetlib.NewDERPServer()
 	derpHandler, derpCleanup := tailnetlib.DERPHandler(derpSrv)
@@ -93,7 +95,7 @@ func RunRelay(ctx context.Context, cfg RelayConfig) error {
 	fmt.Fprintf(os.Stderr, "[relay] SSH listening on %s\n", cfg.SSHListenAddr)
 
 	// Build HTTP mux.
-	mux := buildMux(hub, sessions, st, cfg, tailnetCoord, derpHandler)
+	mux := buildMux(hub, sessions, st, cfg, tailnetCoord, runtimeReplay, derpHandler)
 
 	httpSrv := &http.Server{Addr: cfg.ListenAddr, Handler: mux}
 	errCh := make(chan error, 1)
@@ -125,7 +127,7 @@ func BuildRelayMux(hub *NodeHub, sessions *PendingSessions, st store.Store) http
 	return mux
 }
 
-func buildMux(hub *NodeHub, sessions *PendingSessions, st store.Store, cfg RelayConfig, tailnetCoord *tailnetlib.Coordinator, derpHandler http.Handler) *http.ServeMux {
+func buildMux(hub *NodeHub, sessions *PendingSessions, st store.Store, cfg RelayConfig, tailnetCoord *tailnetlib.Coordinator, runtimeReplay *networkauth.ReplayCache, derpHandler http.Handler) *http.ServeMux {
 	authMiddleware := oauth.RequireAuth(st, cfg.AuthToken)
 	joinRL := newRateLimiter(10, time.Minute)
 
@@ -141,7 +143,7 @@ func buildMux(hub *NodeHub, sessions *PendingSessions, st store.Store, cfg Relay
 	mux.HandleFunc("GET /derp/latency-check", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	mux.HandleFunc("GET /api/v1/tailnet/coordinate", tailnetCoordinateHandler(cfg, st, tailnetCoord))
+	mux.HandleFunc("GET /api/v1/tailnet/coordinate", tailnetCoordinateHandler(cfg, st, tailnetCoord, runtimeReplay))
 
 	// GitHub OAuth (when AuthMode == "github").
 	if cfg.AuthMode == "github" {

@@ -21,7 +21,7 @@ func TestNetworkAuthClientRuntimeCredential(t *testing.T) {
 	handler := buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		AuthMode:  "token",
 		AuthToken: "relay-admin",
-	}, nil, nil)
+	}, nil, networkauth.NewReplayCache(), nil)
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -68,7 +68,7 @@ func TestNetworkAuthNodeRuntimeCredential(t *testing.T) {
 		t.Fatalf("NodeRegister: %v", err)
 	}
 
-	handler := buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{}, nil, nil)
+	handler := buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{}, nil, networkauth.NewReplayCache(), nil)
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -115,7 +115,7 @@ func TestNetworkAuthNodeSenderDelegation(t *testing.T) {
 		t.Fatalf("NodeRegister: %v", err)
 	}
 
-	handler := buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{}, nil, nil)
+	handler := buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{}, nil, networkauth.NewReplayCache(), nil)
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -152,7 +152,7 @@ func TestVerifierBundleStableAcrossRequests(t *testing.T) {
 	}
 	defer st.Close()
 
-	handler := buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{}, nil, nil)
+	handler := buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{}, nil, networkauth.NewReplayCache(), nil)
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -169,5 +169,30 @@ func TestVerifierBundleStableAcrossRequests(t *testing.T) {
 		if len(bundle.Keys) != 1 {
 			t.Fatalf("Keys len = %d, want 1", len(bundle.Keys))
 		}
+	}
+}
+
+func TestVerifyRelayRuntimeCredentialRejectsReplay(t *testing.T) {
+	st, err := store.NewSQLiteStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer st.Close()
+
+	state, err := loadOrCreateIssuerState(context.Background(), st, "project-alpha")
+	if err != nil {
+		t.Fatalf("loadOrCreateIssuerState: %v", err)
+	}
+	token, _, err := networkauth.SignRuntimeCredential(state, networkauth.SubjectKindClient, "github:1234", time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatalf("SignRuntimeCredential: %v", err)
+	}
+
+	replay := networkauth.NewReplayCache()
+	if _, err := verifyRelayRuntimeCredential(context.Background(), st, token, replay); err != nil {
+		t.Fatalf("verifyRelayRuntimeCredential first: %v", err)
+	}
+	if _, err := verifyRelayRuntimeCredential(context.Background(), st, token, replay); err == nil {
+		t.Fatal("expected runtime credential replay to be rejected")
 	}
 }

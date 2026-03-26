@@ -15,7 +15,7 @@ import (
 	"github.com/codewiresh/codewire/internal/peerclient"
 )
 
-func setupPeerRuntimeNode(t *testing.T, networkID string) (*Node, string, string) {
+func setupPeerRuntimeNode(t *testing.T, networkID string) (*Node, string, string, *networkauth.IssuerState) {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -81,11 +81,11 @@ func setupPeerRuntimeNode(t *testing.T, networkID string) (*Node, string, string
 	}()
 	time.Sleep(50 * time.Millisecond)
 
-	return n, "ws://" + addr + "/peer", token
+	return n, "ws://" + addr + "/peer", token, state
 }
 
 func TestPeerWebSocketEndpointRequiresRuntimeCredential(t *testing.T) {
-	_, baseURL, token := setupPeerRuntimeNode(t, "project-alpha")
+	_, baseURL, token, _ := setupPeerRuntimeNode(t, "project-alpha")
 
 	client, ws, err := peerclient.DialWebSocket(context.Background(), baseURL, token)
 	if err != nil {
@@ -115,7 +115,7 @@ func TestPeerWebSocketEndpointRequiresRuntimeCredential(t *testing.T) {
 }
 
 func TestPeerWebSocketEndpointRejectsLocalNodeToken(t *testing.T) {
-	n, baseURL, _ := setupPeerRuntimeNode(t, "project-alpha")
+	n, baseURL, _, _ := setupPeerRuntimeNode(t, "project-alpha")
 
 	token, err := auth.LoadOrGenerateToken(n.dataDir)
 	if err != nil {
@@ -131,12 +131,67 @@ func TestPeerWebSocketEndpointRejectsLocalNodeToken(t *testing.T) {
 }
 
 func TestPeerWebSocketEndpointRejectsRelaySessionFallback(t *testing.T) {
-	_, baseURL, _ := setupPeerRuntimeNode(t, "project-alpha")
+	_, baseURL, _, _ := setupPeerRuntimeNode(t, "project-alpha")
 
 	client, ws, err := peerclient.DialWebSocket(context.Background(), baseURL, "relay-session")
 	if err == nil {
 		defer ws.CloseNow()
 		defer client.Close()
 		t.Fatal("expected unauthorized dial")
+	}
+}
+
+func TestPeerWebSocketEndpointRejectsQueryParamToken(t *testing.T) {
+	_, baseURL, token, _ := setupPeerRuntimeNode(t, "project-alpha")
+
+	client, ws, err := peerclient.DialWebSocket(context.Background(), baseURL+"?token="+token, "")
+	if err == nil {
+		defer ws.CloseNow()
+		defer client.Close()
+		t.Fatal("expected query-param token dial to fail")
+	}
+}
+
+func TestPeerWebSocketEndpointRejectsRuntimeCredentialReplay(t *testing.T) {
+	_, baseURL, token, _ := setupPeerRuntimeNode(t, "project-alpha")
+
+	client, ws, err := peerclient.DialWebSocket(context.Background(), baseURL, token)
+	if err != nil {
+		t.Fatalf("DialWebSocket first: %v", err)
+	}
+	defer ws.CloseNow()
+	defer client.Close()
+
+	replayedClient, replayedWS, err := peerclient.DialWebSocket(context.Background(), baseURL, token)
+	if err == nil {
+		defer replayedWS.CloseNow()
+		defer replayedClient.Close()
+		t.Fatal("expected replayed runtime credential dial to fail")
+	}
+}
+
+func TestAuthorizePeerSenderRejectsSenderDelegationReplay(t *testing.T) {
+	n, _, _, state := setupPeerRuntimeNode(t, "project-alpha")
+
+	sessionID, err := n.Manager.ResolveByName("coder")
+	if err != nil {
+		t.Fatalf("ResolveByName: %v", err)
+	}
+	delegation, _, err := networkauth.SignSenderDelegation(state, "dev-1", &sessionID, "coder", []string{"msg"}, n.config.Node.Name, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatalf("SignSenderDelegation: %v", err)
+	}
+	from := &peer.SessionLocator{Node: "dev-1", ID: &sessionID}
+
+	authorized, err := n.authorizePeerSender(context.Background(), "msg", from, delegation)
+	if err != nil {
+		t.Fatalf("authorizePeerSender first: %v", err)
+	}
+	if authorized == nil || authorized.DisplayName != "dev-1:coder" {
+		t.Fatalf("authorized = %#v", authorized)
+	}
+
+	if _, err := n.authorizePeerSender(context.Background(), "msg", from, delegation); err == nil {
+		t.Fatal("expected replayed sender delegation to fail")
 	}
 }

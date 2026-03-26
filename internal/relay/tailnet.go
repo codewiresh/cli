@@ -17,7 +17,7 @@ import (
 	tailnetlib "github.com/codewiresh/tailnet"
 )
 
-func tailnetCoordinateHandler(cfg RelayConfig, st store.Store, coord *tailnetlib.Coordinator) http.HandlerFunc {
+func tailnetCoordinateHandler(cfg RelayConfig, st store.Store, coord *tailnetlib.Coordinator, replay *networkauth.ReplayCache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if coord == nil {
 			http.Error(w, "tailnet coordinator unavailable", http.StatusServiceUnavailable)
@@ -25,7 +25,7 @@ func tailnetCoordinateHandler(cfg RelayConfig, st store.Store, coord *tailnetlib
 		}
 
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		claims, err := verifyRelayRuntimeCredential(r.Context(), st, token)
+		claims, err := verifyRelayRuntimeCredential(r.Context(), st, token, replay)
 		if err != nil {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -139,7 +139,7 @@ func writeTailnetResponse(ctx context.Context, wsConn *websocket.Conn, resp peer
 	return wsConn.Write(ctx, websocket.MessageText, payload)
 }
 
-func verifyRelayRuntimeCredential(ctx context.Context, st store.Store, token string) (*networkauth.RuntimeClaims, error) {
+func verifyRelayRuntimeCredential(ctx context.Context, st store.Store, token string, replay *networkauth.ReplayCache) (*networkauth.RuntimeClaims, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return nil, fmt.Errorf("missing runtime credential")
@@ -154,11 +154,18 @@ func verifyRelayRuntimeCredential(ctx context.Context, st store.Store, token str
 	if err != nil {
 		return nil, err
 	}
-	return networkauth.VerifyRuntimeCredential(
+	claims, err := networkauth.VerifyRuntimeCredential(
 		token,
 		state.Bundle(time.Now().UTC(), networkauth.DefaultBundleValidity),
 		time.Now().UTC(),
 	)
+	if err != nil {
+		return nil, err
+	}
+	if err := replay.ConsumeRuntime(claims, time.Now().UTC()); err != nil {
+		return nil, err
+	}
+	return claims, nil
 }
 
 func loadIssuerState(ctx context.Context, st store.Store, networkID string) (*networkauth.IssuerState, error) {

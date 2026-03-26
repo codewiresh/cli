@@ -1616,10 +1616,15 @@ async fn start_ws_test_node(data_dir: &Path) -> (PathBuf, u16) {
 async fn ws_request_response(port: u16, token: &str, req: &Request) -> Response {
     use codewire::connection::{FrameReader, FrameWriter};
     use futures::StreamExt;
-    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::{connect_async, tungstenite::http::Request as WsRequest};
 
-    let url = format!("ws://127.0.0.1:{}/ws?token={}", port, token);
-    let (ws, _) = connect_async(&url).await.unwrap();
+    let url = format!("ws://127.0.0.1:{}/ws", port);
+    let request = WsRequest::builder()
+        .uri(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .body(())
+        .unwrap();
+    let (ws, _) = connect_async(request).await.unwrap();
     let (ws_writer, ws_reader) = ws.split();
     let mut reader = FrameReader::WsClient(ws_reader);
     let mut writer = FrameWriter::WsClient(ws_writer);
@@ -1705,8 +1710,13 @@ async fn test_ws_auth_rejection() {
     let (_sock, port) = start_ws_test_node(&dir).await;
 
     // Try connecting with wrong token — should get HTTP 401 (connection fails)
-    let url = format!("ws://127.0.0.1:{}/ws?token=wrong-token", port);
-    let result = tokio_tungstenite::connect_async(&url).await;
+    let url = format!("ws://127.0.0.1:{}/ws", port);
+    let request = tokio_tungstenite::tungstenite::http::Request::builder()
+        .uri(&url)
+        .header("Authorization", "Bearer wrong-token")
+        .body(())
+        .unwrap();
+    let result = tokio_tungstenite::connect_async(request).await;
     assert!(
         result.is_err(),
         "expected connection to fail with bad token"
@@ -1745,8 +1755,13 @@ async fn test_ws_attach_and_receive_output() {
     use codewire::connection::{FrameReader, FrameWriter};
     use futures::StreamExt;
 
-    let url = format!("ws://127.0.0.1:{}/ws?token={}", port, token);
-    let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let url = format!("ws://127.0.0.1:{}/ws", port);
+    let request = tokio_tungstenite::tungstenite::http::Request::builder()
+        .uri(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .body(())
+        .unwrap();
+    let (ws, _) = tokio_tungstenite::connect_async(request).await.unwrap();
     let (ws_writer, ws_reader) = ws.split();
     let mut reader = FrameReader::WsClient(ws_reader);
     let mut writer = FrameWriter::WsClient(ws_writer);

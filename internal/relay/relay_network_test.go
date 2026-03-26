@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codewiresh/codewire/internal/networkauth"
 	"github.com/codewiresh/codewire/internal/store"
 	"nhooyr.io/websocket"
 )
@@ -27,7 +28,7 @@ func TestNodesListRequiresAuthAndScopesByNetwork(t *testing.T) {
 		BaseURL:   "http://relay.test",
 		AuthMode:  "token",
 		AuthToken: "admin-token",
-	}, nil, nil))
+	}, nil, networkauth.NewReplayCache(), nil))
 	defer srv.Close()
 	client := srv.Client()
 
@@ -120,7 +121,7 @@ func TestKVIsNetworkScopedAndRequiresAuth(t *testing.T) {
 		BaseURL:   "http://relay.test",
 		AuthMode:  "token",
 		AuthToken: "admin-token",
-	}, nil, nil))
+	}, nil, networkauth.NewReplayCache(), nil))
 	defer srv.Close()
 	client := srv.Client()
 
@@ -203,7 +204,7 @@ func TestJoinRegistersNodeIntoInviteNetwork(t *testing.T) {
 	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		BaseURL:  "http://relay.test",
 		AuthMode: "none",
-	}, nil, nil))
+	}, nil, networkauth.NewReplayCache(), nil))
 	defer srv.Close()
 	client := srv.Client()
 
@@ -240,7 +241,7 @@ func TestNetworksCanBeCreatedAndListed(t *testing.T) {
 		BaseURL:   "http://relay.test",
 		AuthMode:  "token",
 		AuthToken: "admin-token",
-	}, nil, nil))
+	}, nil, networkauth.NewReplayCache(), nil))
 	defer srv.Close()
 	client := srv.Client()
 
@@ -307,7 +308,7 @@ func TestNodeConnectPersistsPeerURL(t *testing.T) {
 	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		BaseURL:  "http://relay.test",
 		AuthMode: "none",
-	}, nil, nil))
+	}, nil, networkauth.NewReplayCache(), nil))
 	defer srv.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

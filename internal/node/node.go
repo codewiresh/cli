@@ -32,6 +32,8 @@ type Node struct {
 	config      *config.Config
 	dataDir     string
 	bundleCache *networkauth.BundleCache
+	runtimeSeen *networkauth.ReplayCache
+	senderSeen  *networkauth.ReplayCache
 }
 
 // NewNode creates a Node rooted at dataDir. It loads the configuration,
@@ -54,12 +56,14 @@ func NewNode(dataDir string) (*Node, error) {
 	slog.Info("auth token ready", "token", token)
 
 	node := &Node{
-		Manager:    mgr,
-		KVStore:    session.NewKVStore(),
-		socketPath: filepath.Join(dataDir, "codewire.sock"),
-		pidPath:    filepath.Join(dataDir, "codewire.pid"),
-		config:     cfg,
-		dataDir:    dataDir,
+		Manager:     mgr,
+		KVStore:     session.NewKVStore(),
+		socketPath:  filepath.Join(dataDir, "codewire.sock"),
+		pidPath:     filepath.Join(dataDir, "codewire.pid"),
+		config:      cfg,
+		dataDir:     dataDir,
+		runtimeSeen: networkauth.NewReplayCache(),
+		senderSeen:  networkauth.NewReplayCache(),
 	}
 	node.bundleCache = networkauth.NewBundleCache(func(ctx context.Context) (*networkauth.VerifierBundle, error) {
 		if node.config.RelayURL == nil || strings.TrimSpace(*node.config.RelayURL) == "" {
@@ -190,13 +194,9 @@ func (n *Node) Cleanup() {
 func (n *Node) runWSServer(ctx context.Context, addr string, peerServer *peer.Server) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		// Check Authorization header first, fall back to query param.
 		token := ""
 		if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
 			token = strings.TrimPrefix(authHeader, "Bearer ")
-		}
-		if token == "" {
-			token = r.URL.Query().Get("token")
 		}
 		if !auth.ValidateToken(n.dataDir, token) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -218,9 +218,6 @@ func (n *Node) runWSServer(ctx context.Context, addr string, peerServer *peer.Se
 		token := ""
 		if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
 			token = strings.TrimPrefix(authHeader, "Bearer ")
-		}
-		if token == "" {
-			token = r.URL.Query().Get("token")
 		}
 		if !n.validatePeerToken(r.Context(), token) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -297,7 +294,10 @@ func (n *Node) validateRuntimeCredential(ctx context.Context, token string) bool
 	if err != nil {
 		return false
 	}
-	return claims.NetworkID == n.relayNetworkID()
+	if claims.NetworkID != n.relayNetworkID() {
+		return false
+	}
+	return n.runtimeSeen.ConsumeRuntime(claims, time.Now().UTC()) == nil
 }
 
 func (n *Node) relayNetworkID() string {
@@ -378,6 +378,9 @@ func (n *Node) authorizePeerSender(ctx context.Context, verb string, from *peer.
 		label += fmt.Sprintf(":%d", *claims.FromSessionID)
 	default:
 		return nil, fmt.Errorf("sender delegation missing session identity")
+	}
+	if err := n.senderSeen.ConsumeSender(claims, time.Now().UTC()); err != nil {
+		return nil, err
 	}
 	return &peer.AuthorizedSender{
 		DisplayName: label,
