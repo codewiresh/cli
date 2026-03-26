@@ -4,7 +4,7 @@
 
 Codewire is a persistent process server for AI coding agents. Single Go binary (`cw`) acts as both node and CLI client. Manages PTY sessions that survive disconnects — launch AI agents, detach, reconnect later.
 
-Two tiers: **Standalone** (default, zero config, works like tmux) and **Relay mode** (opt-in remote access via WireGuard, fleet discovery, shared KV storage).
+Two tiers: **Standalone** (default, zero config, works like tmux) and **Relay mode** (opt-in remote access via WireGuard, network discovery, shared KV storage).
 
 ## Tech Stack
 
@@ -32,7 +32,7 @@ internal/
     handler.go              # Client dispatch, attach/watch/logs/subscribe/wait handlers
   client/
     client.go               # Target (local/remote/relay), Connect, requestResponse
-    commands.go             # All CLI command implementations (merged fleet)
+    commands.go             # All CLI command implementations (merged network messaging)
   terminal/
     rawmode.go              # RawModeGuard (golang.org/x/term)
     size.go                 # Terminal size, SIGWINCH
@@ -93,4 +93,4 @@ GitHub Actions builds binaries, creates the release, and updates `Formula/codewi
 - **Events**: Sessions emit typed events (session.created, session.status, session.output_summary). Events stored in `events.jsonl` per session. SubscriptionManager for pub/sub fan-out.
 - **Broadcaster**: fan-out to multiple attached clients, non-blocking send with drop for slow consumers
 - **Relay**: WireGuard tunnel via `coder/wgtunnel`. Relay runs embedded SQLite for node registry + shared KV store. Nodes connect via userspace WireGuard (no root needed).
-- **Merged CLI**: No separate fleet namespace. `node:session` syntax everywhere. `cw nodes`, `cw subscribe`, `cw wait` are top-level commands.
+- **Merged CLI**: No separate network namespace. `node:session` syntax everywhere. `cw nodes`, `cw subscribe`, `cw wait` are top-level commands.

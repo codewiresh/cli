@@ -19,6 +19,9 @@ import (
 	"github.com/codewiresh/codewire/internal/config"
 	"github.com/codewiresh/codewire/internal/mcp"
 	"github.com/codewiresh/codewire/internal/node"
+	"github.com/codewiresh/codewire/internal/peer"
+	"github.com/codewiresh/codewire/internal/peerclient"
+	"github.com/codewiresh/codewire/internal/protocol"
 	"github.com/codewiresh/codewire/internal/relay"
 	"github.com/codewiresh/codewire/internal/update"
 )
@@ -741,6 +744,25 @@ func useNetworkCmd() *cobra.Command {
 	}
 }
 
+func currentNetworkCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "current",
+		Short: "Show the current network",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.LoadConfig(dataDir())
+			if err != nil {
+				return err
+			}
+			if cfg.RelayNetwork == nil || strings.TrimSpace(*cfg.RelayNetwork) == "" {
+				fmt.Println("none")
+				return nil
+			}
+			fmt.Println(strings.TrimSpace(*cfg.RelayNetwork))
+			return nil
+		},
+	}
+}
+
 // ---------------------------------------------------------------------------
 // nodeListCmd / nodesCmd — list nodes from relay
 // ---------------------------------------------------------------------------
@@ -1201,6 +1223,7 @@ func networkCmd() *cobra.Command {
 	cmd.AddCommand(
 		networksCmd(),
 		createNetworkCmd(),
+		currentNetworkCmd(),
 		useNetworkCmd(),
 		nodesCmd(),
 		inviteCmd(),
@@ -1289,9 +1312,90 @@ func msgCmd() *cobra.Command {
 		Short: "Send a message to a session (by ID or name)",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			toLocator, err := parseSessionLocator(args[0])
+			if err != nil {
+				return err
+			}
+			toLocator, err = normalizeSessionLocatorForCurrentNode(toLocator)
+			if err != nil {
+				return err
+			}
+
 			target, err := resolveTarget()
 			if err != nil {
 				return err
+			}
+
+			if toLocator.isRemote() {
+				if !target.IsLocal() {
+					return fmt.Errorf("remote session locators like %q cannot be combined with --server; use the session ID or name on that server directly", args[0])
+				}
+				if from == "" {
+					if envID := os.Getenv("CW_SESSION_ID"); envID != "" {
+						from = envID
+					}
+				}
+				var (
+					peerFrom  *peer.SessionLocator
+					senderCap string
+				)
+				if from != "" {
+					fromLocator, err := parseSessionLocator(from)
+					if err != nil {
+						return err
+					}
+					fromLocator, err = normalizeSessionLocatorForCurrentNode(fromLocator)
+					if err != nil {
+						return err
+					}
+					if fromLocator.isRemote() {
+						return fmt.Errorf("remote sender locators like %q are not allowed here; the sender session must be owned by the current local node", from)
+					}
+					if err := ensureNode(); err != nil {
+						return err
+					}
+					peerFrom, senderCap, err = issueRemoteSenderDelegation(target, fromLocator, "msg", toLocator.Node)
+					if err != nil {
+						return err
+					}
+				}
+
+				ctx := context.Background()
+				peerConn, cleanup, err := dialPeerClientForNode(ctx, toLocator.Node)
+				if err != nil {
+					return err
+				}
+				defer cleanup()
+
+				msgID, err := peerclient.Msg(ctx, peerConn, peerFrom, senderCap, toPeerSessionLocator(toLocator), args[1], resolveRemoteDelivery(delivery))
+				if err != nil {
+					return err
+				}
+				fmt.Fprintf(os.Stderr, "Message sent: %s\n", msgID)
+				return nil
+			}
+
+			if from == "" {
+				if envID := os.Getenv("CW_SESSION_ID"); envID != "" {
+					from = envID
+				}
+			}
+
+			if from != "" {
+				fromLocator, err := parseSessionLocator(from)
+				if err != nil {
+					return err
+				}
+				fromLocator, err = normalizeSessionLocatorForCurrentNode(fromLocator)
+				if err != nil {
+					return err
+				}
+				if fromLocator.isRemote() {
+					if !target.IsLocal() {
+						return fmt.Errorf("remote sender locators like %q cannot be combined with --server; use the sender session ID or name on that server directly", from)
+					}
+					return fmt.Errorf("remote sender locators like %q are not wired yet; the network peer transport is implemented only as a foundation in this branch", from)
+				}
 			}
 
 			if target.IsLocal() {
@@ -1300,15 +1404,14 @@ func msgCmd() *cobra.Command {
 				}
 			}
 
-			toID, err := client.ResolveSessionArg(target, args[0])
-			if err != nil {
-				return err
+			toArg := toLocator.Name
+			if toLocator.ID != nil {
+				toArg = fmt.Sprintf("%d", *toLocator.ID)
 			}
 
-			if from == "" {
-				if envID := os.Getenv("CW_SESSION_ID"); envID != "" {
-					from = envID
-				}
+			toID, err := client.ResolveSessionArg(target, toArg)
+			if err != nil {
+				return err
 			}
 
 			var fromID *uint32
@@ -1356,9 +1459,37 @@ func inboxCmd() *cobra.Command {
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: sessionCompletionFunc,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			locator, err := parseSessionLocator(args[0])
+			if err != nil {
+				return err
+			}
+			locator, err = normalizeSessionLocatorForCurrentNode(locator)
+			if err != nil {
+				return err
+			}
+
 			target, err := resolveTarget()
 			if err != nil {
 				return err
+			}
+
+			if locator.isRemote() {
+				if !target.IsLocal() {
+					return fmt.Errorf("remote session locators like %q cannot be combined with --server; use the session ID or name on that server directly", args[0])
+				}
+				ctx := context.Background()
+				peerConn, cleanup, err := dialPeerClientForNode(ctx, locator.Node)
+				if err != nil {
+					return err
+				}
+				defer cleanup()
+
+				messages, err := peerclient.Inbox(ctx, peerConn, toPeerSessionLocator(locator), tail)
+				if err != nil {
+					return err
+				}
+				printMessageResponses(messages)
+				return nil
 			}
 
 			if target.IsLocal() {
@@ -1367,7 +1498,12 @@ func inboxCmd() *cobra.Command {
 				}
 			}
 
-			sessionID, err := client.ResolveSessionArg(target, args[0])
+			sessionArg := locator.Name
+			if locator.ID != nil {
+				sessionArg = fmt.Sprintf("%d", *locator.ID)
+			}
+
+			sessionID, err := client.ResolveSessionArg(target, sessionArg)
 			if err != nil {
 				return err
 			}
@@ -1392,9 +1528,47 @@ func listenCmd() *cobra.Command {
 		Use:   "listen",
 		Short: "Stream all message traffic in real-time",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			var locator *sessionLocator
+			if sessionArg != "" {
+				parsed, err := parseSessionLocator(sessionArg)
+				if err != nil {
+					return err
+				}
+				parsed, err = normalizeSessionLocatorForCurrentNode(parsed)
+				if err != nil {
+					return err
+				}
+				locator = &parsed
+			}
+
 			target, err := resolveTarget()
 			if err != nil {
 				return err
+			}
+
+			if locator != nil && locator.isRemote() {
+				if !target.IsLocal() {
+					return fmt.Errorf("remote session locators like %q cannot be combined with --server; use the session ID or name on that server directly", sessionArg)
+				}
+
+				ctx := context.Background()
+				peerConn, cleanup, err := dialPeerClientForNode(ctx, locator.Node)
+				if err != nil {
+					return err
+				}
+				defer cleanup()
+
+				fmt.Fprintf(os.Stderr, "[cw] listening for messages...\n")
+				return peerclient.Listen(ctx, peerConn, &peer.SessionLocator{
+					Node: locator.Node,
+					ID:   locator.ID,
+					Name: locator.Name,
+				}, func(event *protocol.SessionEvent) error {
+					if event != nil {
+						printSessionEvent(event)
+					}
+					return nil
+				})
 			}
 
 			if target.IsLocal() {
@@ -1404,8 +1578,12 @@ func listenCmd() *cobra.Command {
 			}
 
 			var sessionID *uint32
-			if sessionArg != "" {
-				resolved, err := client.ResolveSessionArg(target, sessionArg)
+			if locator != nil {
+				sessionLookup := locator.Name
+				if locator.ID != nil {
+					sessionLookup = fmt.Sprintf("%d", *locator.ID)
+				}
+				resolved, err := client.ResolveSessionArg(target, sessionLookup)
 				if err != nil {
 					return err
 				}
@@ -1438,9 +1616,67 @@ func requestCmd() *cobra.Command {
 		Short: "Send a request to a session and wait for a reply",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			toLocator, err := parseSessionLocator(args[0])
+			if err != nil {
+				return err
+			}
+			toLocator, err = normalizeSessionLocatorForCurrentNode(toLocator)
+			if err != nil {
+				return err
+			}
+
 			target, err := resolveTarget()
 			if err != nil {
 				return err
+			}
+
+			if toLocator.isRemote() {
+				if !target.IsLocal() {
+					return fmt.Errorf("remote session locators like %q cannot be combined with --server; use the session ID or name on that server directly", args[0])
+				}
+				if from == "" {
+					if envID := os.Getenv("CW_SESSION_ID"); envID != "" {
+						from = envID
+					}
+				}
+				var (
+					peerFrom  *peer.SessionLocator
+					senderCap string
+				)
+				if from != "" {
+					fromLocator, err := parseSessionLocator(from)
+					if err != nil {
+						return err
+					}
+					fromLocator, err = normalizeSessionLocatorForCurrentNode(fromLocator)
+					if err != nil {
+						return err
+					}
+					if fromLocator.isRemote() {
+						return fmt.Errorf("remote sender locators like %q are not allowed here; the sender session must be owned by the current local node", from)
+					}
+					if err := ensureNode(); err != nil {
+						return err
+					}
+					peerFrom, senderCap, err = issueRemoteSenderDelegation(target, fromLocator, "request", toLocator.Node)
+					if err != nil {
+						return err
+					}
+				}
+
+				ctx := context.Background()
+				peerConn, cleanup, err := dialPeerClientForNode(ctx, toLocator.Node)
+				if err != nil {
+					return err
+				}
+				defer cleanup()
+
+				result, err := peerclient.Request(ctx, peerConn, peerFrom, senderCap, toPeerSessionLocator(toLocator), args[1], timeout, resolveRemoteDelivery(delivery))
+				if err != nil {
+					return err
+				}
+				printRequestReplyResult(rawOutput, result)
+				return nil
 			}
 
 			if target.IsLocal() {
@@ -1449,7 +1685,12 @@ func requestCmd() *cobra.Command {
 				}
 			}
 
-			toID, err := client.ResolveSessionArg(target, args[0])
+			toArg := toLocator.Name
+			if toLocator.ID != nil {
+				toArg = fmt.Sprintf("%d", *toLocator.ID)
+			}
+
+			toID, err := client.ResolveSessionArg(target, toArg)
 			if err != nil {
 				return err
 			}
@@ -1494,9 +1735,34 @@ func replyCmd() *cobra.Command {
 		Short: "Reply to a pending request",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			var fromLocator *sessionLocator
+			if from == "" {
+				if envID := os.Getenv("CW_SESSION_ID"); envID != "" {
+					from = envID
+				}
+			}
+			if from != "" {
+				parsed, err := parseSessionLocator(from)
+				if err != nil {
+					return err
+				}
+				parsed, err = normalizeSessionLocatorForCurrentNode(parsed)
+				if err != nil {
+					return err
+				}
+				fromLocator = &parsed
+			}
+
 			target, err := resolveTarget()
 			if err != nil {
 				return err
+			}
+
+			if fromLocator != nil && fromLocator.isRemote() {
+				if !target.IsLocal() {
+					return fmt.Errorf("remote sender locators like %q cannot be combined with --server; use the sender session ID or name on that server directly", from)
+				}
+				return fmt.Errorf("remote sender locators like %q are not allowed for reply; reply as a session owned by the current local node", from)
 			}
 
 			if target.IsLocal() {
@@ -1505,15 +1771,13 @@ func replyCmd() *cobra.Command {
 				}
 			}
 
-			if from == "" {
-				if envID := os.Getenv("CW_SESSION_ID"); envID != "" {
-					from = envID
-				}
-			}
-
 			var fromID *uint32
-			if from != "" {
-				resolved, err := client.ResolveSessionArg(target, from)
+			if fromLocator != nil {
+				fromValue := fromLocator.Name
+				if fromLocator.ID != nil {
+					fromValue = fmt.Sprintf("%d", *fromLocator.ID)
+				}
+				resolved, err := client.ResolveSessionArg(target, fromValue)
 				if err != nil {
 					return err
 				}

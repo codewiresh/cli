@@ -16,6 +16,8 @@ import (
 	"github.com/codewiresh/codewire/internal/auth"
 	"github.com/codewiresh/codewire/internal/config"
 	"github.com/codewiresh/codewire/internal/connection"
+	"github.com/codewiresh/codewire/internal/networkauth"
+	"github.com/codewiresh/codewire/internal/peer"
 	"github.com/codewiresh/codewire/internal/relay"
 	"github.com/codewiresh/codewire/internal/session"
 )
@@ -23,12 +25,13 @@ import (
 // Node manages PTY sessions, accepting connections over a Unix domain socket
 // and optionally a WebSocket listener.
 type Node struct {
-	Manager    *session.SessionManager
-	KVStore    *session.KVStore
-	socketPath string
-	pidPath    string
-	config     *config.Config
-	dataDir    string
+	Manager     *session.SessionManager
+	KVStore     *session.KVStore
+	socketPath  string
+	pidPath     string
+	config      *config.Config
+	dataDir     string
+	bundleCache *networkauth.BundleCache
 }
 
 // NewNode creates a Node rooted at dataDir. It loads the configuration,
@@ -50,14 +53,21 @@ func NewNode(dataDir string) (*Node, error) {
 	}
 	slog.Info("auth token ready", "token", token)
 
-	return &Node{
+	node := &Node{
 		Manager:    mgr,
 		KVStore:    session.NewKVStore(),
 		socketPath: filepath.Join(dataDir, "codewire.sock"),
 		pidPath:    filepath.Join(dataDir, "codewire.pid"),
 		config:     cfg,
 		dataDir:    dataDir,
-	}, nil
+	}
+	node.bundleCache = networkauth.NewBundleCache(func(ctx context.Context) (*networkauth.VerifierBundle, error) {
+		if node.config.RelayURL == nil || strings.TrimSpace(*node.config.RelayURL) == "" {
+			return nil, fmt.Errorf("relay is not configured")
+		}
+		return networkauth.FetchVerifierBundle(ctx, http.DefaultClient, *node.config.RelayURL, node.relayNetworkID())
+	})
+	return node, nil
 }
 
 // Run starts the node. It writes a PID file, listens on a Unix socket,
@@ -81,10 +91,16 @@ func (n *Node) Run(ctx context.Context) error {
 	defer n.Cleanup()
 
 	// Start WebSocket server if configured (direct mode).
+	peerServer := &peer.Server{
+		Sessions:        n.Manager,
+		NodeName:        n.config.Node.Name,
+		AuthorizeSender: n.authorizePeerSender,
+	}
+
 	if n.config.Node.Listen != nil {
 		addr := *n.config.Node.Listen
 		go func() {
-			if wsErr := n.runWSServer(ctx, addr); wsErr != nil {
+			if wsErr := n.runWSServer(ctx, addr, peerServer); wsErr != nil {
 				slog.Error("websocket server error", "err", wsErr)
 			}
 		}()
@@ -110,7 +126,9 @@ func (n *Node) Run(ctx context.Context) error {
 				RelayURL:  *n.config.RelayURL,
 				NodeName:  n.config.Node.Name,
 				NodeToken: *n.config.RelayToken,
+				PeerURL:   stringPtrValue(n.config.Node.ExternalURL),
 			})
+			go n.runTailnetPeerServer(ctx, peerServer)
 		}
 	}
 
@@ -155,6 +173,7 @@ func (n *Node) Run(ctx context.Context) error {
 			connection.NewUnixWriter(conn),
 			n.Manager,
 			n.KVStore,
+			n.issueSenderDelegation,
 		)
 	}
 }
@@ -168,7 +187,7 @@ func (n *Node) Cleanup() {
 // runWSServer starts an HTTP server that upgrades /ws connections to WebSocket
 // and dispatches them through the standard client handler after validating the
 // auth token.
-func (n *Node) runWSServer(ctx context.Context, addr string) error {
+func (n *Node) runWSServer(ctx context.Context, addr string, peerServer *peer.Server) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		// Check Authorization header first, fall back to query param.
@@ -193,7 +212,27 @@ func (n *Node) runWSServer(ctx context.Context, addr string) error {
 		wsCtx := r.Context()
 		reader := connection.NewWSReader(wsCtx, wsConn)
 		writer := connection.NewWSWriter(wsCtx, wsConn)
-		handleClient(reader, writer, n.Manager, n.KVStore)
+		handleClient(reader, writer, n.Manager, n.KVStore, n.issueSenderDelegation)
+	})
+	mux.HandleFunc("/peer", func(w http.ResponseWriter, r *http.Request) {
+		token := ""
+		if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+			token = strings.TrimPrefix(authHeader, "Bearer ")
+		}
+		if token == "" {
+			token = r.URL.Query().Get("token")
+		}
+		if !n.validatePeerToken(r.Context(), token) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		wsConn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			slog.Error("peer websocket accept error", "err", err)
+			return
+		}
+		peerServer.ServeWebSocket(r.Context(), wsConn)
 	})
 
 	srv := &http.Server{
@@ -215,6 +254,146 @@ func (n *Node) runWSServer(ctx context.Context, addr string) error {
 		return fmt.Errorf("websocket server: %w", err)
 	}
 	return nil
+}
+
+func (n *Node) runTailnetPeerServer(ctx context.Context, peerServer *peer.Server) {
+	if n == nil || n.config == nil || n.config.RelayURL == nil || n.config.RelayToken == nil {
+		return
+	}
+
+	issued, err := networkauth.IssueNodeRuntimeCredential(ctx, http.DefaultClient, *n.config.RelayURL, *n.config.RelayToken)
+	if err != nil {
+		slog.Error("tailnet runtime credential failed", "err", err)
+		return
+	}
+
+	conn, err := peer.StartNodeTailnetListener(ctx, *n.config.RelayURL, issued.Credential, peerServer)
+	if err != nil {
+		slog.Error("tailnet peer listener failed", "err", err)
+		return
+	}
+	defer conn.Close()
+
+	<-ctx.Done()
+}
+
+func (n *Node) validatePeerToken(ctx context.Context, token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+	return n.validateRuntimeCredential(ctx, token)
+}
+
+func (n *Node) validateRuntimeCredential(ctx context.Context, token string) bool {
+	if n.bundleCache == nil {
+		return false
+	}
+	bundle, err := n.bundleCache.Get(ctx)
+	if err != nil {
+		return false
+	}
+	claims, err := networkauth.VerifyRuntimeCredential(token, bundle, time.Now().UTC())
+	if err != nil {
+		return false
+	}
+	return claims.NetworkID == n.relayNetworkID()
+}
+
+func (n *Node) relayNetworkID() string {
+	if n == nil || n.config == nil || n.config.RelayNetwork == nil {
+		return networkauth.DefaultNetworkID
+	}
+	return networkauth.ResolveNetworkID(*n.config.RelayNetwork)
+}
+
+func (n *Node) issueSenderDelegation(ctx context.Context, sessionID uint32, verb, audienceNode string) (*networkauth.SenderDelegationResponse, error) {
+	if n == nil || n.config == nil {
+		return nil, fmt.Errorf("node config is unavailable")
+	}
+	if n.config.RelayURL == nil || strings.TrimSpace(*n.config.RelayURL) == "" {
+		return nil, fmt.Errorf("relay is not configured")
+	}
+	if n.config.RelayToken == nil || strings.TrimSpace(*n.config.RelayToken) == "" {
+		return nil, fmt.Errorf("relay node token is not configured")
+	}
+	sessionName := n.Manager.GetName(sessionID)
+	return networkauth.IssueNodeSenderDelegation(
+		ctx,
+		http.DefaultClient,
+		*n.config.RelayURL,
+		*n.config.RelayToken,
+		n.config.Node.Name,
+		&sessionID,
+		sessionName,
+		[]string{strings.TrimSpace(verb)},
+		strings.TrimSpace(audienceNode),
+	)
+}
+
+func (n *Node) authorizePeerSender(ctx context.Context, verb string, from *peer.SessionLocator, senderCap string) (*peer.AuthorizedSender, error) {
+	if from == nil {
+		return nil, nil
+	}
+	if strings.TrimSpace(senderCap) == "" {
+		return nil, fmt.Errorf("missing sender delegation")
+	}
+	if strings.TrimSpace(from.Node) == "" {
+		return nil, fmt.Errorf("sender locator must include source node")
+	}
+	bundle, err := n.bundleCache.Get(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("loading verifier bundle: %w", err)
+	}
+	claims, err := networkauth.VerifySenderDelegation(senderCap, bundle, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	if claims.NetworkID != n.relayNetworkID() {
+		return nil, fmt.Errorf("sender delegation network mismatch")
+	}
+	if claims.SourceNode != strings.TrimSpace(from.Node) {
+		return nil, fmt.Errorf("sender delegation source node mismatch")
+	}
+	if claims.AudienceNode != "" && claims.AudienceNode != n.config.Node.Name {
+		return nil, fmt.Errorf("sender delegation audience mismatch")
+	}
+	if !delegationAllowsVerb(claims.Verbs, verb) {
+		return nil, fmt.Errorf("sender delegation does not allow %s", verb)
+	}
+	if from.ID != nil {
+		if claims.FromSessionID == nil || *claims.FromSessionID != *from.ID {
+			return nil, fmt.Errorf("sender delegation session id mismatch")
+		}
+	}
+	if strings.TrimSpace(from.Name) != "" && claims.FromSessionName != strings.TrimSpace(from.Name) {
+		return nil, fmt.Errorf("sender delegation session name mismatch")
+	}
+
+	label := claims.SourceNode
+	switch {
+	case claims.FromSessionName != "":
+		label += ":" + claims.FromSessionName
+	case claims.FromSessionID != nil:
+		label += fmt.Sprintf(":%d", *claims.FromSessionID)
+	default:
+		return nil, fmt.Errorf("sender delegation missing session identity")
+	}
+	return &peer.AuthorizedSender{
+		DisplayName: label,
+		SessionID:   claims.FromSessionID,
+		SessionName: claims.FromSessionName,
+	}, nil
+}
+
+func delegationAllowsVerb(verbs []string, verb string) bool {
+	verb = strings.TrimSpace(verb)
+	for _, candidate := range verbs {
+		if strings.TrimSpace(candidate) == verb {
+			return true
+		}
+	}
+	return false
 }
 
 // persistenceManager debounces persist signals from the session manager.
@@ -255,4 +434,11 @@ func persistenceManager(manager *session.SessionManager) {
 			}
 		}
 	}
+}
+
+func stringPtrValue(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return strings.TrimSpace(*v)
 }

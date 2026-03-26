@@ -68,11 +68,14 @@ type Request struct {
 	TTL       string `json:"ttl,omitempty"` // Go duration string
 
 	// Messaging fields.
-	ToID      *uint32 `json:"to_id,omitempty"`
-	ToName    string  `json:"to_name,omitempty"`
-	Body      string  `json:"body,omitempty"`
-	RequestID string  `json:"request_id,omitempty"`
-	Delivery  string  `json:"delivery,omitempty"`
+	ToID         *uint32 `json:"to_id,omitempty"`
+	ToName       string  `json:"to_name,omitempty"`
+	Body         string  `json:"body,omitempty"`
+	RequestID    string  `json:"request_id,omitempty"`
+	Delivery     string  `json:"delivery,omitempty"`
+	Verb         string  `json:"verb,omitempty"`
+	AudienceNode string  `json:"audience_node,omitempty"`
+	SenderCap    string  `json:"sender_cap,omitempty"`
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for Request.
@@ -128,6 +131,7 @@ type Response struct {
 	ReplyBody string             `json:"reply_body,omitempty"`
 	FromID    *uint32            `json:"from_id,omitempty"`
 	FromName  string             `json:"from_name,omitempty"`
+	SenderCap string             `json:"sender_cap,omitempty"`
 }
 
 // MessageResponse represents a message in an inbox read result.

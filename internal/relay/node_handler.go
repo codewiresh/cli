@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"nhooyr.io/websocket"
 
@@ -28,6 +29,12 @@ func RegisterNodeConnectHandler(mux *http.ServeMux, hub *NodeHub, st store.Store
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		node.PeerURL = strings.TrimSpace(r.Header.Get("X-CodeWire-Peer-URL"))
+		node.LastSeenAt = time.Now().UTC()
+		if err := st.NodeRegister(r.Context(), *node); err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
 
 		// Upgrade to WebSocket.
 		ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -42,10 +49,8 @@ func RegisterNodeConnectHandler(mux *http.ServeMux, hub *NodeHub, st store.Store
 
 		// Register in hub — messages from SSH handler flow here.
 		msgCh := make(chan HubMessage, 16)
-		hub.Register(node.FleetID, node.Name, msgCh)
-		defer hub.Unregister(node.FleetID, node.Name)
-
-		_ = st.NodeUpdateLastSeen(r.Context(), node.FleetID, node.Name)
+		hub.Register(node.NetworkID, node.Name, msgCh)
+		defer hub.Unregister(node.NetworkID, node.Name)
 
 		ctx := r.Context()
 

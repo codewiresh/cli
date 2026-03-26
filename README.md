@@ -594,6 +594,31 @@ sudo systemctl enable --now codewire-relay
 
 See [Local Development (Docker Compose)](#local-development-docker-compose) above for a ready-to-use `docker-compose.yml`.
 
+## Testing
+
+### Relay Network Kind E2E
+
+This repository includes a real end-to-end tailnet relay/network messaging test that stands up a relay in kind and exercises three sessions across two nodes:
+
+- delegated remote `msg`
+- targeted remote `listen`
+- remote `request`
+- reply ownership enforcement between two sessions on the destination node
+
+The message RPC itself runs over tailnet/WireGuard. The relay provides network auth, peer coordination, and DERP assistance for the test.
+
+Run it locally with:
+
+```bash
+./scripts/run-relay-kind-e2e.sh
+```
+
+Environment overrides:
+
+- `CLUSTER_NAME` to reuse an existing kind cluster
+- `RELAY_PORT` to change the local port-forward port
+- `RELAY_TOKEN` to change the relay auth token
+
 ## LLM Orchestration
 
 CodeWire is designed for LLM-driven multi-agent workflows. Tags, subscriptions, and wait provide structured coordination primitives.

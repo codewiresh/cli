@@ -96,16 +96,8 @@ func LoadConfig(dataDir string) (*Config, error) {
 	}
 
 	if _, err := os.Stat(path); err == nil {
-		var raw struct {
-			Config
-			RelayFleet *string `toml:"relay_fleet,omitempty"`
-		}
-		if _, err := toml.DecodeFile(path, &raw); err != nil {
+		if _, err := toml.DecodeFile(path, cfg); err != nil {
 			return nil, fmt.Errorf("parsing %s: %w", path, err)
-		}
-		*cfg = raw.Config
-		if cfg.RelayNetwork == nil && raw.RelayFleet != nil {
-			cfg.RelayNetwork = raw.RelayFleet
 		}
 		// If the file was parsed but node.name was empty/missing, apply default.
 		if cfg.Node.Name == "" {
@@ -153,8 +145,6 @@ func LoadConfig(dataDir string) (*Config, error) {
 	if cfg.RelayNetwork == nil {
 		if network := os.Getenv("CODEWIRE_RELAY_NETWORK"); network != "" {
 			cfg.RelayNetwork = &network
-		} else if fleet := os.Getenv("CODEWIRE_RELAY_FLEET"); fleet != "" {
-			cfg.RelayNetwork = &fleet
 		}
 	}
 

@@ -1,8 +1,12 @@
 package main
 
 import (
+	"io"
+	"os"
 	"strings"
 	"testing"
+
+	cwconfig "github.com/codewiresh/codewire/internal/config"
 )
 
 func TestEnvParentCmdHasOrgFlag(t *testing.T) {
@@ -78,10 +82,46 @@ func TestNetworkCommandShape(t *testing.T) {
 		subcommands[sub.Name()] = true
 	}
 
-	for _, required := range []string{"list", "create", "use", "nodes", "invite", "revoke"} {
+	for _, required := range []string{"list", "create", "current", "use", "nodes", "invite", "revoke"} {
 		if !subcommands[required] {
 			t.Fatalf("expected network command to include %q, got %#v", required, subcommands)
 		}
+	}
+}
+
+func TestCurrentNetworkCmdPrintsSelectedNetwork(t *testing.T) {
+	home := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	if err := os.Setenv("HOME", home); err != nil {
+		t.Fatalf("Setenv HOME: %v", err)
+	}
+	defer func() { _ = os.Setenv("HOME", oldHome) }()
+
+	network := "project-alpha"
+	if err := cwconfig.SaveConfig(dataDir(), &cwconfig.Config{RelayNetwork: &network}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = oldStdout }()
+
+	cmd := currentNetworkCmd()
+	if err := cmd.RunE(cmd, nil); err != nil {
+		t.Fatalf("current network command failed: %v", err)
+	}
+
+	_ = w.Close()
+	output, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if strings.TrimSpace(string(output)) != "project-alpha" {
+		t.Fatalf("unexpected output %q", string(output))
 	}
 }
 
@@ -112,5 +152,83 @@ func TestRelayCommandShape(t *testing.T) {
 		if !subcommands[required] {
 			t.Fatalf("expected relay command to include %q, got %#v", required, subcommands)
 		}
+	}
+}
+
+func TestMsgCmdRejectsRemoteLocatorUntilPeerTransportIsWired(t *testing.T) {
+	home := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	oldServer := serverFlag
+	oldToken := tokenFlag
+	if err := os.Setenv("HOME", home); err != nil {
+		t.Fatalf("Setenv HOME: %v", err)
+	}
+	defer func() {
+		_ = os.Setenv("HOME", oldHome)
+		serverFlag = oldServer
+		tokenFlag = oldToken
+	}()
+	serverFlag = ""
+	tokenFlag = ""
+
+	cmd := msgCmd()
+	err := cmd.RunE(cmd, []string{"dev-2:coder", "hello"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "not discoverable yet") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMsgCmdRejectsRemoteLocatorWithServerFlag(t *testing.T) {
+	home := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	oldServer := serverFlag
+	oldToken := tokenFlag
+	if err := os.Setenv("HOME", home); err != nil {
+		t.Fatalf("Setenv HOME: %v", err)
+	}
+	defer func() {
+		_ = os.Setenv("HOME", oldHome)
+		serverFlag = oldServer
+		tokenFlag = oldToken
+	}()
+	serverFlag = "http://example.com"
+	tokenFlag = ""
+
+	cmd := msgCmd()
+	err := cmd.RunE(cmd, []string{"dev-2:coder", "hello"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "cannot be combined with --server") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestInboxCmdRejectsRemoteLocatorUntilPeerTransportIsWired(t *testing.T) {
+	home := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	oldServer := serverFlag
+	oldToken := tokenFlag
+	if err := os.Setenv("HOME", home); err != nil {
+		t.Fatalf("Setenv HOME: %v", err)
+	}
+	defer func() {
+		_ = os.Setenv("HOME", oldHome)
+		serverFlag = oldServer
+		tokenFlag = oldToken
+	}()
+	serverFlag = ""
+	tokenFlag = ""
+
+	cmd := inboxCmd()
+	err := cmd.RunE(cmd, []string{"dev-2:coder"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "not discoverable yet") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

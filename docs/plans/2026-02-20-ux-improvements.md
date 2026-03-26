@@ -665,7 +665,7 @@ Also expand the Relay mode section (section 7). Replace the current sparse secti
 ```markdown
 ## 7. Relay Mode
 
-Relay mode enables remote access and fleet management. Two tiers:
+Relay mode enables remote access and network-wide management. Two tiers:
 - **Standalone** (default): local Unix socket only, zero config
 - **Relay** (opt-in): WireGuard tunneling, node discovery, shared KV store
 

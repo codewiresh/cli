@@ -6,13 +6,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/codewiresh/codewire/internal/store"
+	"nhooyr.io/websocket"
 )
 
-func TestNodesListRequiresAuthAndScopesByFleet(t *testing.T) {
+func TestNodesListRequiresAuthAndScopesByNetwork(t *testing.T) {
 	st, err := store.NewSQLiteStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
@@ -25,15 +27,15 @@ func TestNodesListRequiresAuthAndScopesByFleet(t *testing.T) {
 		BaseURL:   "http://relay.test",
 		AuthMode:  "token",
 		AuthToken: "admin-token",
-	}))
+	}, nil, nil))
 	defer srv.Close()
 	client := srv.Client()
 
-	registerNode := func(fleetID, nodeName string) {
+	registerNode := func(networkID, nodeName string) {
 		t.Helper()
 		body, _ := json.Marshal(map[string]string{
-			"fleet_id":  fleetID,
-			"node_name": nodeName,
+			"network_id": networkID,
+			"node_name":  nodeName,
 		})
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/nodes", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
@@ -48,10 +50,10 @@ func TestNodesListRequiresAuthAndScopesByFleet(t *testing.T) {
 		}
 	}
 
-	registerNode("fleet-a", "shared-node")
-	registerNode("fleet-b", "shared-node")
+	registerNode("network-a", "shared-node")
+	registerNode("network-b", "shared-node")
 
-	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/nodes?fleet_id=fleet-a", nil)
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/nodes?network_id=network-a", nil)
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("unauthenticated list nodes: %v", err)
@@ -61,7 +63,7 @@ func TestNodesListRequiresAuthAndScopesByFleet(t *testing.T) {
 		t.Fatalf("unauthenticated status = %d, want 401", resp.StatusCode)
 	}
 
-	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/api/v1/nodes?fleet_id=fleet-a", nil)
+	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/api/v1/nodes?network_id=network-a", nil)
 	req.Header.Set("Authorization", "Bearer admin-token")
 	resp, err = client.Do(req)
 	if err != nil {
@@ -77,7 +79,7 @@ func TestNodesListRequiresAuthAndScopesByFleet(t *testing.T) {
 		t.Fatalf("decode nodes: %v", err)
 	}
 	if len(nodes) != 1 || nodes[0].Name != "shared-node" {
-		t.Fatalf("nodes = %#v, want one fleet-a node", nodes)
+		t.Fatalf("nodes = %#v, want one network-a node", nodes)
 	}
 
 	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/api/v1/nodes?all=true", nil)
@@ -98,16 +100,16 @@ func TestNodesListRequiresAuthAndScopesByFleet(t *testing.T) {
 	if len(nodes) != 2 {
 		t.Fatalf("all nodes len = %d, want 2", len(nodes))
 	}
-	foundFleets := map[string]bool{}
+	foundNetworks := map[string]bool{}
 	for _, node := range nodes {
-		foundFleets[node.FleetID] = true
+		foundNetworks[node.NetworkID] = true
 	}
-	if !foundFleets["fleet-a"] || !foundFleets["fleet-b"] {
-		t.Fatalf("all nodes fleets = %#v, want fleet-a and fleet-b", foundFleets)
+	if !foundNetworks["network-a"] || !foundNetworks["network-b"] {
+		t.Fatalf("all nodes networks = %#v, want network-a and network-b", foundNetworks)
 	}
 }
 
-func TestKVIsFleetScopedAndRequiresAuth(t *testing.T) {
+func TestKVIsNetworkScopedAndRequiresAuth(t *testing.T) {
 	st, err := store.NewSQLiteStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
@@ -118,13 +120,13 @@ func TestKVIsFleetScopedAndRequiresAuth(t *testing.T) {
 		BaseURL:   "http://relay.test",
 		AuthMode:  "token",
 		AuthToken: "admin-token",
-	}))
+	}, nil, nil))
 	defer srv.Close()
 	client := srv.Client()
 
-	putKV := func(fleetID, value string) {
+	putKV := func(networkID, value string) {
 		t.Helper()
-		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/kv/tasks/build?fleet_id="+fleetID, bytes.NewBufferString(value))
+		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/kv/tasks/build?network_id="+networkID, bytes.NewBufferString(value))
 		req.Header.Set("Authorization", "Bearer admin-token")
 		resp, err := client.Do(req)
 		if err != nil {
@@ -136,10 +138,10 @@ func TestKVIsFleetScopedAndRequiresAuth(t *testing.T) {
 		}
 	}
 
-	putKV("fleet-a", "alpha")
-	putKV("fleet-b", "beta")
+	putKV("network-a", "alpha")
+	putKV("network-b", "beta")
 
-	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/kv/tasks/build?fleet_id=fleet-a", nil)
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/kv/tasks/build?network_id=network-a", nil)
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("unauthenticated kv get: %v", err)
@@ -149,11 +151,11 @@ func TestKVIsFleetScopedAndRequiresAuth(t *testing.T) {
 		t.Fatalf("unauthenticated kv status = %d, want 401", resp.StatusCode)
 	}
 
-	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/api/v1/kv/tasks/build?fleet_id=fleet-a", nil)
+	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/api/v1/kv/tasks/build?network_id=network-a", nil)
 	req.Header.Set("Authorization", "Bearer admin-token")
 	resp, err = client.Do(req)
 	if err != nil {
-		t.Fatalf("fleet-a kv get: %v", err)
+		t.Fatalf("network-a kv get: %v", err)
 	}
 	defer resp.Body.Close()
 	var valueA bytes.Buffer
@@ -161,14 +163,14 @@ func TestKVIsFleetScopedAndRequiresAuth(t *testing.T) {
 		t.Fatalf("read valueA: %v", err)
 	}
 	if valueA.String() != "alpha" {
-		t.Fatalf("fleet-a value = %q, want alpha", valueA.String())
+		t.Fatalf("network-a value = %q, want alpha", valueA.String())
 	}
 
-	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/api/v1/kv/tasks/build?fleet_id=fleet-b", nil)
+	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/api/v1/kv/tasks/build?network_id=network-b", nil)
 	req.Header.Set("Authorization", "Bearer admin-token")
 	resp, err = client.Do(req)
 	if err != nil {
-		t.Fatalf("fleet-b kv get: %v", err)
+		t.Fatalf("network-b kv get: %v", err)
 	}
 	defer resp.Body.Close()
 	var valueB bytes.Buffer
@@ -176,11 +178,11 @@ func TestKVIsFleetScopedAndRequiresAuth(t *testing.T) {
 		t.Fatalf("read valueB: %v", err)
 	}
 	if valueB.String() != "beta" {
-		t.Fatalf("fleet-b value = %q, want beta", valueB.String())
+		t.Fatalf("network-b value = %q, want beta", valueB.String())
 	}
 }
 
-func TestJoinRegistersNodeIntoInviteFleet(t *testing.T) {
+func TestJoinRegistersNodeIntoInviteNetwork(t *testing.T) {
 	st, err := store.NewSQLiteStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
@@ -189,7 +191,7 @@ func TestJoinRegistersNodeIntoInviteFleet(t *testing.T) {
 
 	now := time.Now().UTC()
 	if err := st.InviteCreate(context.Background(), store.Invite{
-		FleetID:       "fleet-invite",
+		NetworkID:     "network-invite",
 		Token:         "CW-INV-TEST",
 		UsesRemaining: 1,
 		ExpiresAt:     now.Add(1 * time.Hour),
@@ -201,7 +203,7 @@ func TestJoinRegistersNodeIntoInviteFleet(t *testing.T) {
 	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		BaseURL:  "http://relay.test",
 		AuthMode: "none",
-	}))
+	}, nil, nil))
 	defer srv.Close()
 	client := srv.Client()
 
@@ -218,7 +220,7 @@ func TestJoinRegistersNodeIntoInviteFleet(t *testing.T) {
 		t.Fatalf("join status = %d", resp.StatusCode)
 	}
 
-	node, err := st.NodeGet(context.Background(), "fleet-invite", "joined-node")
+	node, err := st.NodeGet(context.Background(), "network-invite", "joined-node")
 	if err != nil {
 		t.Fatalf("NodeGet: %v", err)
 	}
@@ -238,7 +240,7 @@ func TestNetworksCanBeCreatedAndListed(t *testing.T) {
 		BaseURL:   "http://relay.test",
 		AuthMode:  "token",
 		AuthToken: "admin-token",
-	}))
+	}, nil, nil))
 	defer srv.Close()
 	client := srv.Client()
 
@@ -280,5 +282,57 @@ func TestNetworksCanBeCreatedAndListed(t *testing.T) {
 	}
 	if _, ok := found["project-alpha"]; !ok {
 		t.Fatal("expected project-alpha network")
+	}
+}
+
+func TestNodeConnectPersistsPeerURL(t *testing.T) {
+	st, err := store.NewSQLiteStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	token := "node-token"
+	now := time.Now().UTC()
+	if err := st.NodeRegister(context.Background(), store.NodeRecord{
+		NetworkID:    "network-a",
+		Name:         "builder",
+		Token:        token,
+		AuthorizedAt: now,
+		LastSeenAt:   now,
+	}); err != nil {
+		t.Fatalf("NodeRegister: %v", err)
+	}
+
+	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+		BaseURL:  "http://relay.test",
+		AuthMode: "none",
+	}, nil, nil))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/node/connect"
+	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{
+			"Authorization":       {"Bearer " + token},
+			"X-CodeWire-Peer-URL": {"https://builder.example.com/ws"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer ws.CloseNow()
+
+	node, err := st.NodeGet(context.Background(), "network-a", "builder")
+	if err != nil {
+		t.Fatalf("NodeGet: %v", err)
+	}
+	if node == nil {
+		t.Fatal("expected node")
+	}
+	if node.PeerURL != "https://builder.example.com/ws" {
+		t.Fatalf("PeerURL = %q, want advertised URL", node.PeerURL)
 	}
 }

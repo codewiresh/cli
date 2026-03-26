@@ -3,6 +3,8 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"strings"
 	"time"
 
 	"github.com/codewiresh/codewire/internal/platform"
@@ -45,26 +47,38 @@ func environmentTools() []tool {
 						"type":        "string",
 						"description": "Filter by state (e.g. 'running', 'stopped', 'pending')",
 					},
+					"include_destroyed": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Include destroyed environments (default: false)",
+					},
 				},
 			},
 		},
 		{
 			Name:        "codewire_create_environment",
-			Description: "Create a new environment from a preset. Returns the created environment details.",
+			Description: "Create a new environment. Specify either preset_id/preset_slug for a preset-based environment, or image for a custom container.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"preset_id": map[string]interface{}{
 						"type":        "string",
-						"description": "Preset ID to create the environment from (required)",
+						"description": "Preset ID to use",
+					},
+					"preset_slug": map[string]interface{}{
+						"type":        "string",
+						"description": "Preset slug (e.g. 'go', 'node', 'python'). Alternative to preset_id.",
+					},
+					"image": map[string]interface{}{
+						"type":        "string",
+						"description": "Container image (e.g. 'python:3.12', 'ghcr.io/codewiresh/openclaw:latest'). Used when not using a preset.",
 					},
 					"name": map[string]interface{}{
 						"type":        "string",
-						"description": "Optional name for the environment",
+						"description": "Environment name",
 					},
 					"ttl": map[string]interface{}{
 						"type":        "string",
-						"description": "Time to live as duration (e.g. '1h', '30m'). Environment auto-destroys after this.",
+						"description": "Time to live (e.g. '1h', '30m'). Auto-destroys after this.",
 					},
 					"cpu": map[string]interface{}{
 						"type":        "integer",
@@ -78,8 +92,48 @@ func environmentTools() []tool {
 						"type":        "integer",
 						"description": "Disk in GB",
 					},
+					"repo_url": map[string]interface{}{
+						"type":        "string",
+						"description": "Git repository URL to clone",
+					},
+					"branch": map[string]interface{}{
+						"type":        "string",
+						"description": "Git branch to checkout",
+					},
+					"install_command": map[string]interface{}{
+						"type":        "string",
+						"description": "Command to run after cloning (e.g. 'pip install -r requirements.txt')",
+					},
+					"startup_script": map[string]interface{}{
+						"type":        "string",
+						"description": "Script to run on environment startup",
+					},
+					"agent": map[string]interface{}{
+						"type":        "string",
+						"description": "AI agent to run (e.g. 'claude-code')",
+					},
+					"env_vars": map[string]interface{}{
+						"type":        "object",
+						"description": "Environment variables as key-value pairs",
+						"additionalProperties": map[string]interface{}{"type": "string"},
+					},
+					"secret_project": map[string]interface{}{
+						"type":        "string",
+						"description": "Secret project name to bind",
+					},
+					"include_org_secrets": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Include org-level secrets (default: true)",
+					},
+					"include_user_secrets": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Include user-level secrets (default: true)",
+					},
+					"network": map[string]interface{}{
+						"type":        "string",
+						"description": "Relay network to join on boot",
+					},
 				},
-				"required": []string{"preset_id"},
 			},
 		},
 		{
@@ -191,6 +245,60 @@ func environmentTools() []tool {
 				"required": []string{"environment_id"},
 			},
 		},
+		{
+			Name:        "codewire_upload_file",
+			Description: "Upload a file to a running sandbox environment. Content is provided as a string.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"environment_id": map[string]interface{}{
+						"type":        "string",
+						"description": "The environment ID",
+					},
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "Remote file path (e.g. '/workspace/script.py')",
+					},
+					"content": map[string]interface{}{
+						"type":        "string",
+						"description": "File content as text",
+					},
+				},
+				"required": []string{"environment_id", "path", "content"},
+			},
+		},
+		{
+			Name:        "codewire_download_file",
+			Description: "Download a file from a running sandbox environment. Returns content as text.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"environment_id": map[string]interface{}{
+						"type":        "string",
+						"description": "The environment ID",
+					},
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "Remote file path to download",
+					},
+				},
+				"required": []string{"environment_id", "path"},
+			},
+		},
+		{
+			Name:        "codewire_get_environment_logs",
+			Description: "Get startup/provisioning logs for an environment.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"environment_id": map[string]interface{}{
+						"type":        "string",
+						"description": "The environment ID",
+					},
+				},
+				"required": []string{"environment_id"},
+			},
+		},
 	}
 }
 
@@ -226,40 +334,75 @@ func toolCreateEnvironment(args map[string]interface{}) (string, error) {
 		return "", err
 	}
 
-	presetID, _ := args["preset_id"].(string)
-	if presetID == "" {
-		return "", fmt.Errorf("preset_id is required")
-	}
+	req := &platform.CreateEnvironmentRequest{}
 
-	req := &platform.CreateEnvironmentRequest{
-		PresetID: presetID,
+	if v, ok := args["preset_id"].(string); ok && v != "" {
+		req.PresetID = v
 	}
-	if name, ok := args["name"].(string); ok && name != "" {
-		req.Name = name
+	if v, ok := args["preset_slug"].(string); ok && v != "" {
+		req.PresetSlug = v
 	}
-	if cpu, ok := args["cpu"].(float64); ok && cpu > 0 {
-		c := int(cpu)
+	if v, ok := args["image"].(string); ok && v != "" {
+		req.Image = v
+	}
+	if req.PresetID == "" && req.PresetSlug == "" && req.Image == "" {
+		return "", fmt.Errorf("one of preset_id, preset_slug, or image is required")
+	}
+	if v, ok := args["name"].(string); ok && v != "" {
+		req.Name = v
+	}
+	if v, ok := args["cpu"].(float64); ok && v > 0 {
+		c := int(v)
 		req.CPUMillicores = &c
 	}
-	if mem, ok := args["memory"].(float64); ok && mem > 0 {
-		m := int(mem)
+	if v, ok := args["memory"].(float64); ok && v > 0 {
+		m := int(v)
 		req.MemoryMB = &m
 	}
-	if disk, ok := args["disk"].(float64); ok && disk > 0 {
-		d := int(disk)
+	if v, ok := args["disk"].(float64); ok && v > 0 {
+		d := int(v)
 		req.DiskGB = &d
 	}
-	if ttl, ok := args["ttl"].(string); ok && ttl != "" {
-		// Parse duration string to seconds
-		// For now, pass the raw TTL — the server handles parsing
-		// The CLI already handles this, but MCP tools pass it as TTLSeconds
-		// We need to parse here since the API expects seconds
-		dur, parseErr := parseDuration(ttl)
+	if v, ok := args["ttl"].(string); ok && v != "" {
+		dur, parseErr := parseDuration(v)
 		if parseErr != nil {
 			return "", fmt.Errorf("invalid ttl: %w", parseErr)
 		}
 		secs := int(dur.Seconds())
 		req.TTLSeconds = &secs
+	}
+	if v, ok := args["repo_url"].(string); ok && v != "" {
+		req.RepoURL = v
+	}
+	if v, ok := args["branch"].(string); ok && v != "" {
+		req.Branch = v
+	}
+	if v, ok := args["install_command"].(string); ok && v != "" {
+		req.InstallCommand = v
+	}
+	if v, ok := args["startup_script"].(string); ok && v != "" {
+		req.StartupScript = v
+	}
+	if v, ok := args["agent"].(string); ok && v != "" {
+		req.Agent = v
+	}
+	if v, ok := args["env_vars"].(map[string]interface{}); ok {
+		envVars := make(map[string]string)
+		for k, val := range v {
+			if s, ok := val.(string); ok {
+				envVars[k] = s
+			}
+		}
+		req.EnvVars = envVars
+	}
+	if v, ok := args["secret_project"].(string); ok && v != "" {
+		req.SecretProject = v
+	}
+	if v, ok := args["include_org_secrets"].(bool); ok {
+		req.IncludeOrgSecrets = &v
+	}
+	if v, ok := args["include_user_secrets"].(bool); ok {
+		req.IncludeUserSecrets = &v
 	}
 
 	env, err := client.CreateEnvironment(orgID, req)
@@ -439,6 +582,86 @@ func toolListPresets(args map[string]interface{}) (string, error) {
 	}
 
 	out, err := json.MarshalIndent(presets, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+func toolUploadFile(args map[string]interface{}) (string, error) {
+	client, orgID, err := getPlatformClient()
+	if err != nil {
+		return "", err
+	}
+
+	envID, _ := args["environment_id"].(string)
+	if envID == "" {
+		return "", fmt.Errorf("environment_id is required")
+	}
+
+	path, _ := args["path"].(string)
+	if path == "" {
+		return "", fmt.Errorf("path is required")
+	}
+
+	content, _ := args["content"].(string)
+
+	if err := client.UploadFile(orgID, envID, path, strings.NewReader(content)); err != nil {
+		return "", fmt.Errorf("upload: %w", err)
+	}
+	return fmt.Sprintf("Uploaded %d bytes to %s", len(content), path), nil
+}
+
+func toolDownloadFile(args map[string]interface{}) (string, error) {
+	client, orgID, err := getPlatformClient()
+	if err != nil {
+		return "", err
+	}
+
+	envID, _ := args["environment_id"].(string)
+	if envID == "" {
+		return "", fmt.Errorf("environment_id is required")
+	}
+
+	path, _ := args["path"].(string)
+	if path == "" {
+		return "", fmt.Errorf("path is required")
+	}
+
+	rc, err := client.DownloadFile(orgID, envID, path)
+	if err != nil {
+		return "", fmt.Errorf("download: %w", err)
+	}
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return "", fmt.Errorf("reading download: %w", err)
+	}
+	return string(data), nil
+}
+
+func toolGetEnvironmentLogs(args map[string]interface{}) (string, error) {
+	client, orgID, err := getPlatformClient()
+	if err != nil {
+		return "", err
+	}
+
+	envID, _ := args["environment_id"].(string)
+	if envID == "" {
+		return "", fmt.Errorf("environment_id is required")
+	}
+
+	logs, err := client.GetEnvironmentLogs(orgID, envID)
+	if err != nil {
+		return "", fmt.Errorf("get logs: %w", err)
+	}
+
+	if len(logs) == 0 {
+		return "No logs found.", nil
+	}
+
+	out, err := json.MarshalIndent(logs, "", "  ")
 	if err != nil {
 		return "", err
 	}

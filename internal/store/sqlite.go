@@ -51,26 +51,26 @@ func NewSQLiteStore(dataDir string) (*SQLiteStore, error) {
 func (s *SQLiteStore) migrate() error {
 	migrations := []string{
 		`CREATE TABLE IF NOT EXISTS networks (
-			fleet_id TEXT PRIMARY KEY,
+			network_id TEXT PRIMARY KEY,
 			created_at DATETIME NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS nodes (
-			fleet_id TEXT NOT NULL DEFAULT 'default',
+			network_id TEXT NOT NULL DEFAULT 'default',
 			name TEXT NOT NULL,
 			token TEXT NOT NULL UNIQUE,
 			authorized_at DATETIME NOT NULL,
 			last_seen_at DATETIME NOT NULL,
-			PRIMARY KEY (fleet_id, name)
+			PRIMARY KEY (network_id, name)
 		)`,
 		`CREATE TABLE IF NOT EXISTS kv (
-			fleet_id TEXT NOT NULL DEFAULT 'default',
+			network_id TEXT NOT NULL DEFAULT 'default',
 			namespace TEXT NOT NULL,
 			key TEXT NOT NULL,
 			value BLOB NOT NULL,
 			expires_at DATETIME,
-			PRIMARY KEY (fleet_id, namespace, key)
+			PRIMARY KEY (network_id, namespace, key)
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_kv_expires ON kv(fleet_id, expires_at) WHERE expires_at IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_kv_expires ON kv(network_id, expires_at) WHERE expires_at IS NOT NULL`,
 		`CREATE TABLE IF NOT EXISTS device_codes (
 			code TEXT PRIMARY KEY,
 			public_key TEXT NOT NULL,
@@ -108,7 +108,7 @@ func (s *SQLiteStore) migrate() error {
 			expires_at DATETIME NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS invites (
-			fleet_id TEXT NOT NULL DEFAULT 'default',
+			network_id TEXT NOT NULL DEFAULT 'default',
 			token TEXT PRIMARY KEY,
 			created_by INTEGER REFERENCES users(github_id),
 			uses_remaining INTEGER NOT NULL DEFAULT 1,
@@ -136,7 +136,7 @@ func (s *SQLiteStore) migrate() error {
 		`CREATE TABLE IF NOT EXISTS oidc_device_flows (
 			poll_token  TEXT PRIMARY KEY,
 			device_code TEXT NOT NULL UNIQUE,
-			fleet_id    TEXT NOT NULL DEFAULT 'default',
+			network_id  TEXT NOT NULL DEFAULT 'default',
 			node_name   TEXT NOT NULL DEFAULT '',
 			node_token  TEXT NOT NULL DEFAULT '',
 			expires_at  DATETIME NOT NULL
@@ -149,23 +149,17 @@ func (s *SQLiteStore) migrate() error {
 		}
 	}
 
-	if err := s.migrateNodesToFleetScope(); err != nil {
-		return err
-	}
-	if err := s.migrateKVToFleetScope(); err != nil {
-		return err
-	}
-
 	// Add columns that may not exist in older databases.
 	s.addColumnIfNotExists("nodes", "github_id", "INTEGER REFERENCES users(github_id)")
-	s.addColumnIfNotExists("invites", "fleet_id", "TEXT NOT NULL DEFAULT 'default'")
-	s.addColumnIfNotExists("oidc_device_flows", "fleet_id", "TEXT NOT NULL DEFAULT 'default'")
+	s.addColumnIfNotExists("invites", "network_id", "TEXT NOT NULL DEFAULT 'default'")
+	s.addColumnIfNotExists("oidc_device_flows", "network_id", "TEXT NOT NULL DEFAULT 'default'")
 	// token column replaces public_key/tunnel_url in the new relay architecture.
 	s.addColumnIfNotExists("nodes", "token", "TEXT NOT NULL DEFAULT ''")
+	s.addColumnIfNotExists("nodes", "peer_url", "TEXT NOT NULL DEFAULT ''")
 
 	// Ensure unique index on token for NodeGetByToken.
 	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_token ON nodes(token) WHERE token != ''`)
-	s.db.Exec(`INSERT OR IGNORE INTO networks (fleet_id, created_at) VALUES ('default', CURRENT_TIMESTAMP)`)
+	s.db.Exec(`INSERT OR IGNORE INTO networks (network_id, created_at) VALUES ('default', CURRENT_TIMESTAMP)`)
 
 	return nil
 }
@@ -205,89 +199,6 @@ func (s *SQLiteStore) tableHasColumn(table, column string) (bool, error) {
 	return false, rows.Err()
 }
 
-func (s *SQLiteStore) migrateNodesToFleetScope() error {
-	hasFleetID, err := s.tableHasColumn("nodes", "fleet_id")
-	if err != nil {
-		return err
-	}
-	if hasFleetID {
-		return nil
-	}
-
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	if _, err := tx.Exec(`CREATE TABLE nodes_new (
-		fleet_id TEXT NOT NULL DEFAULT 'default',
-		name TEXT NOT NULL,
-		token TEXT NOT NULL UNIQUE,
-		github_id INTEGER REFERENCES users(github_id),
-		authorized_at DATETIME NOT NULL,
-		last_seen_at DATETIME NOT NULL,
-		PRIMARY KEY (fleet_id, name)
-	)`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`INSERT INTO nodes_new (fleet_id, name, token, github_id, authorized_at, last_seen_at)
-		SELECT 'default', name, token, github_id, authorized_at, last_seen_at FROM nodes`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DROP TABLE nodes`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`ALTER TABLE nodes_new RENAME TO nodes`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_token ON nodes(token) WHERE token != ''`); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-func (s *SQLiteStore) migrateKVToFleetScope() error {
-	hasFleetID, err := s.tableHasColumn("kv", "fleet_id")
-	if err != nil {
-		return err
-	}
-	if hasFleetID {
-		return nil
-	}
-
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	if _, err := tx.Exec(`CREATE TABLE kv_new (
-		fleet_id TEXT NOT NULL DEFAULT 'default',
-		namespace TEXT NOT NULL,
-		key TEXT NOT NULL,
-		value BLOB NOT NULL,
-		expires_at DATETIME,
-		PRIMARY KEY (fleet_id, namespace, key)
-	)`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`INSERT INTO kv_new (fleet_id, namespace, key, value, expires_at)
-		SELECT 'default', namespace, key, value, expires_at FROM kv`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DROP TABLE kv`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`ALTER TABLE kv_new RENAME TO kv`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_kv_expires ON kv(fleet_id, expires_at) WHERE expires_at IS NOT NULL`); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
 // cleanupLoop periodically removes expired KV entries, device codes, sessions,
 // OAuth state parameters, and invites.
 func (s *SQLiteStore) cleanupLoop() {
@@ -314,7 +225,7 @@ func (s *SQLiteStore) cleanupLoop() {
 
 // --- KV Store ---
 
-func (s *SQLiteStore) KVSet(_ context.Context, fleetID, namespace, key string, value []byte, ttl *time.Duration) error {
+func (s *SQLiteStore) KVSet(_ context.Context, networkID, namespace, key string, value []byte, ttl *time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -325,21 +236,21 @@ func (s *SQLiteStore) KVSet(_ context.Context, fleetID, namespace, key string, v
 	}
 
 	_, err := s.db.Exec(
-		`INSERT INTO kv (fleet_id, namespace, key, value, expires_at) VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT (fleet_id, namespace, key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at`,
-		fleetID, namespace, key, value, expiresAt,
+		`INSERT INTO kv (network_id, namespace, key, value, expires_at) VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT (network_id, namespace, key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at`,
+		networkID, namespace, key, value, expiresAt,
 	)
 	return err
 }
 
-func (s *SQLiteStore) KVGet(_ context.Context, fleetID, namespace, key string) ([]byte, error) {
+func (s *SQLiteStore) KVGet(_ context.Context, networkID, namespace, key string) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	var value []byte
 	err := s.db.QueryRow(
-		"SELECT value FROM kv WHERE fleet_id = ? AND namespace = ? AND key = ? AND (expires_at IS NULL OR expires_at > ?)",
-		fleetID, namespace, key, time.Now().UTC(),
+		"SELECT value FROM kv WHERE network_id = ? AND namespace = ? AND key = ? AND (expires_at IS NULL OR expires_at > ?)",
+		networkID, namespace, key, time.Now().UTC(),
 	).Scan(&value)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -347,20 +258,20 @@ func (s *SQLiteStore) KVGet(_ context.Context, fleetID, namespace, key string) (
 	return value, err
 }
 
-func (s *SQLiteStore) KVDelete(_ context.Context, fleetID, namespace, key string) error {
+func (s *SQLiteStore) KVDelete(_ context.Context, networkID, namespace, key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec("DELETE FROM kv WHERE fleet_id = ? AND namespace = ? AND key = ?", fleetID, namespace, key)
+	_, err := s.db.Exec("DELETE FROM kv WHERE network_id = ? AND namespace = ? AND key = ?", networkID, namespace, key)
 	return err
 }
 
-func (s *SQLiteStore) KVList(_ context.Context, fleetID, namespace, prefix string) ([]KVEntry, error) {
+func (s *SQLiteStore) KVList(_ context.Context, networkID, namespace, prefix string) ([]KVEntry, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.Query(
-		"SELECT key, value, expires_at FROM kv WHERE fleet_id = ? AND namespace = ? AND key LIKE ? AND (expires_at IS NULL OR expires_at > ?)",
-		fleetID, namespace, prefix+"%", time.Now().UTC(),
+		"SELECT key, value, expires_at FROM kv WHERE network_id = ? AND namespace = ? AND key LIKE ? AND (expires_at IS NULL OR expires_at > ?)",
+		networkID, namespace, prefix+"%", time.Now().UTC(),
 	)
 	if err != nil {
 		return nil, err
@@ -380,13 +291,13 @@ func (s *SQLiteStore) KVList(_ context.Context, fleetID, namespace, prefix strin
 
 // --- Node Registry ---
 
-func (s *SQLiteStore) NetworkEnsure(_ context.Context, fleetID string) error {
+func (s *SQLiteStore) NetworkEnsure(_ context.Context, networkID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	_, err := s.db.Exec(
-		`INSERT OR IGNORE INTO networks (fleet_id, created_at) VALUES (?, ?)`,
-		fleetID, time.Now().UTC(),
+		`INSERT OR IGNORE INTO networks (network_id, created_at) VALUES (?, ?)`,
+		networkID, time.Now().UTC(),
 	)
 	return err
 }
@@ -397,23 +308,23 @@ func (s *SQLiteStore) NetworkList(_ context.Context) ([]Network, error) {
 
 	rows, err := s.db.Query(`
 		SELECT
-			n.fleet_id,
+			n.network_id,
 			n.created_at,
 			COALESCE(node_counts.count, 0),
 			COALESCE(invite_counts.count, 0)
 		FROM networks n
 		LEFT JOIN (
-			SELECT fleet_id, COUNT(*) AS count
+			SELECT network_id, COUNT(*) AS count
 			FROM nodes
-			GROUP BY fleet_id
-		) node_counts ON node_counts.fleet_id = n.fleet_id
+			GROUP BY network_id
+		) node_counts ON node_counts.network_id = n.network_id
 		LEFT JOIN (
-			SELECT fleet_id, COUNT(*) AS count
+			SELECT network_id, COUNT(*) AS count
 			FROM invites
 			WHERE expires_at > ?
-			GROUP BY fleet_id
-		) invite_counts ON invite_counts.fleet_id = n.fleet_id
-		ORDER BY n.fleet_id
+			GROUP BY network_id
+		) invite_counts ON invite_counts.network_id = n.network_id
+		ORDER BY n.network_id
 	`, time.Now().UTC())
 	if err != nil {
 		return nil, err
@@ -436,29 +347,30 @@ func (s *SQLiteStore) NodeRegister(_ context.Context, node NodeRecord) error {
 	defer s.mu.Unlock()
 
 	if _, err := s.db.Exec(
-		`INSERT OR IGNORE INTO networks (fleet_id, created_at) VALUES (?, ?)`,
-		node.FleetID, time.Now().UTC(),
+		`INSERT OR IGNORE INTO networks (network_id, created_at) VALUES (?, ?)`,
+		node.NetworkID, time.Now().UTC(),
 	); err != nil {
 		return err
 	}
 
 	_, err := s.db.Exec(
-		`INSERT INTO nodes (fleet_id, name, token, github_id, authorized_at, last_seen_at)
-		 VALUES (?, ?, ?, ?, ?, ?)
-		 ON CONFLICT (fleet_id, name) DO UPDATE SET
+		`INSERT INTO nodes (network_id, name, token, peer_url, github_id, authorized_at, last_seen_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT (network_id, name) DO UPDATE SET
 		   token = excluded.token,
+		   peer_url = excluded.peer_url,
 		   github_id = excluded.github_id,
 		   last_seen_at = excluded.last_seen_at`,
-		node.FleetID, node.Name, node.Token, node.GitHubID, node.AuthorizedAt, node.LastSeenAt,
+		node.NetworkID, node.Name, node.Token, node.PeerURL, node.GitHubID, node.AuthorizedAt, node.LastSeenAt,
 	)
 	return err
 }
 
-func (s *SQLiteStore) NodeList(_ context.Context, fleetID string) ([]NodeRecord, error) {
+func (s *SQLiteStore) NodeList(_ context.Context, networkID string) ([]NodeRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query("SELECT fleet_id, name, token, github_id, authorized_at, last_seen_at FROM nodes WHERE fleet_id = ? ORDER BY name", fleetID)
+	rows, err := s.db.Query("SELECT network_id, name, token, peer_url, github_id, authorized_at, last_seen_at FROM nodes WHERE network_id = ? ORDER BY name", networkID)
 	if err != nil {
 		return nil, err
 	}
@@ -467,7 +379,7 @@ func (s *SQLiteStore) NodeList(_ context.Context, fleetID string) ([]NodeRecord,
 	var nodes []NodeRecord
 	for rows.Next() {
 		var n NodeRecord
-		if err := rows.Scan(&n.FleetID, &n.Name, &n.Token, &n.GitHubID, &n.AuthorizedAt, &n.LastSeenAt); err != nil {
+		if err := rows.Scan(&n.NetworkID, &n.Name, &n.Token, &n.PeerURL, &n.GitHubID, &n.AuthorizedAt, &n.LastSeenAt); err != nil {
 			return nil, err
 		}
 		nodes = append(nodes, n)
@@ -479,7 +391,7 @@ func (s *SQLiteStore) NodeListAll(_ context.Context) ([]NodeRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query("SELECT fleet_id, name, token, github_id, authorized_at, last_seen_at FROM nodes ORDER BY fleet_id, name")
+	rows, err := s.db.Query("SELECT network_id, name, token, peer_url, github_id, authorized_at, last_seen_at FROM nodes ORDER BY network_id, name")
 	if err != nil {
 		return nil, err
 	}
@@ -488,7 +400,7 @@ func (s *SQLiteStore) NodeListAll(_ context.Context) ([]NodeRecord, error) {
 	var nodes []NodeRecord
 	for rows.Next() {
 		var n NodeRecord
-		if err := rows.Scan(&n.FleetID, &n.Name, &n.Token, &n.GitHubID, &n.AuthorizedAt, &n.LastSeenAt); err != nil {
+		if err := rows.Scan(&n.NetworkID, &n.Name, &n.Token, &n.PeerURL, &n.GitHubID, &n.AuthorizedAt, &n.LastSeenAt); err != nil {
 			return nil, err
 		}
 		nodes = append(nodes, n)
@@ -496,15 +408,15 @@ func (s *SQLiteStore) NodeListAll(_ context.Context) ([]NodeRecord, error) {
 	return nodes, rows.Err()
 }
 
-func (s *SQLiteStore) NodeGet(_ context.Context, fleetID, name string) (*NodeRecord, error) {
+func (s *SQLiteStore) NodeGet(_ context.Context, networkID, name string) (*NodeRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	var n NodeRecord
 	err := s.db.QueryRow(
-		"SELECT fleet_id, name, token, github_id, authorized_at, last_seen_at FROM nodes WHERE fleet_id = ? AND name = ?",
-		fleetID, name,
-	).Scan(&n.FleetID, &n.Name, &n.Token, &n.GitHubID, &n.AuthorizedAt, &n.LastSeenAt)
+		"SELECT network_id, name, token, peer_url, github_id, authorized_at, last_seen_at FROM nodes WHERE network_id = ? AND name = ?",
+		networkID, name,
+	).Scan(&n.NetworkID, &n.Name, &n.Token, &n.PeerURL, &n.GitHubID, &n.AuthorizedAt, &n.LastSeenAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -520,9 +432,9 @@ func (s *SQLiteStore) NodeGetByToken(_ context.Context, token string) (*NodeReco
 
 	var n NodeRecord
 	err := s.db.QueryRow(
-		"SELECT fleet_id, name, token, github_id, authorized_at, last_seen_at FROM nodes WHERE token = ?",
+		"SELECT network_id, name, token, peer_url, github_id, authorized_at, last_seen_at FROM nodes WHERE token = ?",
 		token,
-	).Scan(&n.FleetID, &n.Name, &n.Token, &n.GitHubID, &n.AuthorizedAt, &n.LastSeenAt)
+	).Scan(&n.NetworkID, &n.Name, &n.Token, &n.PeerURL, &n.GitHubID, &n.AuthorizedAt, &n.LastSeenAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -532,17 +444,17 @@ func (s *SQLiteStore) NodeGetByToken(_ context.Context, token string) (*NodeReco
 	return &n, nil
 }
 
-func (s *SQLiteStore) NodeDelete(_ context.Context, fleetID, name string) error {
+func (s *SQLiteStore) NodeDelete(_ context.Context, networkID, name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec("DELETE FROM nodes WHERE fleet_id = ? AND name = ?", fleetID, name)
+	_, err := s.db.Exec("DELETE FROM nodes WHERE network_id = ? AND name = ?", networkID, name)
 	return err
 }
 
-func (s *SQLiteStore) NodeUpdateLastSeen(_ context.Context, fleetID, name string) error {
+func (s *SQLiteStore) NodeUpdateLastSeen(_ context.Context, networkID, name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec("UPDATE nodes SET last_seen_at = ? WHERE fleet_id = ? AND name = ?", time.Now().UTC(), fleetID, name)
+	_, err := s.db.Exec("UPDATE nodes SET last_seen_at = ? WHERE network_id = ? AND name = ?", time.Now().UTC(), networkID, name)
 	return err
 }
 
@@ -777,15 +689,15 @@ func (s *SQLiteStore) InviteCreate(_ context.Context, invite Invite) error {
 	defer s.mu.Unlock()
 
 	if _, err := s.db.Exec(
-		`INSERT OR IGNORE INTO networks (fleet_id, created_at) VALUES (?, ?)`,
-		invite.FleetID, time.Now().UTC(),
+		`INSERT OR IGNORE INTO networks (network_id, created_at) VALUES (?, ?)`,
+		invite.NetworkID, time.Now().UTC(),
 	); err != nil {
 		return err
 	}
 
 	_, err := s.db.Exec(
-		"INSERT INTO invites (fleet_id, token, created_by, uses_remaining, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-		invite.FleetID, invite.Token, invite.CreatedBy, invite.UsesRemaining, invite.ExpiresAt, invite.CreatedAt,
+		"INSERT INTO invites (network_id, token, created_by, uses_remaining, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+		invite.NetworkID, invite.Token, invite.CreatedBy, invite.UsesRemaining, invite.ExpiresAt, invite.CreatedAt,
 	)
 	return err
 }
@@ -796,9 +708,9 @@ func (s *SQLiteStore) InviteGet(_ context.Context, token string) (*Invite, error
 
 	var inv Invite
 	err := s.db.QueryRow(
-		"SELECT fleet_id, token, created_by, uses_remaining, expires_at, created_at FROM invites WHERE token = ? AND expires_at > ?",
+		"SELECT network_id, token, created_by, uses_remaining, expires_at, created_at FROM invites WHERE token = ? AND expires_at > ?",
 		token, time.Now().UTC(),
-	).Scan(&inv.FleetID, &inv.Token, &inv.CreatedBy, &inv.UsesRemaining, &inv.ExpiresAt, &inv.CreatedAt)
+	).Scan(&inv.NetworkID, &inv.Token, &inv.CreatedBy, &inv.UsesRemaining, &inv.ExpiresAt, &inv.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -832,13 +744,13 @@ func (s *SQLiteStore) InviteConsume(_ context.Context, token string) error {
 	return nil
 }
 
-func (s *SQLiteStore) InviteList(_ context.Context, fleetID string) ([]Invite, error) {
+func (s *SQLiteStore) InviteList(_ context.Context, networkID string) ([]Invite, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.Query(
-		"SELECT fleet_id, token, created_by, uses_remaining, expires_at, created_at FROM invites WHERE fleet_id = ? AND expires_at > ? ORDER BY created_at",
-		fleetID, time.Now().UTC(),
+		"SELECT network_id, token, created_by, uses_remaining, expires_at, created_at FROM invites WHERE network_id = ? AND expires_at > ? ORDER BY created_at",
+		networkID, time.Now().UTC(),
 	)
 	if err != nil {
 		return nil, err
@@ -848,7 +760,7 @@ func (s *SQLiteStore) InviteList(_ context.Context, fleetID string) ([]Invite, e
 	var invites []Invite
 	for rows.Next() {
 		var inv Invite
-		if err := rows.Scan(&inv.FleetID, &inv.Token, &inv.CreatedBy, &inv.UsesRemaining, &inv.ExpiresAt, &inv.CreatedAt); err != nil {
+		if err := rows.Scan(&inv.NetworkID, &inv.Token, &inv.CreatedBy, &inv.UsesRemaining, &inv.ExpiresAt, &inv.CreatedAt); err != nil {
 			return nil, err
 		}
 		invites = append(invites, inv)
@@ -856,10 +768,10 @@ func (s *SQLiteStore) InviteList(_ context.Context, fleetID string) ([]Invite, e
 	return invites, rows.Err()
 }
 
-func (s *SQLiteStore) InviteDelete(_ context.Context, fleetID, token string) error {
+func (s *SQLiteStore) InviteDelete(_ context.Context, networkID, token string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec("DELETE FROM invites WHERE fleet_id = ? AND token = ?", fleetID, token)
+	_, err := s.db.Exec("DELETE FROM invites WHERE network_id = ? AND token = ?", networkID, token)
 	return err
 }
 
@@ -970,8 +882,8 @@ func (s *SQLiteStore) OIDCDeviceFlowCreate(_ context.Context, flow OIDCDeviceFlo
 	defer s.mu.Unlock()
 
 	_, err := s.db.Exec(
-		"INSERT INTO oidc_device_flows (poll_token, device_code, fleet_id, node_name, node_token, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
-		flow.PollToken, flow.DeviceCode, flow.FleetID, flow.NodeName, flow.NodeToken, flow.ExpiresAt,
+		"INSERT INTO oidc_device_flows (poll_token, device_code, network_id, node_name, node_token, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+		flow.PollToken, flow.DeviceCode, flow.NetworkID, flow.NodeName, flow.NodeToken, flow.ExpiresAt,
 	)
 	return err
 }
@@ -982,9 +894,9 @@ func (s *SQLiteStore) OIDCDeviceFlowGet(_ context.Context, pollToken string) (*O
 
 	var flow OIDCDeviceFlow
 	err := s.db.QueryRow(
-		"SELECT poll_token, device_code, fleet_id, node_name, node_token, expires_at FROM oidc_device_flows WHERE poll_token = ? AND expires_at > ?",
+		"SELECT poll_token, device_code, network_id, node_name, node_token, expires_at FROM oidc_device_flows WHERE poll_token = ? AND expires_at > ?",
 		pollToken, time.Now().UTC(),
-	).Scan(&flow.PollToken, &flow.DeviceCode, &flow.FleetID, &flow.NodeName, &flow.NodeToken, &flow.ExpiresAt)
+	).Scan(&flow.PollToken, &flow.DeviceCode, &flow.NetworkID, &flow.NodeName, &flow.NodeToken, &flow.ExpiresAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

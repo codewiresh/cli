@@ -42,17 +42,17 @@ func NewSSHServer(st store.Store, hub *NodeHub, sessions *PendingSessions) (*SSH
 			if err != nil || node == nil {
 				return nil, fmt.Errorf("authentication failed")
 			}
-			requestedFleet, requestedName := parseSSHUser(c.User())
+			requestedNetwork, requestedName := parseSSHUser(c.User())
 			if subtle.ConstantTimeCompare([]byte(requestedName), []byte(node.Name)) != 1 {
 				return nil, fmt.Errorf("username does not match node name")
 			}
-			if requestedFleet != "" && subtle.ConstantTimeCompare([]byte(requestedFleet), []byte(node.FleetID)) != 1 {
+			if requestedNetwork != "" && subtle.ConstantTimeCompare([]byte(requestedNetwork), []byte(node.NetworkID)) != 1 {
 				return nil, fmt.Errorf("username does not match node network")
 			}
 			return &ssh.Permissions{
 				Extensions: map[string]string{
-					"node_name":  node.Name,
-					"node_fleet": node.FleetID,
+					"node_name":    node.Name,
+					"node_network": node.NetworkID,
 				},
 			}, nil
 		},
@@ -87,7 +87,7 @@ func (s *SSHServer) handleConn(ctx context.Context, tc net.Conn) {
 	go ssh.DiscardRequests(reqs)
 
 	nodeName := sshConn.Permissions.Extensions["node_name"]
-	nodeFleet := sshConn.Permissions.Extensions["node_fleet"]
+	nodeNetwork := sshConn.Permissions.Extensions["node_network"]
 
 	for newChan := range chans {
 		if newChan.ChannelType() != "session" {
@@ -98,11 +98,11 @@ func (s *SSHServer) handleConn(ctx context.Context, tc net.Conn) {
 		if err != nil {
 			return
 		}
-		go s.handleSession(ctx, ch, reqs, nodeFleet, nodeName)
+		go s.handleSession(ctx, ch, reqs, nodeNetwork, nodeName)
 	}
 }
 
-func parseSSHUser(user string) (fleetID, nodeName string) {
+func parseSSHUser(user string) (networkID, nodeName string) {
 	parts := strings.SplitN(user, "/", 2)
 	if len(parts) == 2 {
 		return parts[0], parts[1]
@@ -110,7 +110,7 @@ func parseSSHUser(user string) (fleetID, nodeName string) {
 	return "", user
 }
 
-func (s *SSHServer) handleSession(ctx context.Context, ch ssh.Channel, reqs <-chan *ssh.Request, nodeFleet, nodeName string) {
+func (s *SSHServer) handleSession(ctx context.Context, ch ssh.Channel, reqs <-chan *ssh.Request, nodeNetwork, nodeName string) {
 	defer ch.Close()
 
 	sessionID := generateSessionID()
@@ -140,7 +140,7 @@ func (s *SSHServer) handleSession(ctx context.Context, ch ssh.Channel, reqs <-ch
 			if req.WantReply {
 				req.Reply(true, nil)
 			}
-			s.bridgeToNode(ctx, ch, nodeFleet, nodeName, sessionID, int(cols), int(rows))
+			s.bridgeToNode(ctx, ch, nodeNetwork, nodeName, sessionID, int(cols), int(rows))
 			return
 		default:
 			if req.WantReply {
@@ -150,13 +150,13 @@ func (s *SSHServer) handleSession(ctx context.Context, ch ssh.Channel, reqs <-ch
 	}
 }
 
-func (s *SSHServer) bridgeToNode(ctx context.Context, ch ssh.Channel, nodeFleet, nodeName, sessionID string, cols, rows int) {
+func (s *SSHServer) bridgeToNode(ctx context.Context, ch ssh.Channel, nodeNetwork, nodeName, sessionID string, cols, rows int) {
 	// Register pending back-connection channel before signalling node.
 	backCh := s.sessions.Expect(sessionID)
 	defer s.sessions.Cancel(sessionID)
 
 	// Signal node via hub.
-	err := s.hub.Send(nodeFleet, nodeName, HubMessage{
+	err := s.hub.Send(nodeNetwork, nodeName, HubMessage{
 		Type:      "SSHRequest",
 		SessionID: sessionID,
 		Cols:      cols,

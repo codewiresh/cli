@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/codewiresh/codewire/internal/connection"
+	"github.com/codewiresh/codewire/internal/networkauth"
 	"github.com/codewiresh/codewire/internal/protocol"
 	"github.com/codewiresh/codewire/internal/session"
 )
@@ -16,7 +18,7 @@ import (
 // handleClient reads the first control frame from a client, dispatches the
 // request by type, and returns. Each Unix/WebSocket connection is handled
 // by exactly one goroutine calling this function.
-func handleClient(reader connection.FrameReader, writer connection.FrameWriter, manager *session.SessionManager, kvStore *session.KVStore) {
+func handleClient(reader connection.FrameReader, writer connection.FrameWriter, manager *session.SessionManager, kvStore *session.KVStore, issueSenderDelegation func(context.Context, uint32, string, string) (*networkauth.SenderDelegationResponse, error)) {
 	defer reader.Close()
 	defer writer.Close()
 
@@ -329,12 +331,49 @@ func handleClient(reader connection.FrameReader, writer connection.FrameWriter, 
 	case "KVList":
 		handleKVList(writer, kvStore, req)
 
+	case "IssueSenderDelegation":
+		sessionID, resolveErr := resolveMessageSession(manager, req.ID, req.Name)
+		if resolveErr != nil {
+			_ = writer.SendResponse(&protocol.Response{Type: "Error", Message: resolveErr.Error()})
+			return
+		}
+		if issueSenderDelegation == nil {
+			_ = writer.SendResponse(&protocol.Response{Type: "Error", Message: "sender delegation issuance is not configured"})
+			return
+		}
+		issued, err := issueSenderDelegation(context.Background(), sessionID, req.Verb, req.AudienceNode)
+		if err != nil {
+			_ = writer.SendResponse(&protocol.Response{Type: "Error", Message: err.Error()})
+			return
+		}
+		fromName := manager.GetName(sessionID)
+		_ = writer.SendResponse(&protocol.Response{
+			Type:      "SenderDelegationIssued",
+			FromID:    &sessionID,
+			FromName:  fromName,
+			SenderCap: issued.Delegation,
+		})
+
 	default:
 		_ = writer.SendResponse(&protocol.Response{
 			Type:    "Error",
 			Message: fmt.Sprintf("unknown request type: %s", req.Type),
 		})
 	}
+}
+
+func resolveMessageSession(manager *session.SessionManager, id *uint32, name string) (uint32, error) {
+	if manager == nil {
+		return 0, fmt.Errorf("session manager is nil")
+	}
+	if id != nil {
+		return *id, nil
+	}
+	name = strings.TrimSpace(strings.TrimPrefix(name, "@"))
+	if name == "" {
+		return 0, fmt.Errorf("session id or name required")
+	}
+	return manager.ResolveByName(name)
 }
 
 // frameOrError bundles a frame read result for channel-based communication.

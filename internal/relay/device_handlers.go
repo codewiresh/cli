@@ -30,14 +30,14 @@ func RegisterDeviceHandlersForTest(mux *http.ServeMux, st store.Store, p *oauth.
 func deviceAuthorizeHandler(st store.Store, p *oauth.OIDCProvider) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			NodeName string `json:"node_name"`
-			FleetID  string `json:"fleet_id,omitempty"`
+			NodeName  string `json:"node_name"`
+			NetworkID string `json:"network_id,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NodeName == "" {
 			http.Error(w, "node_name required", http.StatusBadRequest)
 			return
 		}
-		fleetID := resolveFleetID(req.FleetID)
+		networkID := resolveNetworkID(req.NetworkID)
 
 		// Ask the OIDC provider to start the device authorization flow.
 		data := url.Values{
@@ -91,7 +91,7 @@ func deviceAuthorizeHandler(st store.Store, p *oauth.OIDCProvider) http.HandlerF
 		flow := store.OIDCDeviceFlow{
 			PollToken:  generateToken(),
 			DeviceCode: dauth.DeviceCode,
-			FleetID:    fleetID,
+			NetworkID:  networkID,
 			NodeName:   req.NodeName,
 			ExpiresAt:  time.Now().UTC().Add(time.Duration(expiresIn) * time.Second),
 		}
@@ -224,7 +224,7 @@ func devicePollHandler(st store.Store, p *oauth.OIDCProvider) http.HandlerFunc {
 		// Register node with a new random token.
 		nodeToken := generateToken()
 		if err := st.NodeRegister(r.Context(), store.NodeRecord{
-			FleetID:      flow.FleetID,
+			NetworkID:    flow.NetworkID,
 			Name:         flow.NodeName,
 			Token:        nodeToken,
 			AuthorizedAt: now,
@@ -245,7 +245,7 @@ func devicePollHandler(st store.Store, p *oauth.OIDCProvider) http.HandlerFunc {
 			"status":     "authorized",
 			"node_token": nodeToken,
 			"node_name":  flow.NodeName,
-			"fleet_id":   flow.FleetID,
+			"network_id": flow.NetworkID,
 		})
 	}
 }

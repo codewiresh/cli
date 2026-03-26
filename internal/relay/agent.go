@@ -19,6 +19,7 @@ type AgentConfig struct {
 	RelayURL  string // e.g. "https://relay.codewire.sh"
 	NodeName  string
 	NodeToken string
+	PeerURL   string
 }
 
 // RunAgent connects to the relay and handles incoming SSH requests.
@@ -45,7 +46,10 @@ func RunAgent(ctx context.Context, cfg AgentConfig) {
 func runAgentOnce(ctx context.Context, cfg AgentConfig) error {
 	wsURL := toWS(cfg.RelayURL) + "/node/connect"
 	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
-		HTTPHeader: http.Header{"Authorization": {"Bearer " + cfg.NodeToken}},
+		HTTPHeader: http.Header{
+			"Authorization":       {"Bearer " + cfg.NodeToken},
+			"X-CodeWire-Peer-URL": {cfg.PeerURL},
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)

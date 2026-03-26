@@ -40,8 +40,8 @@ func TestResolveEnvRelayEnrollmentExplicitNetwork(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("Decode: %v", err)
 		}
-		if body["fleet_id"] != wantNetwork {
-			t.Fatalf("fleet_id = %v, want %q", body["fleet_id"], wantNetwork)
+		if body["network_id"] != wantNetwork {
+			t.Fatalf("network_id = %v, want %q", body["network_id"], wantNetwork)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -54,9 +54,9 @@ func TestResolveEnvRelayEnrollmentExplicitNetwork(t *testing.T) {
 
 	createRelayInvite = func(dataDir string, opts cwclient.RelayAuthOptions, uses int, ttl string) (*cwclient.RelayInvite, error) {
 		reqBody, _ := json.Marshal(map[string]any{
-			"fleet_id": opts.NetworkID,
-			"uses":     uses,
-			"ttl":      ttl,
+			"network_id": opts.NetworkID,
+			"uses":       uses,
+			"ttl":        ttl,
 		})
 		req, err := http.NewRequest(http.MethodPost, opts.RelayURL+"/api/v1/invites", strings.NewReader(string(reqBody)))
 		if err != nil {
@@ -123,9 +123,9 @@ func TestResolveEnvRelayEnrollmentPersistsConsent(t *testing.T) {
 
 	createRelayInvite = func(dataDir string, opts cwclient.RelayAuthOptions, uses int, ttl string) (*cwclient.RelayInvite, error) {
 		reqBody, _ := json.Marshal(map[string]any{
-			"fleet_id": opts.NetworkID,
-			"uses":     uses,
-			"ttl":      ttl,
+			"network_id": opts.NetworkID,
+			"uses":       uses,
+			"ttl":        ttl,
 		})
 		req, err := http.NewRequest(http.MethodPost, opts.RelayURL+"/api/v1/invites", strings.NewReader(string(reqBody)))
 		if err != nil {

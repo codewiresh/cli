@@ -1,6 +1,8 @@
 package session
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -225,7 +227,13 @@ type SessionManager struct {
 	Subscriptions *SubscriptionManager
 
 	pendingRequestsMu sync.Mutex
-	pendingRequests   map[string]chan ReplyData // requestID → reply channel
+	pendingRequests   map[string]pendingRequest // requestID → pending request state
+}
+
+type pendingRequest struct {
+	replyCh                   chan ReplyData
+	allowedReplierSessionID   uint32
+	allowedReplierSessionName string
 }
 
 // NewSessionManager creates a SessionManager rooted at dataDir. It reads
@@ -270,7 +278,7 @@ func NewSessionManager(dataDir string) (*SessionManager, error) {
 		dataDir:         dataDir,
 		PersistCh:       make(chan struct{}, 1),
 		Subscriptions:   NewSubscriptionManager(),
-		pendingRequests: make(map[string]chan ReplyData),
+		pendingRequests: make(map[string]pendingRequest),
 	}
 	sm.nextID.Store(startID)
 	return sm, nil
@@ -357,6 +365,15 @@ func (m *SessionManager) GetName(id uint32) string {
 // in both sessions' message logs and publishing it via the SubscriptionManager.
 // fromID=0 is allowed (anonymous caller, e.g. CLI or gateway hook).
 func (m *SessionManager) SendMessage(fromID, toID uint32, body string) (string, error) {
+	return m.sendMessageWithMetadata(fromID, "", toID, body, true)
+}
+
+// SendRemoteMessage records a direct message from an authenticated remote sender.
+func (m *SessionManager) SendRemoteMessage(fromName string, toID uint32, body string) (string, error) {
+	return m.sendMessageWithMetadata(0, fromName, toID, body, false)
+}
+
+func (m *SessionManager) sendMessageWithMetadata(fromID uint32, fromNameOverride string, toID uint32, body string, mirrorSender bool) (string, error) {
 	m.mu.RLock()
 	fromSess, fromOK := m.sessions[fromID]
 	toSess, toOK := m.sessions[toID]
@@ -369,10 +386,12 @@ func (m *SessionManager) SendMessage(fromID, toID uint32, body string) (string, 
 		return "", fmt.Errorf("recipient session %d not found", toID)
 	}
 
-	msgID := fmt.Sprintf("msg_%d_%d_%d", fromID, toID, time.Now().UnixNano())
+	msgID := randomMessageID()
 
 	var fromName string
-	if fromOK {
+	if fromNameOverride != "" {
+		fromName = fromNameOverride
+	} else if fromOK {
 		fromSess.mu.Lock()
 		fromName = fromSess.Meta.Name
 		fromSess.mu.Unlock()
@@ -393,7 +412,7 @@ func (m *SessionManager) SendMessage(fromID, toID uint32, body string) (string, 
 	event := NewDirectMessageEvent(msgData)
 
 	// Write to both sessions' message logs.
-	if fromOK && fromSess.messageLog != nil {
+	if mirrorSender && fromOK && fromSess.messageLog != nil {
 		fromSess.messageLog.Append(event)
 	}
 	if toSess.messageLog != nil {
@@ -403,7 +422,7 @@ func (m *SessionManager) SendMessage(fromID, toID uint32, body string) (string, 
 	// Publish to subscriptions (on the recipient's session ID).
 	m.Subscriptions.Publish(toID, toSess.Meta.Tags, event)
 	// Also publish on sender so listen can see sent messages.
-	if fromOK && fromID != toID {
+	if mirrorSender && fromOK && fromID != toID {
 		m.Subscriptions.Publish(fromID, fromSess.Meta.Tags, event)
 	}
 
@@ -428,6 +447,15 @@ func (m *SessionManager) ReadMessages(sessionID uint32, tail int) ([]Event, erro
 // SendRequest sends a request from one session to another and returns a channel
 // that will receive the reply. The caller should block on the channel with a timeout.
 func (m *SessionManager) SendRequest(fromID, toID uint32, body string) (string, <-chan ReplyData, error) {
+	return m.sendRequestWithMetadata(fromID, "", toID, body, true)
+}
+
+// SendRemoteRequest records a request from an authenticated remote sender.
+func (m *SessionManager) SendRemoteRequest(fromName string, toID uint32, body string) (string, <-chan ReplyData, error) {
+	return m.sendRequestWithMetadata(0, fromName, toID, body, false)
+}
+
+func (m *SessionManager) sendRequestWithMetadata(fromID uint32, fromNameOverride string, toID uint32, body string, mirrorSender bool) (string, <-chan ReplyData, error) {
 	m.mu.RLock()
 	fromSess, fromOK := m.sessions[fromID]
 	toSess, toOK := m.sessions[toID]
@@ -441,10 +469,12 @@ func (m *SessionManager) SendRequest(fromID, toID uint32, body string) (string, 
 		return "", nil, fmt.Errorf("recipient session %d not found", toID)
 	}
 
-	requestID := fmt.Sprintf("req_%d_%d_%d", fromID, toID, time.Now().UnixNano())
+	requestID := randomRequestID()
 
 	var fromName string
-	if fromOK {
+	if fromNameOverride != "" {
+		fromName = fromNameOverride
+	} else if fromOK {
 		fromSess.mu.Lock()
 		fromName = fromSess.Meta.Name
 		fromSess.mu.Unlock()
@@ -470,17 +500,21 @@ func (m *SessionManager) SendRequest(fromID, toID uint32, body string) (string, 
 	}
 	m.Subscriptions.Publish(toID, toSess.Meta.Tags, event)
 	// Also publish on sender (only if sender is a real session).
-	if fromOK && fromID != toID {
+	if mirrorSender && fromOK && fromID != toID {
 		if fromSess.messageLog != nil {
 			fromSess.messageLog.Append(event)
 		}
 		m.Subscriptions.Publish(fromID, fromSess.Meta.Tags, event)
 	}
 
-	// Register reply channel.
+	// Register reply channel and ownership.
 	replyCh := make(chan ReplyData, 1)
 	m.pendingRequestsMu.Lock()
-	m.pendingRequests[requestID] = replyCh
+	m.pendingRequests[requestID] = pendingRequest{
+		replyCh:                   replyCh,
+		allowedReplierSessionID:   toID,
+		allowedReplierSessionName: toName,
+	}
 	m.pendingRequestsMu.Unlock()
 
 	return requestID, replyCh, nil
@@ -489,23 +523,49 @@ func (m *SessionManager) SendRequest(fromID, toID uint32, body string) (string, 
 // SendReply sends a reply to a pending request. It looks up the reply channel,
 // sends the reply, and records the reply event in both sessions' message logs.
 func (m *SessionManager) SendReply(fromID uint32, requestID string, body string) error {
+	return m.sendReplyWithMetadata(fromID, "", nil, requestID, body, true)
+}
+
+// SendRemoteReply sends a reply from an authenticated remote sender.
+func (m *SessionManager) SendRemoteReply(fromName string, fromSessionID *uint32, requestID string, body string) error {
+	return m.sendReplyWithMetadata(0, fromName, fromSessionID, requestID, body, false)
+}
+
+func (m *SessionManager) sendReplyWithMetadata(fromID uint32, fromNameOverride string, fromSessionIDOverride *uint32, requestID string, body string, logSender bool) error {
 	m.pendingRequestsMu.Lock()
-	replyCh, ok := m.pendingRequests[requestID]
-	if ok {
-		delete(m.pendingRequests, requestID)
-	}
+	pending, ok := m.pendingRequests[requestID]
 	m.pendingRequestsMu.Unlock()
 
 	if !ok {
 		return fmt.Errorf("no pending request with ID %q", requestID)
 	}
 
+	effectiveFromID := fromID
+	if fromSessionIDOverride != nil {
+		effectiveFromID = *fromSessionIDOverride
+	}
+	if effectiveFromID == 0 || effectiveFromID != pending.allowedReplierSessionID {
+		return fmt.Errorf("request %q may only be replied to by session %d", requestID, pending.allowedReplierSessionID)
+	}
+
+	m.pendingRequestsMu.Lock()
+	current, ok := m.pendingRequests[requestID]
+	if !ok {
+		m.pendingRequestsMu.Unlock()
+		return fmt.Errorf("no pending request with ID %q", requestID)
+	}
+	delete(m.pendingRequests, requestID)
+	m.pendingRequestsMu.Unlock()
+	pending = current
+
 	m.mu.RLock()
-	fromSess, fromOK := m.sessions[fromID]
+	fromSess, fromOK := m.sessions[effectiveFromID]
 	m.mu.RUnlock()
 
 	var fromName string
-	if fromOK {
+	if fromNameOverride != "" {
+		fromName = fromNameOverride
+	} else if fromOK {
 		fromSess.mu.Lock()
 		fromName = fromSess.Meta.Name
 		fromSess.mu.Unlock()
@@ -513,21 +573,23 @@ func (m *SessionManager) SendReply(fromID uint32, requestID string, body string)
 
 	replyData := ReplyData{
 		RequestID: requestID,
-		From:      fromID,
+		From:      effectiveFromID,
 		FromName:  fromName,
 		Body:      body,
 	}
 	event := NewReplyEvent(replyData)
 
 	// Write to sender's message log.
-	if fromOK && fromSess.messageLog != nil {
+	if logSender && fromOK && fromSess.messageLog != nil {
 		fromSess.messageLog.Append(event)
 	}
-	m.Subscriptions.Publish(fromID, nil, event)
+	if logSender && fromID != 0 {
+		m.Subscriptions.Publish(effectiveFromID, nil, event)
+	}
 
 	// Send to the reply channel (non-blocking in case caller timed out).
 	select {
-	case replyCh <- replyData:
+	case pending.replyCh <- replyData:
 	default:
 	}
 
@@ -557,6 +619,22 @@ func FormatRequestPrompt(requestID string, fromName string, fromID uint32, body 
 		sender = fmt.Sprintf("session-%d", fromID)
 	}
 	return fmt.Sprintf("\n[Codewire request %s from %s]\n%s\n\nReply with: cw reply %s \"<response>\"\n\n", requestID, sender, body, requestID)
+}
+
+func randomMessageID() string {
+	return randomOpaqueID("msg_")
+}
+
+func randomRequestID() string {
+	return randomOpaqueID("req_")
+}
+
+func randomOpaqueID(prefix string) string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
+	return prefix + base64.RawURLEncoding.EncodeToString(b[:])
 }
 
 // DeliverDirectMessagePrompt injects a formatted direct-message prompt into a

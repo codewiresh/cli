@@ -1093,7 +1093,7 @@ func Nodes(dataDir string, opts RelayAuthOptions) error {
 	if opts.All {
 		url += "?all=true"
 	} else if networkID != "" {
-		url += "?fleet_id=" + urlpkg.QueryEscape(networkID)
+		url += "?network_id=" + urlpkg.QueryEscape(networkID)
 	}
 	resp, err := fetchJSONWithAuth(url, authToken)
 	if err != nil {
@@ -1101,9 +1101,9 @@ func Nodes(dataDir string, opts RelayAuthOptions) error {
 	}
 
 	var nodes []struct {
-		FleetID   string `json:"fleet_id,omitempty"`
+		NetworkID string `json:"network_id,omitempty"`
 		Name      string `json:"name"`
-		TunnelURL string `json:"tunnel_url"`
+		PeerURL   string `json:"peer_url,omitempty"`
 		Connected bool   `json:"connected"`
 	}
 	if err := json.Unmarshal(resp, &nodes); err != nil {
@@ -1119,10 +1119,10 @@ func Nodes(dataDir string, opts RelayAuthOptions) error {
 	if !showNetwork {
 		seen := map[string]struct{}{}
 		for _, n := range nodes {
-			if n.FleetID == "" {
+			if n.NetworkID == "" {
 				continue
 			}
-			seen[n.FleetID] = struct{}{}
+			seen[n.NetworkID] = struct{}{}
 			if len(seen) > 1 {
 				showNetwork = true
 				break
@@ -1131,9 +1131,9 @@ func Nodes(dataDir string, opts RelayAuthOptions) error {
 	}
 
 	if showNetwork {
-		fmt.Printf("%-20s %-20s %-40s %-10s\n", "NETWORK", "NAME", "TUNNEL URL", "STATUS")
+		fmt.Printf("%-20s %-20s %-40s %-10s\n", "NETWORK", "NAME", "PEER URL", "STATUS")
 	} else {
-		fmt.Printf("%-20s %-40s %-10s\n", "NAME", "TUNNEL URL", "STATUS")
+		fmt.Printf("%-20s %-40s %-10s\n", "NAME", "PEER URL", "STATUS")
 	}
 	for _, n := range nodes {
 		status := "offline"
@@ -1141,14 +1141,14 @@ func Nodes(dataDir string, opts RelayAuthOptions) error {
 			status = "online"
 		}
 		if showNetwork {
-			network := n.FleetID
+			network := n.NetworkID
 			if network == "" {
 				network = "-"
 			}
-			fmt.Printf("%-20s %-20s %-40s %-10s\n", network, n.Name, n.TunnelURL, status)
+			fmt.Printf("%-20s %-20s %-40s %-10s\n", network, n.Name, n.PeerURL, status)
 			continue
 		}
-		fmt.Printf("%-20s %-40s %-10s\n", n.Name, n.TunnelURL, status)
+		fmt.Printf("%-20s %-40s %-10s\n", n.Name, n.PeerURL, status)
 	}
 	return nil
 }
@@ -1417,6 +1417,28 @@ func Msg(target *Target, fromID *uint32, toID uint32, body string, delivery stri
 	return nil
 }
 
+// IssueSenderDelegation asks the local node to mint a relay-issued sender delegation
+// for one of its sessions.
+func IssueSenderDelegation(target *Target, sessionID *uint32, sessionName, verb, audienceNode string) (string, *uint32, string, error) {
+	resp, err := requestResponse(target, &protocol.Request{
+		Type:         "IssueSenderDelegation",
+		ID:           sessionID,
+		Name:         sessionName,
+		Verb:         verb,
+		AudienceNode: audienceNode,
+	})
+	if err != nil {
+		return "", nil, "", err
+	}
+	if resp.Type == "Error" {
+		return "", nil, "", fmt.Errorf("%s", formatError(resp.Message))
+	}
+	if resp.Type != "SenderDelegationIssued" {
+		return "", nil, "", fmt.Errorf("unexpected response: %s", resp.Type)
+	}
+	return resp.SenderCap, resp.FromID, resp.FromName, nil
+}
+
 // ---------------------------------------------------------------------------
 // Inbox — read messages for a session
 // ---------------------------------------------------------------------------
@@ -1682,9 +1704,9 @@ func CreateInvite(dataDir string, opts RelayAuthOptions, uses int, ttl string) (
 	}
 
 	reqBody, _ := json.Marshal(map[string]interface{}{
-		"fleet_id": networkID,
-		"uses":     uses,
-		"ttl":      ttl,
+		"network_id": networkID,
+		"uses":       uses,
+		"ttl":        ttl,
 	})
 
 	req, err := http.NewRequest(http.MethodPost, relayURL+"/api/v1/invites", strings.NewReader(string(reqBody)))
@@ -1790,7 +1812,7 @@ func Revoke(dataDir string, nodeName string, opts RelayAuthOptions) error {
 
 	url := relayURL + "/api/v1/nodes/" + nodeName
 	if networkID != "" {
-		url += "?fleet_id=" + urlpkg.QueryEscape(networkID)
+		url += "?network_id=" + urlpkg.QueryEscape(networkID)
 	}
 	req, err := http.NewRequest(http.MethodDelete, url, nil)
 	if err != nil {
@@ -1858,7 +1880,6 @@ func loadConfigFromDir(dataDir string) (*relayAuthConfig, error) {
 	var cfg struct {
 		RelayURL     *string `toml:"relay_url"`
 		RelayNetwork *string `toml:"relay_network"`
-		RelayFleet   *string `toml:"relay_fleet"`
 		RelaySession *string `toml:"relay_session"`
 	}
 
@@ -1874,8 +1895,6 @@ func loadConfigFromDir(dataDir string) (*relayAuthConfig, error) {
 	}
 	if cfg.RelayNetwork != nil {
 		result.relayNetwork = *cfg.RelayNetwork
-	} else if cfg.RelayFleet != nil {
-		result.relayNetwork = *cfg.RelayFleet
 	}
 	if cfg.RelaySession != nil {
 		result.authToken = *cfg.RelaySession
@@ -1885,8 +1904,6 @@ func loadConfigFromDir(dataDir string) (*relayAuthConfig, error) {
 	}
 	if relayNetwork := os.Getenv("CODEWIRE_RELAY_NETWORK"); relayNetwork != "" {
 		result.relayNetwork = relayNetwork
-	} else if relayFleet := os.Getenv("CODEWIRE_RELAY_FLEET"); relayFleet != "" {
-		result.relayNetwork = relayFleet
 	}
 	if relaySession := os.Getenv("CODEWIRE_RELAY_SESSION"); relaySession != "" {
 		result.authToken = relaySession
@@ -2014,12 +2031,16 @@ func Gateway(target *Target, name, execCmd, notifyMethod string) error {
 			if err := json.Unmarshal(resp.Event.Data, &reqData); err != nil {
 				continue
 			}
-			go gatewayHandleRequest(ctx, target, execCmd, notifyMethod, reqData.RequestID, reqData.Body, reqData.FromName)
+			var targetSessionID uint32
+			if resp.SessionID != nil {
+				targetSessionID = *resp.SessionID
+			}
+			go gatewayHandleRequest(ctx, target, execCmd, notifyMethod, targetSessionID, reqData.RequestID, reqData.Body, reqData.FromName)
 		}
 	}
 }
 
-func gatewayHandleRequest(ctx context.Context, target *Target, execCmd, notifyMethod, requestID, body, fromName string) {
+func gatewayHandleRequest(ctx context.Context, target *Target, execCmd, notifyMethod string, targetSessionID uint32, requestID, body, fromName string) {
 	reply := gatewayEvaluate(ctx, execCmd, body, fromName)
 	upperReply := strings.ToUpper(reply)
 
@@ -2027,8 +2048,14 @@ func gatewayHandleRequest(ctx context.Context, target *Target, execCmd, notifyMe
 		gatewayNotify(notifyMethod, body, fromName)
 	}
 
+	var fromID *uint32
+	if targetSessionID != 0 {
+		fromID = &targetSessionID
+	}
+
 	if _, err := requestResponse(target, &protocol.Request{
 		Type:      "MsgReply",
+		ID:        fromID,
 		RequestID: requestID,
 		Body:      reply,
 	}); err != nil {

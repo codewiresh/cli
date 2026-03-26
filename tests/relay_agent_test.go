@@ -19,7 +19,7 @@ func TestNodeConnect(t *testing.T) {
 	st, _ := store.NewSQLiteStore(t.TempDir())
 	defer st.Close()
 	ctx := context.Background()
-	_ = st.NodeRegister(ctx, store.NodeRecord{FleetID: "default", Name: "n1", Token: "tok1", AuthorizedAt: time.Now(), LastSeenAt: time.Now()})
+	_ = st.NodeRegister(ctx, store.NodeRecord{NetworkID: "default", Name: "n1", Token: "tok1", AuthorizedAt: time.Now(), LastSeenAt: time.Now()})
 
 	hub := relay.NewNodeHub()
 	mux := http.NewServeMux()
@@ -57,7 +57,7 @@ func TestBackConnect(t *testing.T) {
 	st, _ := store.NewSQLiteStore(t.TempDir())
 	defer st.Close()
 	ctx := context.Background()
-	_ = st.NodeRegister(ctx, store.NodeRecord{FleetID: "default", Name: "n1", Token: "tok1", AuthorizedAt: time.Now(), LastSeenAt: time.Now()})
+	_ = st.NodeRegister(ctx, store.NodeRecord{NetworkID: "default", Name: "n1", Token: "tok1", AuthorizedAt: time.Now(), LastSeenAt: time.Now()})
 
 	sessions := relay.NewPendingSessions()
 	mux := http.NewServeMux()

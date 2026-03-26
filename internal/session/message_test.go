@@ -2,7 +2,9 @@ package session
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -35,6 +37,9 @@ func TestSendMessage(t *testing.T) {
 	}
 	if msgID == "" {
 		t.Fatal("expected non-empty message ID")
+	}
+	if !strings.HasPrefix(msgID, "msg_") {
+		t.Fatalf("expected opaque msg_ id, got %q", msgID)
 	}
 
 	// Verify the message appears in the recipient's message log.
@@ -195,6 +200,9 @@ func TestRequestReply(t *testing.T) {
 	if requestID == "" {
 		t.Fatal("expected non-empty request ID")
 	}
+	if !strings.HasPrefix(requestID, "req_") {
+		t.Fatalf("expected opaque req_ id, got %q", requestID)
+	}
 
 	// Reply from recipient.
 	if err := sm.SendReply(recipient, requestID, "4"); err != nil {
@@ -218,6 +226,46 @@ func TestRequestReply(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for reply on channel")
+	}
+}
+
+func TestMessageAndRequestIDsAreOpaque(t *testing.T) {
+	sm, err := NewSessionManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create session manager: %v", err)
+	}
+
+	sender := launchSleepSession(t, sm)
+	recipient := launchSleepSession(t, sm)
+
+	msgID1, err := sm.SendMessage(sender, recipient, "one")
+	if err != nil {
+		t.Fatalf("SendMessage 1 failed: %v", err)
+	}
+	msgID2, err := sm.SendMessage(sender, recipient, "two")
+	if err != nil {
+		t.Fatalf("SendMessage 2 failed: %v", err)
+	}
+	if msgID1 == msgID2 {
+		t.Fatalf("message ids should differ: %q", msgID1)
+	}
+	if strings.Contains(msgID1, fmt.Sprintf("_%d_%d_", sender, recipient)) {
+		t.Fatalf("message id looks topology-derived: %q", msgID1)
+	}
+
+	reqID1, _, err := sm.SendRequest(sender, recipient, "req one")
+	if err != nil {
+		t.Fatalf("SendRequest 1 failed: %v", err)
+	}
+	reqID2, _, err := sm.SendRequest(sender, recipient, "req two")
+	if err != nil {
+		t.Fatalf("SendRequest 2 failed: %v", err)
+	}
+	if reqID1 == reqID2 {
+		t.Fatalf("request ids should differ: %q", reqID1)
+	}
+	if strings.Contains(reqID1, fmt.Sprintf("_%d_%d_", sender, recipient)) {
+		t.Fatalf("request id looks topology-derived: %q", reqID1)
 	}
 }
 
@@ -252,6 +300,34 @@ func TestRequestTimeout(t *testing.T) {
 	err = sm.SendReply(recipient, requestID, "too late")
 	if err == nil {
 		t.Fatal("expected error when replying to cleaned-up request")
+	}
+}
+
+func TestRequestReplyRejectedForWrongSession(t *testing.T) {
+	sm, err := NewSessionManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create session manager: %v", err)
+	}
+
+	sender := launchSleepSession(t, sm)
+	recipient := launchSleepSession(t, sm)
+	other := launchSleepSession(t, sm)
+
+	requestID, _, err := sm.SendRequest(sender, recipient, "who may answer?")
+	if err != nil {
+		t.Fatalf("SendRequest failed: %v", err)
+	}
+
+	err = sm.SendReply(other, requestID, "not me")
+	if err == nil {
+		t.Fatal("expected error when wrong session replies")
+	}
+	if !strings.Contains(err.Error(), "may only be replied to by session") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if err := sm.SendReply(recipient, requestID, "me"); err != nil {
+		t.Fatalf("SendReply from recipient failed: %v", err)
 	}
 }
 

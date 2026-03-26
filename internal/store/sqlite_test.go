@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const testFleetID = "fleet-test"
+const testNetworkID = "network-test"
 
 func newTestStore(t *testing.T) *SQLiteStore {
 	t.Helper()
@@ -24,7 +24,7 @@ func TestKVSetGetDelete(t *testing.T) {
 	ctx := context.Background()
 
 	// Get non-existent key returns nil.
-	val, err := s.KVGet(ctx, testFleetID, "ns", "key1")
+	val, err := s.KVGet(ctx, testNetworkID, "ns", "key1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,10 +33,10 @@ func TestKVSetGetDelete(t *testing.T) {
 	}
 
 	// Set and get.
-	if err := s.KVSet(ctx, testFleetID, "ns", "key1", []byte("value1"), nil); err != nil {
+	if err := s.KVSet(ctx, testNetworkID, "ns", "key1", []byte("value1"), nil); err != nil {
 		t.Fatal(err)
 	}
-	val, err = s.KVGet(ctx, testFleetID, "ns", "key1")
+	val, err = s.KVGet(ctx, testNetworkID, "ns", "key1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,10 +45,10 @@ func TestKVSetGetDelete(t *testing.T) {
 	}
 
 	// Overwrite.
-	if err := s.KVSet(ctx, testFleetID, "ns", "key1", []byte("value2"), nil); err != nil {
+	if err := s.KVSet(ctx, testNetworkID, "ns", "key1", []byte("value2"), nil); err != nil {
 		t.Fatal(err)
 	}
-	val, err = s.KVGet(ctx, testFleetID, "ns", "key1")
+	val, err = s.KVGet(ctx, testNetworkID, "ns", "key1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,10 +57,10 @@ func TestKVSetGetDelete(t *testing.T) {
 	}
 
 	// Delete.
-	if err := s.KVDelete(ctx, testFleetID, "ns", "key1"); err != nil {
+	if err := s.KVDelete(ctx, testNetworkID, "ns", "key1"); err != nil {
 		t.Fatal(err)
 	}
-	val, err = s.KVGet(ctx, testFleetID, "ns", "key1")
+	val, err = s.KVGet(ctx, testNetworkID, "ns", "key1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,12 +75,12 @@ func TestKVTTL(t *testing.T) {
 
 	// Set with a TTL long enough to survive the immediate read.
 	ttl := 2 * time.Second
-	if err := s.KVSet(ctx, testFleetID, "ns", "expiring", []byte("gone"), &ttl); err != nil {
+	if err := s.KVSet(ctx, testNetworkID, "ns", "expiring", []byte("gone"), &ttl); err != nil {
 		t.Fatal(err)
 	}
 
 	// Should exist immediately (well within 2s TTL).
-	val, err := s.KVGet(ctx, testFleetID, "ns", "expiring")
+	val, err := s.KVGet(ctx, testNetworkID, "ns", "expiring")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,12 +90,12 @@ func TestKVTTL(t *testing.T) {
 
 	// Now set a very short TTL and wait for it to expire.
 	ttl = time.Millisecond
-	if err := s.KVSet(ctx, testFleetID, "ns", "expiring", []byte("gone"), &ttl); err != nil {
+	if err := s.KVSet(ctx, testNetworkID, "ns", "expiring", []byte("gone"), &ttl); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(50 * time.Millisecond)
 
-	val, err = s.KVGet(ctx, testFleetID, "ns", "expiring")
+	val, err = s.KVGet(ctx, testNetworkID, "ns", "expiring")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,35 +108,35 @@ func TestKVNamespaceIsolation(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	if err := s.KVSet(ctx, testFleetID, "ns1", "key", []byte("v1"), nil); err != nil {
+	if err := s.KVSet(ctx, testNetworkID, "ns1", "key", []byte("v1"), nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.KVSet(ctx, testFleetID, "ns2", "key", []byte("v2"), nil); err != nil {
+	if err := s.KVSet(ctx, testNetworkID, "ns2", "key", []byte("v2"), nil); err != nil {
 		t.Fatal(err)
 	}
 
-	val1, _ := s.KVGet(ctx, testFleetID, "ns1", "key")
-	val2, _ := s.KVGet(ctx, testFleetID, "ns2", "key")
+	val1, _ := s.KVGet(ctx, testNetworkID, "ns1", "key")
+	val2, _ := s.KVGet(ctx, testNetworkID, "ns2", "key")
 	if string(val1) != "v1" || string(val2) != "v2" {
 		t.Fatalf("namespace isolation failed: ns1=%s ns2=%s", val1, val2)
 	}
 }
 
-func TestKVFleetIsolation(t *testing.T) {
+func TestKVNetworkIsolation(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	if err := s.KVSet(ctx, "fleet-a", "ns", "key", []byte("v1"), nil); err != nil {
+	if err := s.KVSet(ctx, "network-a", "ns", "key", []byte("v1"), nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.KVSet(ctx, "fleet-b", "ns", "key", []byte("v2"), nil); err != nil {
+	if err := s.KVSet(ctx, "network-b", "ns", "key", []byte("v2"), nil); err != nil {
 		t.Fatal(err)
 	}
 
-	valA, _ := s.KVGet(ctx, "fleet-a", "ns", "key")
-	valB, _ := s.KVGet(ctx, "fleet-b", "ns", "key")
+	valA, _ := s.KVGet(ctx, "network-a", "ns", "key")
+	valB, _ := s.KVGet(ctx, "network-b", "ns", "key")
 	if string(valA) != "v1" || string(valB) != "v2" {
-		t.Fatalf("fleet isolation failed: fleet-a=%s fleet-b=%s", valA, valB)
+		t.Fatalf("network isolation failed: network-a=%s network-b=%s", valA, valB)
 	}
 }
 
@@ -144,11 +144,11 @@ func TestKVList(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	s.KVSet(ctx, testFleetID, "ns", "task:1", []byte("a"), nil)
-	s.KVSet(ctx, testFleetID, "ns", "task:2", []byte("b"), nil)
-	s.KVSet(ctx, testFleetID, "ns", "other", []byte("c"), nil)
+	s.KVSet(ctx, testNetworkID, "ns", "task:1", []byte("a"), nil)
+	s.KVSet(ctx, testNetworkID, "ns", "task:2", []byte("b"), nil)
+	s.KVSet(ctx, testNetworkID, "ns", "other", []byte("c"), nil)
 
-	entries, err := s.KVList(ctx, testFleetID, "ns", "task:")
+	entries, err := s.KVList(ctx, testNetworkID, "ns", "task:")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestKVList(t *testing.T) {
 	}
 
 	// All entries.
-	all, err := s.KVList(ctx, testFleetID, "ns", "")
+	all, err := s.KVList(ctx, testNetworkID, "ns", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestNetworkListIncludesExplicitAndImplicitNetworks(t *testing.T) {
 		t.Fatalf("NetworkEnsure: %v", err)
 	}
 	if err := s.NodeRegister(ctx, NodeRecord{
-		FleetID:      "project-beta",
+		NetworkID:    "project-beta",
 		Name:         "builder",
 		Token:        "token-beta",
 		AuthorizedAt: time.Now().UTC(),
@@ -214,7 +214,7 @@ func TestNodeCRUD(t *testing.T) {
 	now := time.Now().UTC()
 
 	node := NodeRecord{
-		FleetID:      testFleetID,
+		NetworkID:    testNetworkID,
 		Name:         "dev-1",
 		Token:        "abc123token",
 		AuthorizedAt: now,
@@ -227,7 +227,7 @@ func TestNodeCRUD(t *testing.T) {
 	}
 
 	// Get.
-	got, err := s.NodeGet(ctx, testFleetID, "dev-1")
+	got, err := s.NodeGet(ctx, testNetworkID, "dev-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +236,7 @@ func TestNodeCRUD(t *testing.T) {
 	}
 
 	// List.
-	nodes, err := s.NodeList(ctx, testFleetID)
+	nodes, err := s.NodeList(ctx, testNetworkID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,10 +246,10 @@ func TestNodeCRUD(t *testing.T) {
 
 	// Update last seen.
 	time.Sleep(time.Millisecond)
-	if err := s.NodeUpdateLastSeen(ctx, testFleetID, "dev-1"); err != nil {
+	if err := s.NodeUpdateLastSeen(ctx, testNetworkID, "dev-1"); err != nil {
 		t.Fatal(err)
 	}
-	got2, _ := s.NodeGet(ctx, testFleetID, "dev-1")
+	got2, _ := s.NodeGet(ctx, testNetworkID, "dev-1")
 	if !got2.LastSeenAt.After(got.LastSeenAt) {
 		t.Fatal("last_seen_at not updated")
 	}
@@ -259,16 +259,16 @@ func TestNodeCRUD(t *testing.T) {
 	if err := s.NodeRegister(ctx, node); err != nil {
 		t.Fatal(err)
 	}
-	got3, _ := s.NodeGet(ctx, testFleetID, "dev-1")
+	got3, _ := s.NodeGet(ctx, testNetworkID, "dev-1")
 	if got3.Token != "updatedtoken" {
 		t.Fatalf("upsert failed: %s", got3.Token)
 	}
 
 	// Delete.
-	if err := s.NodeDelete(ctx, testFleetID, "dev-1"); err != nil {
+	if err := s.NodeDelete(ctx, testNetworkID, "dev-1"); err != nil {
 		t.Fatal(err)
 	}
-	got4, err := s.NodeGet(ctx, testFleetID, "dev-1")
+	got4, err := s.NodeGet(ctx, testNetworkID, "dev-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestNodeCRUD(t *testing.T) {
 	}
 
 	// Get non-existent.
-	got5, err := s.NodeGet(ctx, testFleetID, "nonexistent")
+	got5, err := s.NodeGet(ctx, testNetworkID, "nonexistent")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ func TestNodeToken(t *testing.T) {
 	ctx := context.Background()
 
 	err := s.NodeRegister(ctx, NodeRecord{
-		FleetID:      testFleetID,
+		NetworkID:    testNetworkID,
 		Name:         "mynode",
 		Token:        "secrettoken",
 		AuthorizedAt: time.Now(),
@@ -318,13 +318,13 @@ func TestNodeToken(t *testing.T) {
 	}
 }
 
-func TestNodeFleetIsolation(t *testing.T) {
+func TestNodeNetworkIsolation(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
 
 	if err := s.NodeRegister(ctx, NodeRecord{
-		FleetID:      "fleet-a",
+		NetworkID:    "network-a",
 		Name:         "shared-node",
 		Token:        "token-a",
 		AuthorizedAt: now,
@@ -333,7 +333,7 @@ func TestNodeFleetIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := s.NodeRegister(ctx, NodeRecord{
-		FleetID:      "fleet-b",
+		NetworkID:    "network-b",
 		Name:         "shared-node",
 		Token:        "token-b",
 		AuthorizedAt: now,
@@ -342,19 +342,19 @@ func TestNodeFleetIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	nodeA, err := s.NodeGet(ctx, "fleet-a", "shared-node")
+	nodeA, err := s.NodeGet(ctx, "network-a", "shared-node")
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodeB, err := s.NodeGet(ctx, "fleet-b", "shared-node")
+	nodeB, err := s.NodeGet(ctx, "network-b", "shared-node")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if nodeA == nil || nodeB == nil {
-		t.Fatalf("expected both nodes, got fleet-a=%+v fleet-b=%+v", nodeA, nodeB)
+		t.Fatalf("expected both nodes, got network-a=%+v network-b=%+v", nodeA, nodeB)
 	}
 	if nodeA.Token != "token-a" || nodeB.Token != "token-b" {
-		t.Fatalf("unexpected tokens: fleet-a=%q fleet-b=%q", nodeA.Token, nodeB.Token)
+		t.Fatalf("unexpected tokens: network-a=%q network-b=%q", nodeA.Token, nodeB.Token)
 	}
 }
 

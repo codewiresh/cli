@@ -289,7 +289,7 @@ cw reply <request-id> '<response>' --from <session-id-or-name>
 
 ### cw server / cw nodes / relay commands
 
-For fleet/relay mode — see "Relay mode" section below.
+For network/relay mode — see "Relay mode" section below.
 
 ---
 
@@ -470,7 +470,7 @@ Reply to a pending request.
 | body | string | **yes** | — | Reply body |
 | from_session_id | integer | no | — | Sender session ID |
 
-### Fleet / Relay
+### Network / Relay
 
 #### codewire_list_nodes
 
@@ -480,7 +480,7 @@ No parameters.
 
 ### Key-Value Store
 
-Requires relay connection. KV store is shared across all nodes in the fleet.
+Requires relay connection. KV store is shared across all nodes in the network.
 
 #### codewire_kv_set
 
@@ -598,7 +598,7 @@ string to appear.
 
 ---
 
-### Pattern 5: Subscribe to monitor a fleet
+### Pattern 5: Subscribe to monitor a network
 
 Watch lifecycle events across all tagged sessions without polling.
 
@@ -624,7 +624,7 @@ For completed sessions, use `cw logs` (the output is persisted server-side).
 
 ## 7. Relay Mode
 
-Relay mode enables remote access and fleet management. Two tiers:
+Relay mode enables remote access and network-wide management. Two tiers:
 - **Standalone** (default): local Unix socket only, zero config
 - **Relay** (opt-in): SSH gateway, node discovery, shared KV store
 

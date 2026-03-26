@@ -20,7 +20,7 @@ func TestSSHConnectAndShell(t *testing.T) {
 
 	// Setup store with a node.
 	st, _ := store.NewSQLiteStore(t.TempDir())
-	_ = st.NodeRegister(ctx, store.NodeRecord{FleetID: "default", Name: "n1", Token: "tok1", AuthorizedAt: time.Now(), LastSeenAt: time.Now()})
+	_ = st.NodeRegister(ctx, store.NodeRecord{NetworkID: "default", Name: "n1", Token: "tok1", AuthorizedAt: time.Now(), LastSeenAt: time.Now()})
 
 	hub := localrelay.NewNodeHub()
 	sessions := localrelay.NewPendingSessions()

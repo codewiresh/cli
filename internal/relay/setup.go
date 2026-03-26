@@ -108,7 +108,7 @@ func getAuthConfig(ctx context.Context, relayURL string) (string, error) {
 }
 
 // registerAutoDetect auto-detects the relay's auth mode and runs the appropriate flow.
-func registerAutoDetect(ctx context.Context, relayURL, fleetID, nodeName string) (string, error) {
+func registerAutoDetect(ctx context.Context, relayURL, networkID, nodeName string) (string, error) {
 	authMode, err := getAuthConfig(ctx, relayURL)
 	if err != nil {
 		return "", fmt.Errorf("fetching relay auth config: %w", err)
@@ -116,7 +116,7 @@ func registerAutoDetect(ctx context.Context, relayURL, fleetID, nodeName string)
 
 	switch authMode {
 	case "oidc":
-		return registerWithDeviceFlow(ctx, relayURL, fleetID, nodeName)
+		return registerWithDeviceFlow(ctx, relayURL, networkID, nodeName)
 	default:
 		return "", fmt.Errorf("relay auth mode is %q — provide a token: cw relay setup %s <token>", authMode, relayURL)
 	}
@@ -124,11 +124,11 @@ func registerAutoDetect(ctx context.Context, relayURL, fleetID, nodeName string)
 
 // registerWithDeviceFlow performs RFC 8628 device authorization against the relay
 // and returns the node token once the user approves in their browser.
-func registerWithDeviceFlow(ctx context.Context, relayURL, fleetID, nodeName string) (string, error) {
+func registerWithDeviceFlow(ctx context.Context, relayURL, networkID, nodeName string) (string, error) {
 	// Step 1: initiate device auth.
 	body, _ := json.Marshal(map[string]string{
-		"node_name": nodeName,
-		"fleet_id":  fleetID,
+		"node_name":  nodeName,
+		"network_id": networkID,
 	})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, relayURL+"/api/v1/device/authorize", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -222,10 +222,10 @@ func registerWithDeviceFlow(ctx context.Context, relayURL, fleetID, nodeName str
 	return "", fmt.Errorf("timed out waiting for authorization")
 }
 
-func registerWithToken(ctx context.Context, relayURL, fleetID, nodeName, adminToken string) (string, error) {
+func registerWithToken(ctx context.Context, relayURL, networkID, nodeName, adminToken string) (string, error) {
 	body, _ := json.Marshal(map[string]string{
-		"node_name": nodeName,
-		"fleet_id":  fleetID,
+		"node_name":  nodeName,
+		"network_id": networkID,
 	})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, relayURL+"/api/v1/nodes", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")

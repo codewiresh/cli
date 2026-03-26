@@ -168,7 +168,7 @@ Reply to a pending request.
 | `body` | string | **yes** | — | Reply body |
 | `from_session_id` | integer | no | — | Session ID sending the reply |
 
-### Fleet / Relay
+### Network / Relay
 
 #### `codewire_list_nodes`
 
@@ -178,7 +178,7 @@ No parameters.
 
 ### Key-Value Store
 
-These tools require a relay connection. The KV store is shared across all nodes in a fleet.
+These tools require a relay connection. The KV store is shared across all nodes in a network.
 
 #### `codewire_kv_set`
 
@@ -217,6 +217,114 @@ Delete a key from the shared relay store.
 |-----------|------|----------|---------|-------------|
 | `key` | string | **yes** | — | The key to delete |
 | `namespace` | string | no | `"default"` | Namespace |
+
+### Environment Management
+
+#### `codewire_list_environments`
+
+List environments in the default organization.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `type` | string | no | -- | Filter: `"coder"` or `"sandbox"` |
+| `state` | string | no | -- | Filter by state (e.g. `"running"`, `"stopped"`) |
+| `include_destroyed` | boolean | no | `false` | Include destroyed environments |
+
+#### `codewire_create_environment`
+
+Create a new environment. Specify `preset_id`/`preset_slug` for a preset, or `image` for a custom container.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `preset_id` | string | no | -- | Preset ID |
+| `preset_slug` | string | no | -- | Preset slug (e.g. `"go"`, `"node"`) |
+| `image` | string | no | -- | Container image (e.g. `"python:3.12"`) |
+| `name` | string | no | -- | Environment name |
+| `ttl` | string | no | -- | Time to live (e.g. `"1h"`, `"30m"`) |
+| `cpu` | integer | no | -- | CPU in millicores |
+| `memory` | integer | no | -- | Memory in MB |
+| `disk` | integer | no | -- | Disk in GB |
+| `repo_url` | string | no | -- | Git repository URL to clone |
+| `branch` | string | no | -- | Git branch |
+| `install_command` | string | no | -- | Post-clone install command |
+| `startup_script` | string | no | -- | Startup script |
+| `agent` | string | no | -- | AI agent (e.g. `"claude-code"`) |
+| `env_vars` | object | no | -- | Environment variables |
+| `secret_project` | string | no | -- | Secret project to bind |
+| `include_org_secrets` | boolean | no | `true` | Include org secrets |
+| `include_user_secrets` | boolean | no | `true` | Include user secrets |
+| `network` | string | no | -- | Relay network to join |
+
+At least one of `preset_id`, `preset_slug`, or `image` is required.
+
+#### `codewire_get_environment`
+
+Get detailed environment information.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `environment_id` | string | **yes** | The environment ID |
+
+#### `codewire_start_environment` / `codewire_stop_environment` / `codewire_delete_environment`
+
+Start, stop, or permanently delete an environment.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `environment_id` | string | **yes** | The environment ID |
+
+#### `codewire_exec_in_environment`
+
+Execute a command in a running sandbox environment.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `environment_id` | string | **yes** | -- | The environment ID |
+| `command` | string[] | **yes** | -- | Command and arguments |
+| `working_dir` | string | no | `"/workspace"` | Working directory |
+| `timeout` | integer | no | `30` | Timeout in seconds |
+
+#### `codewire_list_files`
+
+List files in a directory in a running sandbox.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `environment_id` | string | **yes** | -- | The environment ID |
+| `path` | string | no | `"/workspace"` | Directory path |
+
+#### `codewire_upload_file`
+
+Upload a file to a running sandbox.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `environment_id` | string | **yes** | The environment ID |
+| `path` | string | **yes** | Remote file path |
+| `content` | string | **yes** | File content as text |
+
+#### `codewire_download_file`
+
+Download a file from a running sandbox. Returns content as text.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `environment_id` | string | **yes** | The environment ID |
+| `path` | string | **yes** | Remote file path |
+
+#### `codewire_get_environment_logs`
+
+Get startup/provisioning logs for an environment.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `environment_id` | string | **yes** | The environment ID |
+
+#### `codewire_list_presets`
+
+List available environment presets.
+
+No parameters.
 
 ## Common Workflows
 
