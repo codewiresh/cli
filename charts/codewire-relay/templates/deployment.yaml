@@ -30,7 +30,7 @@ spec:
       serviceAccountName: {{ include "codewire-relay.serviceAccountName" . }}
       containers:
         - name: relay
-          image: "{{ .Values.image.repository }}:{{ include "codewire-relay.imageTag" . }}"
+          image: "{{ include "codewire-relay.imageRef" . }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           {{- if eq .Values.relay.authMode "token" }}
           command: ["sh", "-c"]

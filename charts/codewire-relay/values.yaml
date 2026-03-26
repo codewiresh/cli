@@ -19,6 +19,7 @@ oidc:
 image:
   repository: ghcr.io/codewiresh/codewire
   tag: ""  # Defaults to appVersion
+  digest: ""  # If set, renders repository@digest and takes precedence over tag
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []

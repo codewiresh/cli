@@ -67,3 +67,14 @@ Return the image tag to use.
 {{- define "codewire-relay.imageTag" -}}
 {{- default .Chart.AppVersion .Values.image.tag }}
 {{- end }}
+
+{{/*
+Return the full image reference to use. Digest takes precedence over tag.
+*/}}
+{{- define "codewire-relay.imageRef" -}}
+{{- if .Values.image.digest -}}
+{{- printf "%s@%s" .Values.image.repository (trimPrefix "@" .Values.image.digest) -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.image.repository (include "codewire-relay.imageTag" .) -}}
+{{- end -}}
+{{- end }}
