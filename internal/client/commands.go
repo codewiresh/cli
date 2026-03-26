@@ -25,6 +25,7 @@ import (
 
 	"github.com/codewiresh/codewire/internal/config"
 	"github.com/codewiresh/codewire/internal/connection"
+	"github.com/codewiresh/codewire/internal/platform"
 	"github.com/codewiresh/codewire/internal/protocol"
 	"github.com/codewiresh/codewire/internal/relay"
 	"github.com/codewiresh/codewire/internal/statusbar"
@@ -1754,8 +1755,8 @@ func Invite(dataDir string, opts RelayAuthOptions, uses int, ttl string, showQR 
 	fmt.Fprintf(os.Stderr, "  Uses:    %d\n", invite.UsesRemaining)
 	fmt.Fprintf(os.Stderr, "  Expires: %s\n", invite.ExpiresAt.Format(time.RFC3339))
 	fmt.Fprintf(os.Stderr, "  URL:     %s\n\n", joinURL)
-	fmt.Fprintf(os.Stderr, "To setup another device:\n")
-	fmt.Fprintf(os.Stderr, "  cw relay setup %s %s\n", relayURL, invite.Token)
+	fmt.Fprintf(os.Stderr, "To join another device:\n")
+	fmt.Fprintf(os.Stderr, "  cw network join --relay-url %s %s\n", relayURL, invite.Token)
 
 	if showQR {
 		PrintQR(joinURL)
@@ -1781,10 +1782,10 @@ func SSHQRCode(dataDir string, sshPort int) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 	if cfg.RelayURL == nil || *cfg.RelayURL == "" {
-		return fmt.Errorf("relay not configured (run 'cw relay setup <relay-url> [token]')")
+		return fmt.Errorf("relay not configured (run 'cw login' and select a network)")
 	}
 	if cfg.RelayToken == nil || *cfg.RelayToken == "" {
-		return fmt.Errorf("no relay token in config (run 'cw relay setup <relay-url> [token]')")
+		return fmt.Errorf("this machine is not enrolled in the relay network yet (start 'cw node' once)")
 	}
 
 	nodeName := cfg.Node.Name
@@ -1796,6 +1797,30 @@ func SSHQRCode(dataDir string, sshPort int) error {
 
 	fmt.Fprintf(os.Stderr, "SSH URI: %s\n", uri)
 	PrintQR(uri)
+	return nil
+}
+
+func JoinNetwork(dataDir, relayURL, inviteToken string) error {
+	cfg, err := config.LoadConfig(dataDir)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	result, err := relay.JoinWithInvite(context.Background(), relayURL, cfg.Node.Name, inviteToken)
+	if err != nil {
+		return err
+	}
+
+	cfg.RelayURL = &relayURL
+	cfg.RelayNetwork = &result.NetworkID
+	cfg.RelayToken = &result.NodeToken
+	cfg.RelayInviteToken = nil
+	if err := config.SaveConfig(dataDir, cfg); err != nil {
+		return fmt.Errorf("saving config: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "Joined network %q as node %q\n", result.NetworkID, cfg.Node.Name)
+	fmt.Fprintf(os.Stderr, "Start node agent: cw node\n")
 	return nil
 }
 
@@ -1835,8 +1860,9 @@ func Revoke(dataDir string, nodeName string, opts RelayAuthOptions) error {
 	return nil
 }
 
-// loadRelayAuth loads the relay URL, auth token, and network from config.
-func loadRelayAuth(dataDir string, opts RelayAuthOptions) (relayURL, authToken, networkID string, err error) {
+// LoadRelayAuth loads the relay URL, auth token, and network from local config,
+// environment overrides, and the normal platform login state.
+func LoadRelayAuth(dataDir string, opts RelayAuthOptions) (relayURL, authToken, networkID string, err error) {
 	cfg, err := loadConfigFromDir(dataDir)
 	if err != nil {
 		return "", "", "", err
@@ -1854,12 +1880,16 @@ func loadRelayAuth(dataDir string, opts RelayAuthOptions) (relayURL, authToken, 
 		networkID = opts.NetworkID
 	}
 	if relayURL == "" {
-		return "", "", "", fmt.Errorf("relay not configured (pass --relay-url, set CODEWIRE_RELAY_URL, or run 'cw relay setup <relay-url> [token]')")
+		return "", "", "", fmt.Errorf("relay not configured (set CODEWIRE_RELAY_URL or log in to hosted Codewire)")
 	}
 	if authToken == "" {
-		return "", "", "", fmt.Errorf("relay authentication not configured (pass --token, set CODEWIRE_RELAY_SESSION, or run 'cw login')")
+		return "", "", "", fmt.Errorf("relay authentication not configured (run 'cw login' or pass --token)")
 	}
 	return relayURL, authToken, networkID, nil
+}
+
+func loadRelayAuth(dataDir string, opts RelayAuthOptions) (relayURL, authToken, networkID string, err error) {
+	return LoadRelayAuth(dataDir, opts)
 }
 
 type relayAuthConfig struct {
@@ -1869,7 +1899,8 @@ type relayAuthConfig struct {
 }
 
 func loadConfigFromDir(dataDir string) (*relayAuthConfig, error) {
-	// Read config.toml for relay_url and relay_session.
+	// Read config.toml for relay_url and relay_network, then fall back to the
+	// normal hosted platform login for auth and default relay URL.
 	configPath := dataDir + "/config.toml"
 	data, err := os.ReadFile(configPath)
 	if err != nil && !os.IsNotExist(err) {
@@ -1880,7 +1911,6 @@ func loadConfigFromDir(dataDir string) (*relayAuthConfig, error) {
 	var cfg struct {
 		RelayURL     *string `toml:"relay_url"`
 		RelayNetwork *string `toml:"relay_network"`
-		RelaySession *string `toml:"relay_session"`
 	}
 
 	if len(data) > 0 {
@@ -1896,20 +1926,45 @@ func loadConfigFromDir(dataDir string) (*relayAuthConfig, error) {
 	if cfg.RelayNetwork != nil {
 		result.relayNetwork = *cfg.RelayNetwork
 	}
-	if cfg.RelaySession != nil {
-		result.authToken = *cfg.RelaySession
-	}
 	if relayURL := os.Getenv("CODEWIRE_RELAY_URL"); relayURL != "" {
 		result.relayURL = relayURL
 	}
 	if relayNetwork := os.Getenv("CODEWIRE_RELAY_NETWORK"); relayNetwork != "" {
 		result.relayNetwork = relayNetwork
 	}
-	if relaySession := os.Getenv("CODEWIRE_RELAY_SESSION"); relaySession != "" {
-		result.authToken = relaySession
+	if authToken := os.Getenv("CODEWIRE_API_KEY"); authToken != "" {
+		result.authToken = authToken
+	}
+	if platformCfg, err := platform.LoadConfig(); err == nil {
+		if result.relayURL == "" {
+			if derived, derr := defaultRelayURLForPlatformServer(platformCfg.ServerURL); derr == nil {
+				result.relayURL = derived
+			}
+		}
+		if result.authToken == "" {
+			result.authToken = strings.TrimSpace(platformCfg.SessionToken)
+		}
 	}
 
 	return result, nil
+}
+
+func defaultRelayURLForPlatformServer(serverURL string) (string, error) {
+	parsed, err := urlpkg.Parse(strings.TrimSpace(serverURL))
+	if err != nil {
+		return "", fmt.Errorf("parsing platform server URL: %w", err)
+	}
+
+	switch parsed.Hostname() {
+	case "codewire.sh", "www.codewire.sh", "app.codewire.sh", "api.codewire.sh":
+		scheme := parsed.Scheme
+		if scheme == "" {
+			scheme = "https"
+		}
+		return scheme + "://relay.codewire.sh", nil
+	default:
+		return "", fmt.Errorf("no default relay URL for platform server %q", serverURL)
+	}
 }
 
 // ---------------------------------------------------------------------------

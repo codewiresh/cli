@@ -135,9 +135,6 @@ CREATE TABLE device_flows (
 | `internal/store/store.go` | `User.GitHubID` → `User.Sub`; add device flow CRUD |
 | `internal/store/sqlite.go` | Schema migration; new device_flows table |
 | `internal/config/config.go` | Add OIDC fields |
-| `operator/api/v1alpha1/types.go` | Add `OIDCSpec` |
-| `operator/api/v1alpha1/zz_generated.deepcopy.go` | Regenerate |
-| `operator/internal/controller/codewirerelay_controller.go` | Mount OIDC secret, pass env vars |
 | `charts/codewire-relay/values.yaml` | Add `oidc:` block |
 | `charts/codewire-relay/templates/deployment.yaml` | Mount OIDC secret |
 | `infra/components/terraform/dex/main.tf` | Add `codewire-relay` static client |
@@ -150,17 +147,6 @@ CREATE TABLE device_flows (
 - Add `codewire-relay` to `static_clients`
 - Generate client secret via `random_password`
 - Store in Infisical at `/app/codewire-relay/OIDC_CLIENT_SECRET`
-
-**Operator** (`operator/api/v1alpha1/types.go`):
-```go
-type OIDCSpec struct {
-    Issuer          string       `json:"issuer"`
-    ClientID        string       `json:"clientID"`
-    ClientSecretRef SecretKeyRef `json:"clientSecretRef"`
-    AllowedGroups   []string     `json:"allowedGroups,omitempty"`
-}
-```
-Added as optional field `OIDC *OIDCSpec` on `CodewireRelaySpec`.
 
 ---
 

@@ -594,7 +594,7 @@ p{color:#525252;line-height:1.6}
 <p>Use this invite code to register your device:</p>
 <div class="code">%s</div>
 <p>Run on your device:</p>
-<div class="code">cw relay setup %s %s</div>
+<div class="code">cw network join --relay-url %s %s</div>
 </body></html>`, invite, baseURL, invite)
 	}
 }

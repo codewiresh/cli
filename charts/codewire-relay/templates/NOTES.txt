@@ -26,10 +26,10 @@ Codewire Relay has been deployed!
 {{- end }}
 
 4. Create or select a network:
-  cw relay create project-alpha --relay-url {{ .Values.relay.baseURL }} --token <auth-token>
+  cw network create project-alpha --relay-url {{ .Values.relay.baseURL }} --token <auth-token>
 
-5. Connect a node:
-  cw relay setup {{ .Values.relay.baseURL }} --token <auth-token> --network project-alpha
+5. Start a node in that network:
+  cw node
 
 6. SSH into a connected node:
   ssh <node-name>@<SSH_IP> -p 2222

@@ -88,24 +88,21 @@ func lookupRelayNode(nodeName string) (relayNodeRecord, *config.Config, error) {
 	if err != nil {
 		return relayNodeRecord{}, nil, fmt.Errorf("loading config: %w", err)
 	}
-	if cfg.RelayURL == nil || strings.TrimSpace(*cfg.RelayURL) == "" {
-		return relayNodeRecord{}, nil, fmt.Errorf("relay is not configured")
-	}
-	if cfg.RelaySession == nil || strings.TrimSpace(*cfg.RelaySession) == "" {
-		return relayNodeRecord{}, nil, fmt.Errorf("relay session is not configured")
+	relayURL, authToken, networkID, err := client.LoadRelayAuth(dataDir(), client.RelayAuthOptions{})
+	if err != nil {
+		return relayNodeRecord{}, nil, err
 	}
 
-	relayURL := strings.TrimRight(strings.TrimSpace(*cfg.RelayURL), "/")
-	requestURL := relayURL + "/api/v1/nodes"
-	if cfg.RelayNetwork != nil && strings.TrimSpace(*cfg.RelayNetwork) != "" {
-		requestURL += "?network_id=" + neturl.QueryEscape(strings.TrimSpace(*cfg.RelayNetwork))
+	requestURL := strings.TrimRight(strings.TrimSpace(relayURL), "/") + "/api/v1/nodes"
+	if strings.TrimSpace(networkID) != "" {
+		requestURL += "?network_id=" + neturl.QueryEscape(strings.TrimSpace(networkID))
 	}
 
 	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
 	if err != nil {
 		return relayNodeRecord{}, nil, fmt.Errorf("building relay node discovery request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(*cfg.RelaySession))
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(authToken))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -221,29 +218,15 @@ func resolvePeerAuthToken(ctx context.Context, entry config.ServerEntry) (string
 }
 
 func issueRuntimeCredentialForPeer(ctx context.Context) (string, error) {
-	cfg, err := config.LoadConfig(dataDir())
+	relayURL, authToken, networkID, err := client.LoadRelayAuth(dataDir(), client.RelayAuthOptions{})
 	if err != nil {
 		return "", err
 	}
-	if cfg.RelayURL == nil || strings.TrimSpace(*cfg.RelayURL) == "" {
-		return "", fmt.Errorf("relay is not configured")
-	}
-	if cfg.RelaySession == nil || strings.TrimSpace(*cfg.RelaySession) == "" {
-		return "", fmt.Errorf("relay session is not configured")
-	}
-
-	issued, err := networkauth.IssueClientRuntimeCredential(ctx, http.DefaultClient, *cfg.RelayURL, *cfg.RelaySession, relayNetworkIDFromConfig(cfg))
+	issued, err := networkauth.IssueClientRuntimeCredential(ctx, http.DefaultClient, relayURL, authToken, networkID)
 	if err != nil {
 		return "", err
 	}
 	return issued.Credential, nil
-}
-
-func relayNetworkIDFromConfig(cfg *config.Config) string {
-	if cfg == nil || cfg.RelayNetwork == nil {
-		return networkauth.DefaultNetworkID
-	}
-	return networkauth.ResolveNetworkID(*cfg.RelayNetwork)
 }
 
 func currentNodeName() (string, error) {

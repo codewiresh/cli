@@ -2,11 +2,14 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/codewiresh/codewire/internal/platform"
 )
 
 // Config is the top-level configuration loaded from config.toml.
@@ -14,7 +17,6 @@ type Config struct {
 	Node                 NodeConfig           `toml:"node"`
 	RelayURL             *string              `toml:"relay_url,omitempty"`
 	RelayNetwork         *string              `toml:"relay_network,omitempty"`
-	RelaySession         *string              `toml:"relay_session,omitempty"`           // OAuth session token
 	RelayToken           *string              `toml:"relay_token,omitempty"`             // node auth token for relay agent
 	RelayInviteToken     *string              `toml:"relay_invite_token,omitempty"`      // one-time invite token for bootstrap
 	RelayAutoJoinPrivate *bool                `toml:"relay_auto_join_private,omitempty"` // consent for default private-network join
@@ -126,11 +128,6 @@ func LoadConfig(dataDir string) (*Config, error) {
 			cfg.RelayURL = &relayURL
 		}
 	}
-	if cfg.RelaySession == nil {
-		if session := os.Getenv("CODEWIRE_RELAY_SESSION"); session != "" {
-			cfg.RelaySession = &session
-		}
-	}
 	// Relay token from env var.
 	if cfg.RelayToken == nil {
 		if t := os.Getenv("CODEWIRE_RELAY_TOKEN"); t != "" {
@@ -147,12 +144,43 @@ func LoadConfig(dataDir string) (*Config, error) {
 			cfg.RelayNetwork = &network
 		}
 	}
+	if cfg.RelayURL == nil {
+		if relayURL := deriveHostedRelayURL(); relayURL != "" {
+			cfg.RelayURL = &relayURL
+		}
+	}
 
 	if err := ValidateNodeName(cfg.Node.Name); err != nil {
 		return nil, err
 	}
 
 	return cfg, nil
+}
+
+func deriveHostedRelayURL() string {
+	platformCfg, err := platform.LoadConfig()
+	if err != nil || strings.TrimSpace(platformCfg.ServerURL) == "" {
+		return ""
+	}
+
+	serverURL, err := url.Parse(strings.TrimSpace(platformCfg.ServerURL))
+	if err != nil || serverURL.Hostname() == "" {
+		return ""
+	}
+
+	host := serverURL.Hostname()
+	switch host {
+	case "codewire.sh", "www.codewire.sh", "app.codewire.sh", "api.codewire.sh":
+		host = "relay.codewire.sh"
+	default:
+		return ""
+	}
+
+	scheme := serverURL.Scheme
+	if scheme == "" {
+		scheme = "https"
+	}
+	return scheme + "://" + host
 }
 
 // SaveConfig writes config.toml inside dataDir, creating the directory if needed.

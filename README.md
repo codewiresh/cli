@@ -349,12 +349,12 @@ Show a QR code for SSH access to this node, routed through the current network w
 cw node qr
 ```
 
-### `cw relay setup [relay-url]`
+### `cw network join <invite>`
 
-Connect this machine to relay infrastructure using the device authorization flow.
+Join a network from an invite token and enroll this machine for relay access.
 
 ```bash
-cw relay setup https://relay.codewire.sh
+cw network join --relay-url https://relay.codewire.sh CW-INV-...
 ```
 
 ### `cw relay serve`
@@ -477,17 +477,27 @@ Codewire uses an SSH gateway for remote access. Nodes establish persistent WebSo
 ### Quick Setup
 
 ```bash
-# Connect this machine to a relay
-cw relay setup https://relay.codewire.sh
+# Log in once
+cw login
 
-# Or with an invite token
-cw relay setup https://relay.codewire.sh <token>
-
-# Pick the current network / swarm
+# Pick or create the current network
+cw network create project-alpha
+# or
 cw network use project-alpha
+
+# Start the local node; it auto-enrolls in the selected network
+cw node
 ```
 
-The setup flow registers the node, receives a node token, and persists the relay config. The node then maintains a persistent WebSocket connection to the relay. `cw network use` selects the user-facing group/scope that new environments and nodes should join.
+For invite-based onboarding on another machine:
+
+```bash
+cw login
+cw network join --relay-url https://relay.codewire.sh CW-INV-...
+cw node
+```
+
+`cw login` provides user auth for relay-backed network commands. `cw node` auto-enrolls the machine into the selected network and maintains the persistent relay connection.
 
 ### Remote Commands
 
@@ -574,27 +584,6 @@ helm install my-relay oci://ghcr.io/codewiresh/charts/codewire-relay \
 ```
 
 See [`charts/codewire-relay/values.yaml`](charts/codewire-relay/values.yaml) for full configuration. Verify with `helm test my-relay`.
-
-### Kubernetes Operator
-
-For multi-tenant clusters or automated provisioning. Install the operator, then create a `CodewireRelay` CR:
-
-```bash
-kubectl apply -f operator/config/crd/codewire.io_codewirerelays.yaml
-kubectl apply -f operator/config/manager/deployment.yaml
-```
-
-```yaml
-apiVersion: codewire.io/v1alpha1
-kind: CodewireRelay
-metadata:
-  name: production
-spec:
-  baseURL: https://relay.example.com
-  authMode: token
-  ingress:
-    className: nginx
-```
 
 ### systemd (VPS / Bare Metal)
 

@@ -1030,62 +1030,6 @@ func serverListCmd() *cobra.Command {
 }
 
 // ---------------------------------------------------------------------------
-// setupCmd
-// ---------------------------------------------------------------------------
-
-func relaySetupCmd() *cobra.Command {
-	var (
-		authToken string
-		networkID string
-		qr        bool
-	)
-
-	cmd := &cobra.Command{
-		Use:   "setup <relay-url> [token]",
-		Short: "Connect this machine to relay infrastructure",
-		Long:  "Connect this machine to relay infrastructure. With no token, uses OIDC device flow if the relay supports it.",
-		Args:  cobra.RangeArgs(1, 2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			relayURL := args[0]
-			var token string
-			if len(args) > 1 {
-				token = args[1]
-			}
-
-			dir := dataDir()
-			if err := os.MkdirAll(dir, 0o755); err != nil {
-				return fmt.Errorf("creating data dir: %w", err)
-			}
-
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-
-			sigCh := make(chan os.Signal, 1)
-			signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-			go func() {
-				<-sigCh
-				cancel()
-			}()
-
-			return relay.RunSetup(ctx, relay.SetupOptions{
-				RelayURL:  relayURL,
-				DataDir:   dir,
-				NetworkID: networkID,
-				Token:     token,
-				AuthToken: authToken,
-				ShowQR:    qr,
-			})
-		},
-	}
-
-	cmd.Flags().StringVar(&authToken, "token", "", "Admin auth token (for headless/CI use)")
-	cmd.Flags().StringVar(&networkID, "network", "", "Network to join or manage (default: relay default network)")
-	cmd.Flags().BoolVar(&qr, "qr", false, "Print QR code with SSH connection URI (for Termius iOS)")
-
-	return cmd
-}
-
-// ---------------------------------------------------------------------------
 // qrCmd — show SSH connection QR code
 // ---------------------------------------------------------------------------
 
@@ -1198,12 +1142,11 @@ func relayServeCmd() *cobra.Command {
 func relayCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "relay",
-		Short: "Connect to or run relay infrastructure",
+		Short: "Run relay infrastructure",
 	}
 
 	cmd.AddCommand(
 		relayServeCmd(),
-		relaySetupCmd(),
 	)
 
 	return cmd
@@ -1223,6 +1166,7 @@ func networkCmd() *cobra.Command {
 	cmd.AddCommand(
 		networksCmd(),
 		createNetworkCmd(),
+		joinNetworkCmd(),
 		currentNetworkCmd(),
 		useNetworkCmd(),
 		nodesCmd(),
@@ -1230,6 +1174,28 @@ func networkCmd() *cobra.Command {
 		revokeCmd(),
 	)
 
+	return cmd
+}
+
+func joinNetworkCmd() *cobra.Command {
+	var relayURL string
+
+	cmd := &cobra.Command{
+		Use:   "join <invite>",
+		Short: "Join a network from an invite token",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(relayURL) == "" {
+				resolved, err := resolveRelayURL()
+				if err != nil {
+					return err
+				}
+				relayURL = resolved
+			}
+			return client.JoinNetwork(dataDir(), relayURL, args[0])
+		},
+	}
+	cmd.Flags().StringVar(&relayURL, "relay-url", "", "Relay base URL override")
 	return cmd
 }
 
@@ -2228,7 +2194,7 @@ func resolveRelayURL() (string, error) {
 		return "", fmt.Errorf("loading config: %w", err)
 	}
 	if cfg.RelayURL == nil || *cfg.RelayURL == "" {
-		return "", fmt.Errorf("relay not configured (run 'cw relay setup <relay-url> [token]' or set CODEWIRE_RELAY_URL)")
+		return "", fmt.Errorf("relay not configured (run 'cw login' or set CODEWIRE_RELAY_URL)")
 	}
 	return *cfg.RelayURL, nil
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/codewiresh/codewire/internal/connection"
 	"github.com/codewiresh/codewire/internal/networkauth"
 	"github.com/codewiresh/codewire/internal/peer"
+	"github.com/codewiresh/codewire/internal/platform"
 	"github.com/codewiresh/codewire/internal/relay"
 	"github.com/codewiresh/codewire/internal/session"
 )
@@ -124,6 +125,19 @@ func (n *Node) Run(ctx context.Context) error {
 				}
 			}
 		}
+		if (n.config.RelayToken == nil || *n.config.RelayToken == "") && n.config.RelayNetwork != nil && strings.TrimSpace(*n.config.RelayNetwork) != "" {
+			if userToken := resolveUserRelayAuthToken(); userToken != "" {
+				nodeToken, err := relay.RegisterWithAuthToken(ctx, *n.config.RelayURL, *n.config.RelayNetwork, n.config.Node.Name, userToken)
+				if err != nil {
+					slog.Error("relay auto-enrollment failed", "err", err)
+				} else {
+					n.config.RelayToken = &nodeToken
+					if err := config.SaveConfig(n.dataDir, n.config); err != nil {
+						slog.Error("saving relay auto-enrollment config failed", "err", err)
+					}
+				}
+			}
+		}
 
 		if n.config.RelayToken != nil && *n.config.RelayToken != "" {
 			go relay.RunAgent(ctx, relay.AgentConfig{
@@ -180,6 +194,17 @@ func (n *Node) Run(ctx context.Context) error {
 			n.issueSenderDelegation,
 		)
 	}
+}
+
+func resolveUserRelayAuthToken() string {
+	if token := strings.TrimSpace(os.Getenv("CODEWIRE_API_KEY")); token != "" {
+		return token
+	}
+	cfg, err := platform.LoadConfig()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.SessionToken)
 }
 
 // Cleanup removes the Unix socket and PID files.

@@ -1345,7 +1345,7 @@ func loadRelayConfig(dataDir string) (string, error) {
 		return "", fmt.Errorf("loading config: %w", err)
 	}
 	if cfg.RelayURL == nil || *cfg.RelayURL == "" {
-		return "", fmt.Errorf("relay not configured (run 'cw relay setup <relay-url> [token]' or set CODEWIRE_RELAY_URL)")
+		return "", fmt.Errorf("relay not configured (run 'cw login' or set CODEWIRE_RELAY_URL)")
 	}
 	return *cfg.RelayURL, nil
 }

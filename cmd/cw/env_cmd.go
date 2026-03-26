@@ -413,19 +413,13 @@ func resolveEnvRelayEnrollment(dir string, assumeYes bool, requestedNetwork stri
 	cfg, err := cwconfig.LoadConfig(dir)
 	if err != nil {
 		if requestedNetwork != "" {
-			return nil, fmt.Errorf("relay is not configured locally (run 'cw relay setup' or 'cw network create' first)")
+			return nil, fmt.Errorf("relay is not configured locally (run 'cw login' and 'cw network create/use' first)")
 		}
 		return nil, nil
 	}
 	if cfg.RelayURL == nil || *cfg.RelayURL == "" {
 		if requestedNetwork != "" {
 			return nil, fmt.Errorf("relay URL is not configured locally")
-		}
-		return nil, nil
-	}
-	if cfg.RelaySession == nil || *cfg.RelaySession == "" {
-		if requestedNetwork != "" {
-			return nil, fmt.Errorf("relay auth is not configured locally (run 'cw login' or set CODEWIRE_RELAY_SESSION')")
 		}
 		return nil, nil
 	}
@@ -454,9 +448,17 @@ func resolveEnvRelayEnrollment(dir string, assumeYes bool, requestedNetwork stri
 		networkID = *cfg.RelayNetwork
 	}
 
+	relayURL, authToken, _, err := cwclient.LoadRelayAuth(dir, cwclient.RelayAuthOptions{})
+	if err != nil {
+		if requestedNetwork != "" {
+			return nil, fmt.Errorf("relay auth is not configured locally (run 'cw login')")
+		}
+		return nil, nil
+	}
+
 	invite, err := createRelayInvite(dir, cwclient.RelayAuthOptions{
-		RelayURL:  *cfg.RelayURL,
-		AuthToken: *cfg.RelaySession,
+		RelayURL:  relayURL,
+		AuthToken: authToken,
 		NetworkID: networkID,
 	}, 1, "24h")
 	if err != nil {
@@ -464,7 +466,7 @@ func resolveEnvRelayEnrollment(dir string, assumeYes bool, requestedNetwork stri
 	}
 
 	return &envRelayEnrollment{
-		RelayURL:    *cfg.RelayURL,
+		RelayURL:    relayURL,
 		NetworkID:   networkID,
 		InviteToken: invite.Token,
 	}, nil

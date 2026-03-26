@@ -82,7 +82,7 @@ func TestNetworkCommandShape(t *testing.T) {
 		subcommands[sub.Name()] = true
 	}
 
-	for _, required := range []string{"list", "create", "current", "use", "nodes", "invite", "revoke"} {
+	for _, required := range []string{"list", "create", "join", "current", "use", "nodes", "invite", "revoke"} {
 		if !subcommands[required] {
 			t.Fatalf("expected network command to include %q, got %#v", required, subcommands)
 		}
@@ -148,10 +148,13 @@ func TestRelayCommandShape(t *testing.T) {
 		subcommands[sub.Name()] = true
 	}
 
-	for _, required := range []string{"serve", "setup"} {
+	for _, required := range []string{"serve"} {
 		if !subcommands[required] {
 			t.Fatalf("expected relay command to include %q, got %#v", required, subcommands)
 		}
+	}
+	if subcommands["setup"] {
+		t.Fatalf("did not expect relay command to include setup, got %#v", subcommands)
 	}
 }
 

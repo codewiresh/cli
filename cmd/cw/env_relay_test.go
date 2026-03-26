@@ -19,10 +19,10 @@ func TestResolveEnvRelayEnrollmentExplicitNetwork(t *testing.T) {
 	dir := t.TempDir()
 	relayURL := ""
 	relaySession := "relay-session"
+	t.Setenv("CODEWIRE_API_KEY", relaySession)
 	defaultNetwork := "private-default"
 	if err := cwconfig.SaveConfig(dir, &cwconfig.Config{
 		RelayURL:     &relayURL,
-		RelaySession: &relaySession,
 		RelayNetwork: &defaultNetwork,
 	}); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
@@ -79,7 +79,6 @@ func TestResolveEnvRelayEnrollmentExplicitNetwork(t *testing.T) {
 	relayURL = srv.URL
 	if err := cwconfig.SaveConfig(dir, &cwconfig.Config{
 		RelayURL:     &relayURL,
-		RelaySession: &relaySession,
 		RelayNetwork: &defaultNetwork,
 	}); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
@@ -106,6 +105,7 @@ func TestResolveEnvRelayEnrollmentPersistsConsent(t *testing.T) {
 
 	dir := t.TempDir()
 	relaySession := "relay-session"
+	t.Setenv("CODEWIRE_API_KEY", relaySession)
 	defaultNetwork := "private-default"
 	autoJoin := (*bool)(nil)
 	relayURL := ""
@@ -147,7 +147,6 @@ func TestResolveEnvRelayEnrollmentPersistsConsent(t *testing.T) {
 
 	if err := cwconfig.SaveConfig(dir, &cwconfig.Config{
 		RelayURL:             &relayURL,
-		RelaySession:         &relaySession,
 		RelayNetwork:         &defaultNetwork,
 		RelayAutoJoinPrivate: autoJoin,
 	}); err != nil {
