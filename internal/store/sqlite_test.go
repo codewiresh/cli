@@ -2,8 +2,12 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"path/filepath"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 const testNetworkID = "network-test"
@@ -205,6 +209,78 @@ func TestNetworkListIncludesExplicitAndImplicitNetworks(t *testing.T) {
 	}
 	if beta.NodeCount != 1 {
 		t.Fatalf("project-beta NodeCount = %d, want 1", beta.NodeCount)
+	}
+}
+
+func TestMigrateLegacyNodesTableAddsNetworkID(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "relay.db"))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	stmts := []string{
+		`CREATE TABLE nodes (
+			name TEXT PRIMARY KEY,
+			token TEXT NOT NULL UNIQUE,
+			authorized_at DATETIME NOT NULL,
+			last_seen_at DATETIME NOT NULL,
+			github_id INTEGER,
+			peer_url TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE TABLE networks (
+			network_id TEXT PRIMARY KEY,
+			created_at DATETIME NOT NULL
+		)`,
+		`CREATE TABLE invites (
+			token TEXT PRIMARY KEY,
+			created_by INTEGER,
+			uses_remaining INTEGER NOT NULL DEFAULT 1,
+			expires_at DATETIME NOT NULL,
+			created_at DATETIME NOT NULL
+		)`,
+		`INSERT INTO nodes (name, token, authorized_at, last_seen_at, github_id, peer_url)
+		 VALUES ('dev-1', 'tok-1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL, 'wss://peer')`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seed legacy db: %v", err)
+		}
+	}
+	db.Close()
+
+	s, err := NewSQLiteStore(dir)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	nodes, err := s.NodeList(ctx, "default")
+	if err != nil {
+		t.Fatalf("NodeList: %v", err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("NodeList len = %d, want 1", len(nodes))
+	}
+	if nodes[0].NetworkID != "default" {
+		t.Fatalf("NetworkID = %q, want default", nodes[0].NetworkID)
+	}
+
+	networks, err := s.NetworkList(ctx)
+	if err != nil {
+		t.Fatalf("NetworkList: %v", err)
+	}
+	foundDefault := false
+	for _, n := range networks {
+		if n.ID == "default" {
+			foundDefault = true
+			break
+		}
+	}
+	if !foundDefault {
+		t.Fatal("expected default network after legacy nodes migration")
 	}
 }
 

@@ -156,11 +156,67 @@ func (s *SQLiteStore) migrate() error {
 	// token column replaces public_key/tunnel_url in the new relay architecture.
 	s.addColumnIfNotExists("nodes", "token", "TEXT NOT NULL DEFAULT ''")
 	s.addColumnIfNotExists("nodes", "peer_url", "TEXT NOT NULL DEFAULT ''")
+	if err := s.migrateLegacyNodesTable(); err != nil {
+		return err
+	}
 
 	// Ensure unique index on token for NodeGetByToken.
 	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_token ON nodes(token) WHERE token != ''`)
 	s.db.Exec(`INSERT OR IGNORE INTO networks (network_id, created_at) VALUES ('default', CURRENT_TIMESTAMP)`)
 
+	return nil
+}
+
+func (s *SQLiteStore) migrateLegacyNodesTable() error {
+	hasNetworkID, err := s.tableHasColumn("nodes", "network_id")
+	if err != nil {
+		return fmt.Errorf("checking nodes.network_id: %w", err)
+	}
+	if hasNetworkID {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin legacy nodes migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`
+		CREATE TABLE nodes_new (
+			network_id TEXT NOT NULL DEFAULT 'default',
+			name TEXT NOT NULL,
+			token TEXT NOT NULL UNIQUE,
+			authorized_at DATETIME NOT NULL,
+			last_seen_at DATETIME NOT NULL,
+			github_id INTEGER REFERENCES users(github_id),
+			peer_url TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (network_id, name)
+		)`); err != nil {
+		return fmt.Errorf("create nodes_new: %w", err)
+	}
+
+	if _, err := tx.Exec(`
+		INSERT INTO nodes_new (network_id, name, token, authorized_at, last_seen_at, github_id, peer_url)
+		SELECT 'default', name, token, authorized_at, last_seen_at, github_id, peer_url
+		FROM nodes
+	`); err != nil {
+		return fmt.Errorf("copy nodes to nodes_new: %w", err)
+	}
+
+	if _, err := tx.Exec(`DROP TABLE nodes`); err != nil {
+		return fmt.Errorf("drop legacy nodes: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE nodes_new RENAME TO nodes`); err != nil {
+		return fmt.Errorf("rename nodes_new: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_token ON nodes(token) WHERE token != ''`); err != nil {
+		return fmt.Errorf("recreate nodes token index: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit legacy nodes migration: %w", err)
+	}
 	return nil
 }
 
