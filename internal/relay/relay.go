@@ -128,7 +128,11 @@ func BuildRelayMux(hub *NodeHub, sessions *PendingSessions, st store.Store) http
 }
 
 func buildMux(hub *NodeHub, sessions *PendingSessions, st store.Store, cfg RelayConfig, tailnetCoord *tailnetlib.Coordinator, runtimeReplay *networkauth.ReplayCache, derpHandler http.Handler) *http.ServeMux {
-	authMiddleware := oauth.RequireAuth(st, cfg.AuthToken)
+	var fallbackAuth oauth.ExternalTokenValidator
+	if cfg.AuthMode == "oidc" {
+		fallbackAuth = platformSessionAuthValidator(cfg.OIDCIssuer)
+	}
+	authMiddleware := oauth.RequireAuthWithFallback(st, cfg.AuthToken, fallbackAuth)
 	joinRL := newRateLimiter(10, time.Minute)
 
 	mux := http.NewServeMux()

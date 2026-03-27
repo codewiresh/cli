@@ -110,6 +110,73 @@ func TestNodesListRequiresAuthAndScopesByNetwork(t *testing.T) {
 	}
 }
 
+func TestOIDCAuthAcceptsPlatformSessionBearer(t *testing.T) {
+	var upstream *httptest.Server
+	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"issuer":                        upstream.URL,
+				"authorization_endpoint":        upstream.URL + "/auth",
+				"token_endpoint":                upstream.URL + "/token",
+				"userinfo_endpoint":             upstream.URL + "/userinfo",
+				"device_authorization_endpoint": upstream.URL + "/device",
+			})
+		case "/api/auth/get-session":
+			if got := r.Header.Get("Authorization"); got != "Bearer platform-session-token" {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"user": map[string]string{
+					"id":    "user_123",
+					"email": "n@noeljackson.com",
+					"name":  "Noel Jackson",
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	st, err := store.NewSQLiteStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+		BaseURL:          "http://relay.test",
+		AuthMode:         "oidc",
+		OIDCIssuer:       upstream.URL,
+		OIDCClientID:     "codewire-relay",
+		OIDCClientSecret: "secret",
+	}, nil, networkauth.NewReplayCache(), nil))
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/networks", nil)
+	req.Header.Set("Authorization", "Bearer platform-session-token")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("authenticated list networks: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var networks []networkResponse
+	if err := json.NewDecoder(resp.Body).Decode(&networks); err != nil {
+		t.Fatalf("decode networks: %v", err)
+	}
+	if len(networks) != 1 || networks[0].ID != "default" {
+		t.Fatalf("networks = %#v, want default network", networks)
+	}
+}
+
 func TestKVIsNetworkScopedAndRequiresAuth(t *testing.T) {
 	st, err := store.NewSQLiteStore(t.TempDir())
 	if err != nil {

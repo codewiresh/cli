@@ -20,6 +20,10 @@ const (
 // contextKey is unexported to prevent collisions.
 type contextKey struct{}
 
+// ExternalTokenValidator allows callers to trust an external bearer token
+// source when local relay sessions do not apply.
+type ExternalTokenValidator func(ctx context.Context, token string) *AuthIdentity
+
 // AuthIdentity represents who made the request.
 type AuthIdentity struct {
 	// UserID is the GitHub user ID (0 if OIDC or admin token auth).
@@ -62,9 +66,15 @@ func GenerateState() string {
 // RequireAuth returns middleware that validates session token, admin token, or rejects.
 // It sets the AuthIdentity on the request context.
 func RequireAuth(st store.Store, adminToken string) func(http.Handler) http.Handler {
+	return RequireAuthWithFallback(st, adminToken, nil)
+}
+
+// RequireAuthWithFallback behaves like RequireAuth but allows a caller-provided
+// external validator for bearer tokens that are not known to the local store.
+func RequireAuthWithFallback(st store.Store, adminToken string, fallback ExternalTokenValidator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			identity := authenticate(r, st, adminToken)
+			identity := authenticate(r, st, adminToken, fallback)
 			if identity == nil {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
@@ -78,12 +88,17 @@ func RequireAuth(st store.Store, adminToken string) func(http.Handler) http.Hand
 
 // authenticate checks all authentication methods and returns the identity,
 // or nil if none succeeded.
-func authenticate(r *http.Request, st store.Store, adminToken string) *AuthIdentity {
+func authenticate(r *http.Request, st store.Store, adminToken string, fallback ExternalTokenValidator) *AuthIdentity {
 	// Check Authorization: Bearer header first.
 	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
 		token := strings.TrimPrefix(auth, "Bearer ")
 		if id := resolveToken(r.Context(), st, adminToken, token); id != nil {
 			return id
+		}
+		if fallback != nil {
+			if id := fallback(r.Context(), token); id != nil {
+				return id
+			}
 		}
 	}
 
