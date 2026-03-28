@@ -1730,3 +1730,33 @@ SHA512: db49b6b41d96ab7c2ca79c860c4d75f306c09020e790a4bf21731fb80b1eb606ed0f2969
 Homepage: https://codewire.sh
 Description: Persistent process server for AI coding agents
 
+Package: codewire
+Architecture: amd64
+Version: 0.2.95
+Priority: optional
+Maintainer: Codewire <hello@codewire.sh>
+Installed-Size: 27024
+Filename: pool/codewire_0.2.95_amd64.deb
+Size: 11211860
+MD5sum: b68b2dc9b0ccf8c1f6c41463519973c1
+SHA1: 9ee27105dcd6afccdce061d423cab6f5cbe7ba27
+SHA256: b94fd2d6d20d8a25b03099d6363851f2e16f1aef800335c1e2f64f4320ca295e
+SHA512: 5859df89979e878a592b95132b685dff2abd2a2b990fdff9aa04e8cd48994895ca4debdf90c8d00228c304d18a6245637117316a931c727063d6dd872a4c042b
+Homepage: https://codewire.sh
+Description: Persistent process server for AI coding agents
+
+Package: codewire
+Architecture: arm64
+Version: 0.2.95
+Priority: optional
+Maintainer: Codewire <hello@codewire.sh>
+Installed-Size: 25216
+Filename: pool/codewire_0.2.95_arm64.deb
+Size: 10311398
+MD5sum: 85d66d600e9b99f34108785740e50522
+SHA1: fab489e2ba9ea3ba59e48fbb1862ba067d511b16
+SHA256: cab723a8825439e44f5f143eaad57e570c50d9764712570bac9cb83455448b27
+SHA512: 917b111a912a4ac917504cb3a52886e1ed26107db57e5a882802ee101139e6cf0ce2fb719dac6c6503c5532defbf2247d38573b94703c6fa44239305a10c22b0
+Homepage: https://codewire.sh
+Description: Persistent process server for AI coding agents
+
