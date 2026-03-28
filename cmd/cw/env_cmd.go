@@ -92,6 +92,15 @@ func durationSecondsPtr(raw string) *int {
 	return &secs
 }
 
+func requestHasAgent(req *platform.CreateEnvironmentRequest, agentType string) bool {
+	for _, agent := range req.Agents {
+		if agent.Type == agentType {
+			return true
+		}
+	}
+	return req.Agent == agentType
+}
+
 func getDefaultOrg() (string, *platform.Client, error) {
 	return getOrgContext(nil)
 }
@@ -595,8 +604,8 @@ Examples:
 				req.IncludeUserSecrets = &f
 			}
 
-			// Resolve Claude OAuth token if agent is claude-code.
-			if agent == "claude-code" {
+			// Resolve Claude OAuth token if Claude is one of the configured agents.
+			if requestHasAgent(req, "claude-code") {
 				token := resolveClaudeOAuthToken()
 				if token != "" {
 					req.AgentEnv = map[string]string{
@@ -1042,7 +1051,7 @@ func envLogsCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:               "logs <id>",
-		Short:             "Show environment startup logs",
+		Short:             "Show environment setup logs",
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: envCompletionFunc,
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -59,6 +59,41 @@ func parseEnvVarFlags(values []string) (map[string]string, error) {
 	return out, nil
 }
 
+func normalizeSetupAgents(agents []platform.SetupAgent) []platform.SetupAgent {
+	if len(agents) == 0 {
+		return nil
+	}
+	out := make([]platform.SetupAgent, 0, len(agents))
+	for _, agent := range agents {
+		agentType := cwconfig.CanonicalAgentID(agent.Type)
+		if agentType == "" {
+			continue
+		}
+		out = append(out, platform.SetupAgent{Type: agentType})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizePresetAuthoringAgents(opts *presetAuthoringOptions) {
+	if opts == nil {
+		return
+	}
+	if len(opts.Agents) > 0 {
+		opts.Agents = normalizeSetupAgents(opts.Agents)
+		if len(opts.Agents) > 0 {
+			opts.Agent = ""
+			return
+		}
+	}
+	if strings.TrimSpace(opts.Agent) != "" {
+		opts.Agents = normalizeSetupAgents([]platform.SetupAgent{{Type: opts.Agent}})
+		opts.Agent = ""
+	}
+}
+
 func collectRepoInputs(args, repoFlags []string, branch string) (string, string, []platform.RepoEntry) {
 	var (
 		repoURL string
@@ -132,7 +167,7 @@ func applyCodewireYAMLDefaults(opts *presetAuthoringOptions) bool {
 		}
 	}
 	if cfg.Agent != "" && opts.Agent == "" && len(opts.Agents) == 0 {
-		opts.Agent = cwconfig.CanonicalAgentID(cfg.Agent)
+		opts.Agents = normalizeSetupAgents([]platform.SetupAgent{{Type: cfg.Agent}})
 	}
 	if cfg.InstallAgents != nil && opts.InstallAgents == nil {
 		opts.InstallAgents = cfg.InstallAgents
@@ -160,9 +195,11 @@ func applyCodewireYAMLDefaults(opts *presetAuthoringOptions) bool {
 
 func resolvePresetAuthoring(cmd *cobra.Command, opts *presetAuthoringOptions) (string, *platform.Client, *resolvedPresetAuthoring, error) {
 	repoURL, branch, repos := collectRepoInputs(opts.Args, opts.RepoFlags, opts.Branch)
+	normalizePresetAuthoringAgents(opts)
 
 	if opts.AllowCodewireYAML && repoURL == "" {
 		_ = applyCodewireYAMLDefaults(opts)
+		normalizePresetAuthoringAgents(opts)
 	}
 
 	if opts.PresetSlug == "" && opts.PresetID == "" && opts.Image == "" && repoURL == "" {
@@ -221,7 +258,6 @@ func resolvePresetAuthoring(cmd *cobra.Command, opts *presetAuthoringOptions) (s
 			EnvVars:            parsedEnvVars,
 			Agents:             selectedAgentsFromOptions(opts),
 			InstallAgents:      opts.InstallAgents,
-			Agent:              opts.Agent,
 			SecretProject:      opts.SecretProject,
 			IncludeOrgSecrets:  boolPtrOrNil(!opts.NoOrgSecrets, opts.NoOrgSecrets),
 			IncludeUserSecrets: boolPtrOrNil(!opts.NoUserSecrets, opts.NoUserSecrets),
@@ -262,13 +298,13 @@ func resolvePresetAuthoring(cmd *cobra.Command, opts *presetAuthoringOptions) (s
 			opts.SecretProject = prepared.Draft.SecretProject
 		}
 		if len(opts.Agents) == 0 && len(prepared.Draft.Agents) > 0 {
-			opts.Agents = prepared.Draft.Agents
+			opts.Agents = normalizeSetupAgents(prepared.Draft.Agents)
 		}
 		if opts.InstallAgents == nil {
 			opts.InstallAgents = prepared.Draft.InstallAgents
 		}
-		if opts.Agent == "" && len(opts.Agents) == 0 {
-			opts.Agent = prepared.Draft.Agent
+		if len(opts.Agents) == 0 && prepared.Draft.Agent != "" {
+			opts.Agents = normalizeSetupAgents([]platform.SetupAgent{{Type: prepared.Draft.Agent}})
 		}
 		if opts.CPU == 0 && prepared.Draft.CPUMillicores != nil {
 			opts.CPU = *prepared.Draft.CPUMillicores
@@ -331,9 +367,6 @@ func resolvePresetAuthoring(cmd *cobra.Command, opts *presetAuthoringOptions) (s
 		InstallAgents:  opts.InstallAgents,
 		SecretProject:  opts.SecretProject,
 	}
-	if len(req.Agents) == 0 && opts.Agent != "" {
-		req.Agent = cwconfig.CanonicalAgentID(opts.Agent)
-	}
 	if len(repos) > 0 {
 		req.Repos = repos
 	}
@@ -378,12 +411,12 @@ func resolvePresetAuthoring(cmd *cobra.Command, opts *presetAuthoringOptions) (s
 
 func selectedAgentsFromOptions(opts *presetAuthoringOptions) []platform.SetupAgent {
 	if len(opts.Agents) > 0 {
-		return opts.Agents
+		return normalizeSetupAgents(opts.Agents)
 	}
 	if strings.TrimSpace(opts.Agent) == "" {
 		return nil
 	}
-	return []platform.SetupAgent{{Type: cwconfig.CanonicalAgentID(opts.Agent)}}
+	return normalizeSetupAgents([]platform.SetupAgent{{Type: opts.Agent}})
 }
 
 func codewireConfigFromRequest(req *platform.CreateEnvironmentRequest) *cwconfig.CodewireConfig {

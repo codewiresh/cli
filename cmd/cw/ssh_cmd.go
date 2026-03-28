@@ -27,8 +27,12 @@ func sshCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "ssh [env-id-or-name]",
-		Short: "SSH into a running environment",
+		Short: "Open a shell in a running environment",
 		Long: `Connect to a running sandbox environment via SSH.
+
+Use this for an environment shell.
+Use 'cw attach' to re-open the terminal of a specific Codewire run.
+Use 'cw run' to start a run inside the selected environment.
 
 Interactive mode (default):
   Connects via SSH with PTY, resize support, and Ctrl+B d to detach.

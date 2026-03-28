@@ -1083,6 +1083,21 @@ func UseNetwork(dataDir, networkID string) error {
 	return nil
 }
 
+// ClearNetwork removes the locally selected relay network, returning the CLI to
+// local-only mode unless a network is explicitly provided.
+func ClearNetwork(dataDir string) error {
+	cfg, err := config.LoadConfig(dataDir)
+	if err != nil {
+		cfg = &config.Config{}
+	}
+	cfg.RelayNetwork = nil
+	if err := config.SaveConfig(dataDir, cfg); err != nil {
+		return fmt.Errorf("saving relay config: %w", err)
+	}
+	fmt.Fprintln(os.Stderr, "Cleared selected network")
+	return nil
+}
+
 // Nodes fetches the list of registered nodes from the configured relay and prints them.
 func Nodes(dataDir string, opts RelayAuthOptions) error {
 	relayURL, authToken, networkID, err := loadRelayAuth(dataDir, opts)

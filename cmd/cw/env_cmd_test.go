@@ -218,6 +218,21 @@ func TestEnvSSHRefUsesShortIDForRunningSandboxes(t *testing.T) {
 	}
 }
 
+func TestRequestHasAgentUsesAgentsList(t *testing.T) {
+	req := &platform.CreateEnvironmentRequest{
+		Agents: []platform.SetupAgent{{Type: "claude-code"}, {Type: "codex"}},
+	}
+	if !requestHasAgent(req, "claude-code") {
+		t.Fatal("expected claude-code to be detected from agents list")
+	}
+	if !requestHasAgent(req, "codex") {
+		t.Fatal("expected codex to be detected from agents list")
+	}
+	if requestHasAgent(req, "aider") {
+		t.Fatal("did not expect aider to be detected")
+	}
+}
+
 func TestEnvTTLString(t *testing.T) {
 	future := time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339)
 	env := platform.Environment{ShutdownAt: &future}

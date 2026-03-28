@@ -158,7 +158,7 @@ func TestRelayCommandShape(t *testing.T) {
 	}
 }
 
-func TestMsgCmdRejectsRemoteLocatorUntilPeerTransportIsWired(t *testing.T) {
+func TestMsgCmdRejectsRemoteLocatorWithoutRelayConfig(t *testing.T) {
 	home := t.TempDir()
 	oldHome := os.Getenv("HOME")
 	oldServer := serverFlag
@@ -179,7 +179,7 @@ func TestMsgCmdRejectsRemoteLocatorUntilPeerTransportIsWired(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "not discoverable yet") {
+	if !strings.Contains(err.Error(), "relay not configured") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -210,7 +210,7 @@ func TestMsgCmdRejectsRemoteLocatorWithServerFlag(t *testing.T) {
 	}
 }
 
-func TestInboxCmdRejectsRemoteLocatorUntilPeerTransportIsWired(t *testing.T) {
+func TestInboxCmdRejectsRemoteLocatorWithoutRelayConfig(t *testing.T) {
 	home := t.TempDir()
 	oldHome := os.Getenv("HOME")
 	oldServer := serverFlag
@@ -231,7 +231,7 @@ func TestInboxCmdRejectsRemoteLocatorUntilPeerTransportIsWired(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "not discoverable yet") {
+	if !strings.Contains(err.Error(), "relay not configured") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

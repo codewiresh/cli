@@ -17,9 +17,13 @@ func envExecCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:               "exec <id-or-name> -- <command> [args...]",
-		Short:             "Execute a command in a running environment",
-		Long:              "Run a one-shot command in a sandbox environment. Streams stdout/stderr and exits with the command's exit code.",
+		Use:   "exec <id-or-name> -- <command> [args...]",
+		Short: "Execute a command in a running environment",
+		Long: `Run a one-shot command directly in a sandbox environment.
+
+Use this when you want one command and its output.
+Use 'cw ssh' for an interactive shell.
+Use 'cw run' if you want a named/background Codewire run you can later attach to.`,
 		Args:              cobra.MinimumNArgs(1),
 		ValidArgsFunction: envCompletionFunc,
 		RunE: func(cmd *cobra.Command, args []string) error {

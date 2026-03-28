@@ -32,9 +32,12 @@ func platformListCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List environments and runs",
-		Long: "In platform mode: show environments in the current org and runs inside running sandbox environments.\n" +
-			"In standalone mode: list local sessions.",
+		Short: "List environments, with optional runs inside them",
+		Long: `In platform mode, list environments in the current org.
+
+Add --runs to also inspect Codewire runs inside running sandbox environments.
+
+In standalone mode, this falls back to listing local runs.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if localOnly || !platform.HasConfig() {
 				target, err := resolveTarget()

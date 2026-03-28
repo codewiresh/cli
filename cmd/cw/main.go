@@ -36,29 +36,60 @@ var (
 
 func main() {
 	rootCmd := &cobra.Command{
-		Use:          "cw",
-		Short:        "Codewire CLI",
-		Long:         "  ▸ codewire\n\n  Persistent process server and agent-first dev environments.",
+		Use:   "cw",
+		Short: "Codewire CLI",
+		Long: `  ▸ codewire
+
+  Networks, environments, runs, messages, and agent tooling.
+
+  Mental model:
+    Relay network
+      |
+      +-- Environment
+            |
+            +-- Shell (` + "`cw ssh`" + `)
+            |
+            +-- Codewire runtime
+                  |
+                  +-- Run / session (` + "`cw run`" + `)
+                        |
+                        +-- Terminal (` + "`cw attach`" + `)
+                        +-- Output (` + "`cw logs`" + `, ` + "`cw watch`" + `)
+                        +-- Messages (` + "`cw msg`" + `, ` + "`cw inbox`" + `, ` + "`cw listen`" + `)
+
+  Example:
+    cw env create --image full
+    cw use my-env
+    cw ssh
+    cw run --name claude -- claude
+    cw attach claude
+
+  Or run directly in the selected environment:
+    cw run --on my-env --name claude -- claude`,
 		Version:      version,
 		SilenceUsage: true,
 	}
-	rootCmd.PersistentFlags().StringVarP(&serverFlag, "server", "s", "", "Connect to a remote server (name from servers.toml or ws://host:port)")
+	rootCmd.PersistentFlags().StringVarP(&serverFlag, "server", "s", "", "Connect to a remote Codewire node or relay URL")
 	rootCmd.PersistentFlags().StringVar(&tokenFlag, "token", "", "Auth token for remote server")
 
 	// Disable cobra's auto-generated completion command; we supply our own with --install support.
 	rootCmd.CompletionOptions.DisableDefaultCmd = true
 
 	rootCmd.AddGroup(
+		&cobra.Group{ID: "network", Title: "Networking:"},
 		&cobra.Group{ID: "environment", Title: "Environments:"},
 		&cobra.Group{ID: "session", Title: "Sessions:"},
-		&cobra.Group{ID: "platform", Title: "Platform:"},
-		&cobra.Group{ID: "network", Title: "Networking:"},
 		&cobra.Group{ID: "messaging", Title: "Messaging:"},
-		&cobra.Group{ID: "agent", Title: "Agent Integration:"},
+		&cobra.Group{ID: "agent", Title: "Agent Interactions:"},
+		&cobra.Group{ID: "platform", Title: "Platform:"},
 		&cobra.Group{ID: "system", Title: "System:"},
 	)
 
 	rootCmd.AddCommand(
+		// Networking
+		grouped(networkCmd(), "network"),
+		grouped(nodeCmd(), "network"),
+		grouped(relayCmd(), "network"),
 		// Environments
 		grouped(envParentCmd(), "environment"),
 		grouped(localParentCmd(), "environment"),
@@ -67,6 +98,7 @@ func main() {
 		grouped(currentCmd(), "environment"),
 		grouped(execCmd(), "environment"),
 		grouped(sshCmd(), "environment"),
+		grouped(platformListCmd(), "environment"),
 		// Sessions
 		grouped(runCmd(), "session"),
 		grouped(attachCmd(), "session"),
@@ -75,9 +107,16 @@ func main() {
 		grouped(sendCmd(), "session"),
 		grouped(watchCmd(), "session"),
 		grouped(statusCmd(), "session"),
-		grouped(platformListCmd(), "session"),
 		grouped(subscribeCmd(), "session"),
 		grouped(waitSessionCmd(), "session"),
+		// Messaging
+		grouped(msgCmd(), "messaging"),
+		grouped(inboxCmd(), "messaging"),
+		grouped(requestCmd(), "messaging"),
+		grouped(replyCmd(), "messaging"),
+		grouped(listenCmd(), "messaging"),
+		// Agent Integration
+		grouped(mcpServerCmd(), "agent"),
 		// Platform
 		grouped(loginCmd(), "platform"),
 		grouped(logoutCmd(), "platform"),
@@ -90,21 +129,6 @@ func main() {
 		grouped(githubCmd(), "platform"),
 		grouped(platformSetupCmd(), "platform"),
 		grouped(configSSHCmd(), "platform"),
-		// Networking
-		grouped(networkCmd(), "network"),
-		grouped(nodeCmd(), "network"),
-		grouped(relayCmd(), "network"),
-		grouped(serverCmd(), "network"),
-		// Messaging
-		grouped(msgCmd(), "messaging"),
-		grouped(inboxCmd(), "messaging"),
-		grouped(requestCmd(), "messaging"),
-		grouped(replyCmd(), "messaging"),
-		grouped(listenCmd(), "messaging"),
-		// Agent Integration
-		grouped(gatewayCmd(), "agent"),
-		grouped(hookCmd(), "agent"),
-		grouped(mcpServerCmd(), "agent"),
 		// System
 		grouped(completionCmd(rootCmd), "system"),
 		grouped(updateCmd(), "system"),
@@ -228,7 +252,20 @@ func runCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "run [name] [tag] -- command...",
 		Aliases: []string{},
-		Short:   "Launch a new session",
+		Short:   "Start a run on the current target",
+		Long: `Start a Codewire run on the current target.
+
+Local target:
+  starts a run on your local Codewire node
+
+Environment target:
+  execs into the selected environment and starts a run there
+  requires the image to include the Codewire CLI
+
+Examples:
+  cw run -- claude
+  cw run --on env-1234 -- codex
+  cw use my-env && cw run -- pytest -q`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dash := cmd.ArgsLenAtDash()
 			if dash == -1 {
@@ -356,9 +393,12 @@ func attachCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:               "attach [session]",
-		Short:             "Attach to a session's PTY (by ID or name)",
+		Short:             "Open the interactive terminal for a run",
 		ValidArgsFunction: sessionCompletionFunc,
 		Long: `Attach to a running session's PTY for interactive use.
+
+Use this for a specific Codewire run.
+Use 'cw ssh' for a shell in the environment itself.
 
 Detach without killing: press Ctrl+B d
 The session continues running after you detach.
@@ -463,7 +503,7 @@ func logsCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:               "logs <session>",
-		Short:             "View session output logs (by ID or name)",
+		Short:             "Show saved output for a run",
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: sessionCompletionFunc,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -566,7 +606,7 @@ func watchCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:               "watch <session>",
-		Short:             "Watch session output in real-time (by ID, name, or tag for multi-session)",
+		Short:             "Stream run output until it finishes",
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: sessionCompletionFunc,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -622,7 +662,7 @@ func statusCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:               "status <session>",
-		Short:             "Get detailed status for a session (by ID or name)",
+		Short:             "Show detailed status for a run",
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: sessionCompletionFunc,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -658,16 +698,16 @@ func statusCmd() *cobra.Command {
 func mcpServerCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "mcp-server",
-		Short: "Run the MCP (Model Context Protocol) server",
+		Short: "Expose Codewire tools over MCP",
 		Long: `Run the Codewire MCP server (communicates over stdio).
 
-To register with Claude Code:
+Register with Claude Code:
   claude mcp add --scope user codewire -- cw mcp-server
 
 The node must be running before MCP tools work:
   cw node -d
 
-The MCP server does NOT auto-start a node.`,
+The MCP server does not auto-start a node.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := ensureNode(); err != nil {
 				return err
@@ -688,7 +728,7 @@ func networksCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:     "list",
-		Short:   "List available networks",
+		Short:   "List relay networks you can use",
 		Aliases: []string{"networks"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return client.Networks(dataDir(), client.RelayAuthOptions{
@@ -714,7 +754,7 @@ func createNetworkCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "create <name>",
-		Short: "Create a new network",
+		Short: "Create a relay network",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return client.CreateNetwork(dataDir(), args[0], client.RelayAuthOptions{
@@ -736,7 +776,7 @@ func createNetworkCmd() *cobra.Command {
 func useNetworkCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "use <name>",
-		Short: "Select the current network",
+		Short: "Select the default relay network",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return client.UseNetwork(dataDir(), args[0])
@@ -744,10 +784,21 @@ func useNetworkCmd() *cobra.Command {
 	}
 }
 
+func clearNetworkCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "clear",
+		Short: "Clear the default relay network",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return client.ClearNetwork(dataDir())
+		},
+	}
+}
+
 func currentNetworkCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "current",
-		Short: "Show the current network",
+		Short: "Show the default relay network",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.LoadConfig(dataDir())
 			if err != nil {
@@ -797,11 +848,11 @@ func newNodeListCmd(use, short string) *cobra.Command {
 }
 
 func nodeListCmd() *cobra.Command {
-	return newNodeListCmd("list", "List nodes")
+	return newNodeListCmd("list", "List nodes in relay networks")
 }
 
 func nodesCmd() *cobra.Command {
-	return newNodeListCmd("nodes", "List nodes in the selected network")
+	return newNodeListCmd("nodes", "List nodes in the default relay network")
 }
 
 // ---------------------------------------------------------------------------
@@ -816,8 +867,17 @@ func subscribeCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "subscribe [target]",
-		Short: "Subscribe to session events",
-		Args:  cobra.MaximumNArgs(1),
+		Short: "Stream low-level run events",
+		Long: `Stream low-level run events such as status changes, output summaries,
+and message events.
+
+This is mainly for debugging or automation. For message traffic, use:
+  cw listen
+
+For terminal output, use:
+  cw watch
+  cw logs --follow`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target, err := resolveTarget()
 			if err != nil {
@@ -876,7 +936,7 @@ func waitSessionCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "wait [session]",
-		Short: "Wait for session(s) to complete (by ID or name)",
+		Short: "Wait for runs to complete",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target, err := resolveTarget()
 			if err != nil {
@@ -1160,7 +1220,7 @@ func networkCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "network",
 		Aliases: []string{"networks"},
-		Short:   "Manage networks as env and node groups",
+		Short:   "Manage relay networks for environments and nodes",
 	}
 
 	cmd.AddCommand(
@@ -1169,6 +1229,7 @@ func networkCmd() *cobra.Command {
 		joinNetworkCmd(),
 		currentNetworkCmd(),
 		useNetworkCmd(),
+		clearNetworkCmd(),
 		nodesCmd(),
 		inviteCmd(),
 		revokeCmd(),
@@ -1275,7 +1336,7 @@ func msgCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "msg <target> <body>",
-		Short: "Send a message to a session (by ID or name)",
+		Short: "Send a message to a run",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			toLocator, err := parseSessionLocator(args[0])
@@ -1421,7 +1482,7 @@ func inboxCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:               "inbox <session>",
-		Short:             "Read messages for a session (by ID or name)",
+		Short:             "Read messages delivered to a run",
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: sessionCompletionFunc,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1492,7 +1553,12 @@ func listenCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "listen",
-		Short: "Stream all message traffic in real-time",
+		Short: "Stream message traffic in real time",
+		Long: `Stream direct messages, requests, and replies in real time.
+
+Use this to watch message traffic.
+Use 'cw inbox' to read stored messages for one run.
+Use 'cw subscribe' only if you need lower-level run events.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var locator *sessionLocator
 			if sessionArg != "" {
@@ -1579,7 +1645,7 @@ func requestCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "request <target> <body>",
-		Short: "Send a request to a session and wait for a reply",
+		Short: "Send a request to a run and wait for the reply",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			toLocator, err := parseSessionLocator(args[0])
@@ -1698,7 +1764,7 @@ func replyCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "reply <request-id> <body>",
-		Short: "Reply to a pending request",
+		Short: "Reply to a pending request message",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var fromLocator *sessionLocator
@@ -2119,19 +2185,6 @@ func resolveTarget() (*client.Target, error) {
 		return &client.Target{Local: dir}, nil
 	}
 
-	// Check servers.toml for a named entry.
-	servers, err := config.LoadServersConfig(dir)
-	if err == nil {
-		if entry, ok := servers.Servers[serverFlag]; ok {
-			token := tokenFlag
-			if token == "" {
-				token = entry.Token
-			}
-			return &client.Target{URL: entry.URL, Token: token}, nil
-		}
-	}
-
-	// Treat serverFlag as a direct URL.
 	url := serverFlag
 	if strings.HasPrefix(url, "https://") || strings.HasPrefix(url, "http://") {
 		// Relay URL — token is optional (relay handles auth).

@@ -15,7 +15,6 @@ import (
 	cwconfig "github.com/codewiresh/codewire/internal/config"
 	"github.com/codewiresh/codewire/internal/networkauth"
 	"github.com/codewiresh/codewire/internal/peer"
-	"github.com/codewiresh/codewire/internal/protocol"
 	"github.com/codewiresh/codewire/internal/session"
 	tailnetlib "github.com/codewiresh/tailnet"
 	"github.com/google/uuid"
@@ -322,47 +321,6 @@ func withTestHome(t *testing.T) {
 	})
 }
 
-func TestMsgCmdRoutesRemoteLocatorViaSavedPeerServer(t *testing.T) {
-	withTestHome(t)
-
-	state, err := networkauth.NewIssuerState("project-alpha")
-	if err != nil {
-		t.Fatalf("NewIssuerState: %v", err)
-	}
-	manager, sessionID, srv := startRuntimePeerMessagingTestServer(t, "dev-2", "coder", state)
-
-	relaySession := "relay-session"
-	relayNetwork := "project-alpha"
-	relaySrv := startRuntimeRelayServer(t, state, relaySession, relayNetwork, nil)
-	defer relaySrv.Close()
-	saveRelayConfig(t, relaySrv.URL, relaySession, relayNetwork)
-
-	servers, err := cwconfig.LoadServersConfig(dataDir())
-	if err != nil {
-		t.Fatalf("LoadServersConfig: %v", err)
-	}
-	servers.Servers["dev-2"] = cwconfig.ServerEntry{URL: srv.URL}
-	if err := servers.Save(dataDir()); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	cmd := msgCmd()
-	if err := cmd.RunE(cmd, []string{"dev-2:coder", "hello over saved peer"}); err != nil {
-		t.Fatalf("msg command failed: %v", err)
-	}
-
-	messages, err := manager.ReadMessages(sessionID, 10)
-	if err != nil {
-		t.Fatalf("ReadMessages: %v", err)
-	}
-	if len(messages) != 1 {
-		t.Fatalf("messages len = %d, want 1", len(messages))
-	}
-	if !strings.Contains(string(messages[0].Data), "hello over saved peer") {
-		t.Fatalf("unexpected message payload: %s", string(messages[0].Data))
-	}
-}
-
 func TestMsgCmdRejectsFromForRemotePeerServer(t *testing.T) {
 	withTestHome(t)
 
@@ -439,58 +397,6 @@ func TestMsgCmdRoutesRemoteLocatorViaRelayRuntimeCredential(t *testing.T) {
 	}
 }
 
-func TestInboxCmdRoutesRemoteLocatorViaSavedPeerServer(t *testing.T) {
-	withTestHome(t)
-
-	state, err := networkauth.NewIssuerState("project-alpha")
-	if err != nil {
-		t.Fatalf("NewIssuerState: %v", err)
-	}
-	manager, sessionID, srv := startRuntimePeerMessagingTestServer(t, "dev-2", "coder", state)
-
-	relaySession := "relay-session"
-	relayNetwork := "project-alpha"
-	relaySrv := startRuntimeRelayServer(t, state, relaySession, relayNetwork, nil)
-	defer relaySrv.Close()
-	saveRelayConfig(t, relaySrv.URL, relaySession, relayNetwork)
-
-	if _, err := manager.SendMessage(0, sessionID, "hello from remote inbox"); err != nil {
-		t.Fatalf("SendMessage: %v", err)
-	}
-
-	servers, err := cwconfig.LoadServersConfig(dataDir())
-	if err != nil {
-		t.Fatalf("LoadServersConfig: %v", err)
-	}
-	servers.Servers["dev-2"] = cwconfig.ServerEntry{URL: srv.URL}
-	if err := servers.Save(dataDir()); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	oldStdout := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stdout = w
-	defer func() { os.Stdout = oldStdout }()
-
-	cmd := inboxCmd()
-	if err := cmd.RunE(cmd, []string{"dev-2:coder"}); err != nil {
-		t.Fatalf("inbox command failed: %v", err)
-	}
-
-	_ = w.Close()
-	output, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("ReadAll: %v", err)
-	}
-	got := string(output)
-	if !strings.Contains(got, "hello from remote inbox") {
-		t.Fatalf("unexpected output: %q", got)
-	}
-}
-
 func TestRequestCmdRoutesRemoteLocatorViaRelayDiscovery(t *testing.T) {
 	t.Skip("covered by TestRelayNetworkMessagingThreeSessionsKind; the lightweight httptest relay harness is not a faithful model for tailnet request/reply")
 	withTestHome(t)
@@ -557,124 +463,7 @@ func TestRequestCmdRejectsFromForRemotePeerRequest(t *testing.T) {
 	}
 }
 
-func TestListenCmdRoutesRemoteLocatorViaSavedPeerServer(t *testing.T) {
-	withTestHome(t)
-
-	state, err := networkauth.NewIssuerState("project-alpha")
-	if err != nil {
-		t.Fatalf("NewIssuerState: %v", err)
-	}
-	relaySession := "relay-session"
-	relayNetwork := "project-alpha"
-	relaySrv := startRuntimeRelayServer(t, state, relaySession, relayNetwork, nil)
-	defer relaySrv.Close()
-	saveRelayConfig(t, relaySrv.URL, relaySession, relayNetwork)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/peer" {
-			http.NotFound(w, r)
-			return
-		}
-		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if _, err := networkauth.VerifyRuntimeCredential(token, state.Bundle(time.Now().UTC(), time.Hour), time.Now().UTC()); err != nil {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		wsConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
-		if err != nil {
-			return
-		}
-		defer wsConn.CloseNow()
-
-		nc := websocket.NetConn(r.Context(), wsConn, websocket.MessageBinary)
-		defer nc.Close()
-
-		req, err := peer.ReadRequest(nc)
-		if err != nil {
-			t.Errorf("ReadRequest: %v", err)
-			return
-		}
-		if req.Type != "MsgListen" || req.Session == nil || req.Session.Name != "coder" {
-			t.Errorf("unexpected listen request: %+v", req)
-			return
-		}
-
-		if err := peer.WriteResponse(nc, &peer.PeerResponse{OpID: req.OpID, Type: "MsgListenAck"}); err != nil {
-			t.Errorf("WriteResponse ack: %v", err)
-			return
-		}
-		eventData, _ := json.Marshal(map[string]any{
-			"from":      0,
-			"from_name": "",
-			"to":        1,
-			"to_name":   "coder",
-			"body":      "hello listen",
-		})
-		_ = peer.WriteResponse(nc, &peer.PeerResponse{
-			OpID: req.OpID,
-			Type: "Event",
-			Event: &protocol.SessionEvent{
-				Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
-				EventType: "direct.message",
-				Data:      eventData,
-			},
-		})
-	}))
-	defer srv.Close()
-
-	servers, err := cwconfig.LoadServersConfig(dataDir())
-	if err != nil {
-		t.Fatalf("LoadServersConfig: %v", err)
-	}
-	servers.Servers["dev-2"] = cwconfig.ServerEntry{URL: srv.URL}
-	if err := servers.Save(dataDir()); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	oldStdout := os.Stdout
-	oldStderr := os.Stderr
-	stdoutR, stdoutW, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("stdout pipe: %v", err)
-	}
-	stderrR, stderrW, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("stderr pipe: %v", err)
-	}
-	os.Stdout = stdoutW
-	os.Stderr = stderrW
-	defer func() {
-		os.Stdout = oldStdout
-		os.Stderr = oldStderr
-	}()
-
-	cmd := listenCmd()
-	if err := cmd.Flags().Set("session", "dev-2:coder"); err != nil {
-		t.Fatalf("Set session: %v", err)
-	}
-	if err := cmd.RunE(cmd, nil); err != nil {
-		t.Fatalf("listen command failed: %v", err)
-	}
-
-	_ = stdoutW.Close()
-	_ = stderrW.Close()
-	stdout, err := io.ReadAll(stdoutR)
-	if err != nil {
-		t.Fatalf("ReadAll stdout: %v", err)
-	}
-	stderr, err := io.ReadAll(stderrR)
-	if err != nil {
-		t.Fatalf("ReadAll stderr: %v", err)
-	}
-	if !strings.Contains(string(stdout), "hello listen") {
-		t.Fatalf("unexpected stdout: %q", string(stdout))
-	}
-	if !strings.Contains(string(stderr), "listening for messages") {
-		t.Fatalf("unexpected stderr: %q", string(stderr))
-	}
-}
-
-func TestReplyCmdRejectsRemoteLocatorViaSavedPeerServer(t *testing.T) {
+func TestReplyCmdRejectsRemoteLocatorForRemoteSender(t *testing.T) {
 	withTestHome(t)
 
 	cmd := replyCmd()

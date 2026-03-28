@@ -1263,17 +1263,51 @@ func buildEnv(overrides []string) []string {
 			filtered = append(filtered, e)
 		}
 	}
-	if len(overrides) == 0 {
-		return filtered
+	filtered = applyEnvOverrides(filtered, loadCodewireEnvOverrides())
+	return applyEnvOverrides(filtered, overrides)
+}
+
+func loadCodewireEnvOverrides() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
 	}
-	keyIdx := make(map[string]int, len(filtered))
-	for i, e := range filtered {
+	path := filepath.Join(home, ".codewire", "environment.json")
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	var envVars map[string]string
+	if err := json.Unmarshal(data, &envVars); err != nil {
+		return nil
+	}
+	if len(envVars) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(envVars))
+	for key := range envVars {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	overrides := make([]string, 0, len(keys))
+	for _, key := range keys {
+		overrides = append(overrides, key+"="+envVars[key])
+	}
+	return overrides
+}
+
+func applyEnvOverrides(base, overrides []string) []string {
+	if len(overrides) == 0 {
+		return base
+	}
+	keyIdx := make(map[string]int, len(base))
+	for i, e := range base {
 		if eq := strings.IndexByte(e, '='); eq >= 0 {
 			keyIdx[e[:eq]] = i
 		}
 	}
-	result := make([]string, len(filtered))
-	copy(result, filtered)
+	result := make([]string, len(base))
+	copy(result, base)
 	for _, ov := range overrides {
 		eq := strings.IndexByte(ov, '=')
 		if eq < 0 {

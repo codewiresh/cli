@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -114,6 +115,63 @@ func TestCreatePresetRequestFromEnvironment(t *testing.T) {
 	}
 	if presetReq.IncludeUserSecrets == nil || *presetReq.IncludeUserSecrets {
 		t.Fatalf("expected include_user_secrets to be false, got %#v", presetReq.IncludeUserSecrets)
+	}
+}
+
+func TestNormalizePresetAuthoringAgentsPromotesLegacyAgent(t *testing.T) {
+	opts := &presetAuthoringOptions{Agent: "claude"}
+	normalizePresetAuthoringAgents(opts)
+	if opts.Agent != "" {
+		t.Fatalf("opts.Agent = %q, want empty after normalization", opts.Agent)
+	}
+	want := []platform.SetupAgent{{Type: "claude-code"}}
+	if !reflect.DeepEqual(opts.Agents, want) {
+		t.Fatalf("opts.Agents = %#v, want %#v", opts.Agents, want)
+	}
+}
+
+func TestApplyCodewireYAMLDefaultsPromotesLegacyAgentField(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(oldWD)
+	}()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	if err := cwconfig.WriteCodewireConfig("codewire.yaml", &cwconfig.CodewireConfig{
+		Agent:         "claude",
+		InstallAgents: boolPtr(true),
+	}); err != nil {
+		t.Fatalf("WriteCodewireConfig: %v", err)
+	}
+
+	opts := &presetAuthoringOptions{AllowCodewireYAML: true}
+	if !applyCodewireYAMLDefaults(opts) {
+		t.Fatal("expected codewire.yaml defaults to be applied")
+	}
+	normalizePresetAuthoringAgents(opts)
+
+	want := []platform.SetupAgent{{Type: "claude-code"}}
+	if !reflect.DeepEqual(opts.Agents, want) {
+		t.Fatalf("opts.Agents = %#v, want %#v", opts.Agents, want)
+	}
+	if opts.InstallAgents == nil || !*opts.InstallAgents {
+		t.Fatalf("expected install agents true, got %#v", opts.InstallAgents)
+	}
+}
+
+func TestSelectedAgentsFromOptionsCanonicalizes(t *testing.T) {
+	opts := &presetAuthoringOptions{
+		Agents: []platform.SetupAgent{{Type: "claude"}, {Type: "gemini"}},
+	}
+	got := selectedAgentsFromOptions(opts)
+	want := []platform.SetupAgent{{Type: "claude-code"}, {Type: "gemini-cli"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("selectedAgentsFromOptions = %#v, want %#v", got, want)
 	}
 }
 

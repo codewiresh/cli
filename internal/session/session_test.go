@@ -1,6 +1,8 @@
 package session
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -59,5 +61,32 @@ func TestBuildEnvOverridesExisting(t *testing.T) {
 		if e == "CW_TEST_VAR=original" {
 			t.Fatal("override not applied")
 		}
+	}
+}
+
+func TestBuildEnvLoadsCodewireWorkspaceEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".codewire")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "environment.json"), []byte(`{"CLAUDE_CODE_OAUTH_TOKEN":"token-123","ANTHROPIC_AUTH_TOKEN":"token-123"}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	env := buildEnv(nil)
+	foundClaude := false
+	foundAnthropic := false
+	for _, e := range env {
+		if e == "CLAUDE_CODE_OAUTH_TOKEN=token-123" {
+			foundClaude = true
+		}
+		if e == "ANTHROPIC_AUTH_TOKEN=token-123" {
+			foundAnthropic = true
+		}
+	}
+	if !foundClaude || !foundAnthropic {
+		t.Fatalf("expected codewire env vars to be loaded, got %v", env)
 	}
 }

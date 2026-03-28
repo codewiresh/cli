@@ -14,7 +14,6 @@ import (
 	"github.com/codewiresh/codewire/internal/peer"
 	"github.com/codewiresh/codewire/internal/peerclient"
 	"github.com/codewiresh/codewire/internal/protocol"
-	"nhooyr.io/websocket"
 )
 
 type relayNodeRecord struct {
@@ -36,51 +35,6 @@ func normalizeSessionLocatorForCurrentNode(locator sessionLocator) (sessionLocat
 		locator.Node = ""
 	}
 	return locator, nil
-}
-
-func resolvePeerServer(nodeName string) (config.ServerEntry, error) {
-	entry, relayErr := resolvePeerServerFromRelay(nodeName)
-	if relayErr == nil {
-		return entry, nil
-	}
-
-	servers, err := config.LoadServersConfig(dataDir())
-	if err != nil {
-		return config.ServerEntry{}, err
-	}
-
-	entry, ok := servers.Servers[nodeName]
-	if !ok {
-		if relayErr != nil && !strings.Contains(relayErr.Error(), "not configured") {
-			return config.ServerEntry{}, relayErr
-		}
-		return config.ServerEntry{}, fmt.Errorf(
-			"remote node %q is not discoverable yet; add a saved peer server with 'cw server add %s <url>'",
-			nodeName,
-			nodeName,
-		)
-	}
-	if relayErr != nil {
-		return entry, nil
-	}
-	return entry, nil
-}
-
-func resolvePeerServerFromRelay(nodeName string) (config.ServerEntry, error) {
-	node, _, err := lookupRelayNode(nodeName)
-	if err != nil {
-		return config.ServerEntry{}, err
-	}
-	if strings.TrimSpace(node.PeerURL) == "" {
-		return config.ServerEntry{}, fmt.Errorf(
-			"remote node %q is registered but has no advertised peer URL; set node.external_url or CODEWIRE_EXTERNAL_URL on that node",
-			nodeName,
-		)
-	}
-	return config.ServerEntry{
-		URL:   node.PeerURL,
-		Token: "",
-	}, nil
 }
 
 func lookupRelayNode(nodeName string) (relayNodeRecord, *config.Config, error) {
@@ -129,92 +83,30 @@ func lookupRelayNode(nodeName string) (relayNodeRecord, *config.Config, error) {
 	return relayNodeRecord{}, nil, fmt.Errorf("remote node %q was not found in the current relay network", nodeName)
 }
 
-func peerWebSocketURL(raw string) (string, error) {
-	u, err := neturl.Parse(strings.TrimSpace(raw))
-	if err != nil {
-		return "", fmt.Errorf("parsing peer server URL %q: %w", raw, err)
-	}
-
-	switch u.Scheme {
-	case "http":
-		u.Scheme = "ws"
-	case "https":
-		u.Scheme = "wss"
-	case "ws", "wss":
-	default:
-		return "", fmt.Errorf("peer server URL %q must use http, https, ws, or wss", raw)
-	}
-
-	switch {
-	case u.Path == "", u.Path == "/":
-		u.Path = "/peer"
-	case strings.HasSuffix(u.Path, "/ws"):
-		u.Path = strings.TrimSuffix(u.Path, "/ws") + "/peer"
-	case !strings.HasSuffix(u.Path, "/peer"):
-		u.Path = strings.TrimRight(u.Path, "/") + "/peer"
-	}
-
-	return u.String(), nil
-}
-
 func dialPeerClientForNode(ctx context.Context, nodeName string) (*peerclient.Client, func(), error) {
-	if node, cfg, err := lookupRelayNode(nodeName); err == nil {
-		if !node.Connected {
-			return nil, nil, fmt.Errorf("remote node %q is registered in the current relay network but is not connected", nodeName)
-		}
-
-		runtimeCred, credErr := issueRuntimeCredentialForPeer(ctx)
-		if credErr != nil {
-			return nil, nil, credErr
-		}
-
-		tcpConn, tailnetConn, err := peer.DialNetworkPeerTCP(ctx, *cfg.RelayURL, runtimeCred, nodeName, peer.TailnetPeerPort)
-		if err != nil {
-			return nil, nil, fmt.Errorf("connecting to peer node %q over tailnet: %w", nodeName, err)
-		}
-
-		client := peerclient.New(tcpConn)
-		return client, func() {
-			_ = client.Close()
-			_ = tailnetConn.Close()
-		}, nil
-	}
-
-	entry, err := resolvePeerServer(nodeName)
+	node, cfg, err := lookupRelayNode(nodeName)
 	if err != nil {
 		return nil, nil, err
 	}
-	peerURL, err := peerWebSocketURL(entry.URL)
-	if err != nil {
-		return nil, nil, err
+	if !node.Connected {
+		return nil, nil, fmt.Errorf("remote node %q is registered in the current relay network but is not connected", nodeName)
 	}
 
-	token, err := resolvePeerAuthToken(ctx, entry)
-	if err != nil {
-		return nil, nil, err
+	runtimeCred, credErr := issueRuntimeCredentialForPeer(ctx)
+	if credErr != nil {
+		return nil, nil, credErr
 	}
 
-	client, ws, err := peerclient.DialWebSocket(ctx, peerURL, token)
+	tcpConn, tailnetConn, err := peer.DialNetworkPeerTCP(ctx, *cfg.RelayURL, runtimeCred, nodeName, peer.TailnetPeerPort)
 	if err != nil {
-		return nil, nil, fmt.Errorf("connecting to peer node %q: %w", nodeName, err)
+		return nil, nil, fmt.Errorf("connecting to peer node %q over tailnet: %w", nodeName, err)
 	}
+
+	client := peerclient.New(tcpConn)
 	return client, func() {
 		_ = client.Close()
-		_ = ws.Close(websocket.StatusNormalClosure, "")
+		_ = tailnetConn.Close()
 	}, nil
-}
-
-func resolvePeerAuthToken(ctx context.Context, entry config.ServerEntry) (string, error) {
-	if strings.TrimSpace(tokenFlag) != "" {
-		return strings.TrimSpace(tokenFlag), nil
-	}
-	if issued, err := issueRuntimeCredentialForPeer(ctx); err == nil && strings.TrimSpace(issued) != "" {
-		return issued, nil
-	}
-	if strings.HasPrefix(strings.TrimSpace(entry.Token), networkauth.RuntimeTokenPrefix+".") {
-		return strings.TrimSpace(entry.Token), nil
-	}
-	return "", fmt.Errorf("peer messaging requires a relay-issued runtime credential; configure relay access for this network or pass an explicit runtime credential with --token")
 }
 
 func issueRuntimeCredentialForPeer(ctx context.Context) (string, error) {

@@ -112,6 +112,37 @@ func TestUseNetworkPersistsConfig(t *testing.T) {
 	}
 }
 
+func TestClearNetworkRemovesSelection(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+
+	if err := UseNetwork(dir, "project-alpha"); err != nil {
+		t.Fatalf("UseNetwork: %v", err)
+	}
+	if err := ClearNetwork(dir); err != nil {
+		t.Fatalf("ClearNetwork: %v", err)
+	}
+
+	cfg, err := config.LoadConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.RelayNetwork != nil {
+		t.Fatalf("RelayNetwork = %v, want nil", *cfg.RelayNetwork)
+	}
+
+	_, _, networkID, err := loadRelayAuth(dir, RelayAuthOptions{
+		RelayURL:  "http://127.0.0.1:8080",
+		AuthToken: "dev-secret",
+	})
+	if err != nil {
+		t.Fatalf("loadRelayAuth: %v", err)
+	}
+	if networkID != "" {
+		t.Fatalf("networkID = %q, want empty", networkID)
+	}
+}
+
 func TestLoadRelayAuthFallsBackToPlatformLogin(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
