@@ -172,7 +172,7 @@ func TestRelayNetworkMessagingThreeSessionsKind(t *testing.T) {
 		t.Fatalf("request FromName = %q, want dev-1:planner", requestMsg.FromName)
 	}
 
-	err = client.Reply(node2.target, &reviewerID, requestMsg.RequestID, "reviewer should be rejected")
+	err = client.Reply(node2.target, &reviewerID, requestMsg.RequestID, "", "reviewer should be rejected")
 	if err == nil {
 		t.Fatal("expected reviewer reply to be rejected")
 	}
@@ -180,7 +180,7 @@ func TestRelayNetworkMessagingThreeSessionsKind(t *testing.T) {
 		t.Fatalf("unexpected reviewer reply error: %v", err)
 	}
 
-	if err := client.Reply(node2.target, &coderID, requestMsg.RequestID, "approved"); err != nil {
+	if err := client.Reply(node2.target, &coderID, requestMsg.RequestID, "", "approved"); err != nil {
 		t.Fatalf("coder reply: %v", err)
 	}
 

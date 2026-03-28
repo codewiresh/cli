@@ -67,9 +67,24 @@ func (s *SQLiteStore) migrate() error {
 			network_id TEXT NOT NULL,
 			name TEXT NOT NULL,
 			token TEXT NOT NULL UNIQUE,
+			owner_subject TEXT NOT NULL DEFAULT '',
+			authorized_by TEXT NOT NULL DEFAULT '',
+			enrollment_id TEXT NOT NULL DEFAULT '',
 			authorized_at DATETIME NOT NULL,
 			last_seen_at DATETIME NOT NULL,
 			PRIMARY KEY (network_id, name)
+		)`,
+		`CREATE TABLE IF NOT EXISTS node_enrollments (
+			id TEXT PRIMARY KEY,
+			network_id TEXT NOT NULL,
+			owner_subject TEXT NOT NULL DEFAULT '',
+			issued_by TEXT NOT NULL DEFAULT '',
+			node_name TEXT NOT NULL DEFAULT '',
+			token_hash TEXT NOT NULL UNIQUE,
+			uses_remaining INTEGER NOT NULL,
+			expires_at DATETIME NOT NULL,
+			created_at DATETIME NOT NULL,
+			redeemed_at DATETIME
 		)`,
 		`CREATE TABLE IF NOT EXISTS kv (
 			network_id TEXT NOT NULL,
@@ -165,12 +180,16 @@ func (s *SQLiteStore) migrate() error {
 	// token column replaces public_key/tunnel_url in the new relay architecture.
 	s.addColumnIfNotExists("nodes", "token", "TEXT NOT NULL DEFAULT ''")
 	s.addColumnIfNotExists("nodes", "peer_url", "TEXT NOT NULL DEFAULT ''")
+	s.addColumnIfNotExists("nodes", "owner_subject", "TEXT NOT NULL DEFAULT ''")
+	s.addColumnIfNotExists("nodes", "authorized_by", "TEXT NOT NULL DEFAULT ''")
+	s.addColumnIfNotExists("nodes", "enrollment_id", "TEXT NOT NULL DEFAULT ''")
 	if err := s.migrateLegacyNodesTable(); err != nil {
 		return err
 	}
 
 	// Ensure unique index on token for NodeGetByToken.
 	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_token ON nodes(token) WHERE token != ''`)
+	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_node_enrollments_token_hash ON node_enrollments(token_hash) WHERE token_hash != ''`)
 	return nil
 }
 
@@ -194,6 +213,9 @@ func (s *SQLiteStore) migrateLegacyNodesTable() error {
 			network_id TEXT NOT NULL,
 			name TEXT NOT NULL,
 			token TEXT NOT NULL UNIQUE,
+			owner_subject TEXT NOT NULL DEFAULT '',
+			authorized_by TEXT NOT NULL DEFAULT '',
+			enrollment_id TEXT NOT NULL DEFAULT '',
 			authorized_at DATETIME NOT NULL,
 			last_seen_at DATETIME NOT NULL,
 			github_id INTEGER REFERENCES users(github_id),
@@ -204,8 +226,8 @@ func (s *SQLiteStore) migrateLegacyNodesTable() error {
 	}
 
 	if _, err := tx.Exec(`
-		INSERT INTO nodes_new (network_id, name, token, authorized_at, last_seen_at, github_id, peer_url)
-		SELECT '', name, token, authorized_at, last_seen_at, github_id, peer_url
+		INSERT INTO nodes_new (network_id, name, token, owner_subject, authorized_by, enrollment_id, authorized_at, last_seen_at, github_id, peer_url)
+		SELECT '', name, token, '', '', '', authorized_at, last_seen_at, github_id, peer_url
 		FROM nodes
 	`); err != nil {
 		return fmt.Errorf("copy nodes to nodes_new: %w", err)
@@ -512,14 +534,17 @@ func (s *SQLiteStore) NodeRegister(_ context.Context, node NodeRecord) error {
 	}
 
 	_, err := s.db.Exec(
-		`INSERT INTO nodes (network_id, name, token, peer_url, github_id, authorized_at, last_seen_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO nodes (network_id, name, token, peer_url, github_id, owner_subject, authorized_by, enrollment_id, authorized_at, last_seen_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (network_id, name) DO UPDATE SET
 		   token = excluded.token,
 		   peer_url = excluded.peer_url,
 		   github_id = excluded.github_id,
+		   owner_subject = excluded.owner_subject,
+		   authorized_by = excluded.authorized_by,
+		   enrollment_id = excluded.enrollment_id,
 		   last_seen_at = excluded.last_seen_at`,
-		node.NetworkID, node.Name, node.Token, node.PeerURL, node.GitHubID, node.AuthorizedAt, node.LastSeenAt,
+		node.NetworkID, node.Name, node.Token, node.PeerURL, node.GitHubID, node.OwnerSubject, node.AuthorizedBy, node.EnrollmentID, node.AuthorizedAt, node.LastSeenAt,
 	)
 	return err
 }
@@ -528,7 +553,7 @@ func (s *SQLiteStore) NodeList(_ context.Context, networkID string) ([]NodeRecor
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query("SELECT network_id, name, token, peer_url, github_id, authorized_at, last_seen_at FROM nodes WHERE network_id = ? ORDER BY name", networkID)
+	rows, err := s.db.Query("SELECT network_id, name, token, peer_url, github_id, owner_subject, authorized_by, enrollment_id, authorized_at, last_seen_at FROM nodes WHERE network_id = ? ORDER BY name", networkID)
 	if err != nil {
 		return nil, err
 	}
@@ -537,7 +562,7 @@ func (s *SQLiteStore) NodeList(_ context.Context, networkID string) ([]NodeRecor
 	var nodes []NodeRecord
 	for rows.Next() {
 		var n NodeRecord
-		if err := rows.Scan(&n.NetworkID, &n.Name, &n.Token, &n.PeerURL, &n.GitHubID, &n.AuthorizedAt, &n.LastSeenAt); err != nil {
+		if err := rows.Scan(&n.NetworkID, &n.Name, &n.Token, &n.PeerURL, &n.GitHubID, &n.OwnerSubject, &n.AuthorizedBy, &n.EnrollmentID, &n.AuthorizedAt, &n.LastSeenAt); err != nil {
 			return nil, err
 		}
 		nodes = append(nodes, n)
@@ -549,7 +574,7 @@ func (s *SQLiteStore) NodeListAll(_ context.Context) ([]NodeRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query("SELECT network_id, name, token, peer_url, github_id, authorized_at, last_seen_at FROM nodes ORDER BY network_id, name")
+	rows, err := s.db.Query("SELECT network_id, name, token, peer_url, github_id, owner_subject, authorized_by, enrollment_id, authorized_at, last_seen_at FROM nodes ORDER BY network_id, name")
 	if err != nil {
 		return nil, err
 	}
@@ -558,7 +583,7 @@ func (s *SQLiteStore) NodeListAll(_ context.Context) ([]NodeRecord, error) {
 	var nodes []NodeRecord
 	for rows.Next() {
 		var n NodeRecord
-		if err := rows.Scan(&n.NetworkID, &n.Name, &n.Token, &n.PeerURL, &n.GitHubID, &n.AuthorizedAt, &n.LastSeenAt); err != nil {
+		if err := rows.Scan(&n.NetworkID, &n.Name, &n.Token, &n.PeerURL, &n.GitHubID, &n.OwnerSubject, &n.AuthorizedBy, &n.EnrollmentID, &n.AuthorizedAt, &n.LastSeenAt); err != nil {
 			return nil, err
 		}
 		nodes = append(nodes, n)
@@ -572,9 +597,9 @@ func (s *SQLiteStore) NodeGet(_ context.Context, networkID, name string) (*NodeR
 
 	var n NodeRecord
 	err := s.db.QueryRow(
-		"SELECT network_id, name, token, peer_url, github_id, authorized_at, last_seen_at FROM nodes WHERE network_id = ? AND name = ?",
+		"SELECT network_id, name, token, peer_url, github_id, owner_subject, authorized_by, enrollment_id, authorized_at, last_seen_at FROM nodes WHERE network_id = ? AND name = ?",
 		networkID, name,
-	).Scan(&n.NetworkID, &n.Name, &n.Token, &n.PeerURL, &n.GitHubID, &n.AuthorizedAt, &n.LastSeenAt)
+	).Scan(&n.NetworkID, &n.Name, &n.Token, &n.PeerURL, &n.GitHubID, &n.OwnerSubject, &n.AuthorizedBy, &n.EnrollmentID, &n.AuthorizedAt, &n.LastSeenAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -590,9 +615,9 @@ func (s *SQLiteStore) NodeGetByToken(_ context.Context, token string) (*NodeReco
 
 	var n NodeRecord
 	err := s.db.QueryRow(
-		"SELECT network_id, name, token, peer_url, github_id, authorized_at, last_seen_at FROM nodes WHERE token = ?",
+		"SELECT network_id, name, token, peer_url, github_id, owner_subject, authorized_by, enrollment_id, authorized_at, last_seen_at FROM nodes WHERE token = ?",
 		token,
-	).Scan(&n.NetworkID, &n.Name, &n.Token, &n.PeerURL, &n.GitHubID, &n.AuthorizedAt, &n.LastSeenAt)
+	).Scan(&n.NetworkID, &n.Name, &n.Token, &n.PeerURL, &n.GitHubID, &n.OwnerSubject, &n.AuthorizedBy, &n.EnrollmentID, &n.AuthorizedAt, &n.LastSeenAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -614,6 +639,96 @@ func (s *SQLiteStore) NodeUpdateLastSeen(_ context.Context, networkID, name stri
 	defer s.mu.Unlock()
 	_, err := s.db.Exec("UPDATE nodes SET last_seen_at = ? WHERE network_id = ? AND name = ?", time.Now().UTC(), networkID, name)
 	return err
+}
+
+func (s *SQLiteStore) NodeEnrollmentCreate(_ context.Context, enrollment NodeEnrollment) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, err := s.db.Exec(
+		`INSERT OR IGNORE INTO networks (network_id, created_at) VALUES (?, ?)`,
+		enrollment.NetworkID, time.Now().UTC(),
+	); err != nil {
+		return err
+	}
+
+	_, err := s.db.Exec(
+		`INSERT INTO node_enrollments (id, network_id, owner_subject, issued_by, node_name, token_hash, uses_remaining, expires_at, created_at, redeemed_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		enrollment.ID, enrollment.NetworkID, enrollment.OwnerSubject, enrollment.IssuedBy, enrollment.NodeName, enrollment.TokenHash, enrollment.UsesRemaining, enrollment.ExpiresAt, enrollment.CreatedAt, enrollment.RedeemedAt,
+	)
+	return err
+}
+
+func (s *SQLiteStore) NodeEnrollmentGetByTokenHash(_ context.Context, tokenHash string) (*NodeEnrollment, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var e NodeEnrollment
+	err := s.db.QueryRow(
+		`SELECT id, network_id, owner_subject, issued_by, node_name, token_hash, uses_remaining, expires_at, created_at, redeemed_at
+		 FROM node_enrollments WHERE token_hash = ?`,
+		tokenHash,
+	).Scan(&e.ID, &e.NetworkID, &e.OwnerSubject, &e.IssuedBy, &e.NodeName, &e.TokenHash, &e.UsesRemaining, &e.ExpiresAt, &e.CreatedAt, &e.RedeemedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
+func (s *SQLiteStore) NodeEnrollmentConsume(_ context.Context, tokenHash string, redeemedAt time.Time) (*NodeEnrollment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var e NodeEnrollment
+	err = tx.QueryRow(
+		`SELECT id, network_id, owner_subject, issued_by, node_name, token_hash, uses_remaining, expires_at, created_at, redeemed_at
+		 FROM node_enrollments WHERE token_hash = ?`,
+		tokenHash,
+	).Scan(&e.ID, &e.NetworkID, &e.OwnerSubject, &e.IssuedBy, &e.NodeName, &e.TokenHash, &e.UsesRemaining, &e.ExpiresAt, &e.CreatedAt, &e.RedeemedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if e.UsesRemaining <= 0 {
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+
+	nextUses := e.UsesRemaining - 1
+	var redeemedAtValue any
+	if nextUses == 0 {
+		e.RedeemedAt = &redeemedAt
+		redeemedAtValue = redeemedAt
+	} else {
+		redeemedAtValue = e.RedeemedAt
+	}
+	if _, err := tx.Exec(
+		`UPDATE node_enrollments SET uses_remaining = ?, redeemed_at = ? WHERE token_hash = ?`,
+		nextUses, redeemedAtValue, tokenHash,
+	); err != nil {
+		return nil, err
+	}
+	e.UsesRemaining = nextUses
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return &e, nil
 }
 
 // --- Device Codes ---

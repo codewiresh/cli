@@ -44,8 +44,26 @@ type NodeRecord struct {
 	Token        string    `json:"token"` // random auth token (replaces WireGuard public key)
 	PeerURL      string    `json:"peer_url,omitempty"`
 	GitHubID     *int64    `json:"github_id,omitempty"`
+	OwnerSubject string    `json:"owner_subject,omitempty"`
+	AuthorizedBy string    `json:"authorized_by,omitempty"`
+	EnrollmentID string    `json:"enrollment_id,omitempty"`
 	AuthorizedAt time.Time `json:"authorized_at"`
 	LastSeenAt   time.Time `json:"last_seen_at"`
+}
+
+// NodeEnrollment is a short-lived enrollment grant that can be redeemed for a
+// durable node token.
+type NodeEnrollment struct {
+	ID            string     `json:"id"`
+	NetworkID     string     `json:"network_id"`
+	OwnerSubject  string     `json:"owner_subject,omitempty"`
+	IssuedBy      string     `json:"issued_by,omitempty"`
+	NodeName      string     `json:"node_name,omitempty"`
+	TokenHash     string     `json:"-"`
+	UsesRemaining int        `json:"uses_remaining"`
+	ExpiresAt     time.Time  `json:"expires_at"`
+	CreatedAt     time.Time  `json:"created_at"`
+	RedeemedAt    *time.Time `json:"redeemed_at,omitempty"`
 }
 
 // GitHubApp stores the GitHub App credentials (singleton, one row).
@@ -161,6 +179,9 @@ type Store interface {
 	NodeGetByToken(ctx context.Context, token string) (*NodeRecord, error)
 	NodeDelete(ctx context.Context, networkID, name string) error
 	NodeUpdateLastSeen(ctx context.Context, networkID, name string) error
+	NodeEnrollmentCreate(ctx context.Context, enrollment NodeEnrollment) error
+	NodeEnrollmentGetByTokenHash(ctx context.Context, tokenHash string) (*NodeEnrollment, error)
+	NodeEnrollmentConsume(ctx context.Context, tokenHash string, redeemedAt time.Time) (*NodeEnrollment, error)
 
 	// Device authorization flow.
 	DeviceCodeCreate(ctx context.Context, dc DeviceCode) error

@@ -1524,8 +1524,9 @@ func TestAnonymousSendRequest(t *testing.T) {
 
 	// Channel for the incoming message.request event.
 	type eventResult struct {
-		requestID string
-		err       error
+		requestID  string
+		replyToken string
+		err        error
 	}
 	eventCh := make(chan eventResult, 1)
 
@@ -1562,13 +1563,14 @@ func TestAnonymousSendRequest(t *testing.T) {
 				}
 				// Extract request_id from event data.
 				var data struct {
-					RequestID string `json:"request_id"`
+					RequestID  string `json:"request_id"`
+					ReplyToken string `json:"reply_token"`
 				}
 				if err := json.Unmarshal(r.Event.Data, &data); err != nil {
 					eventCh <- eventResult{err: fmt.Errorf("unmarshal event data: %v", err)}
 					return
 				}
-				eventCh <- eventResult{requestID: data.RequestID}
+				eventCh <- eventResult{requestID: data.RequestID, replyToken: data.ReplyToken}
 				return
 			case <-deadline:
 				eventCh <- eventResult{err: fmt.Errorf("timeout waiting for message.request event")}
@@ -1582,9 +1584,9 @@ func TestAnonymousSendRequest(t *testing.T) {
 	defer reqConn.Close()
 
 	if err := reqWriter.SendRequest(&protocol.Request{
-		Type:  "MsgRequest",
-		ToID:  uint32Ptr(targetID),
-		Body:  "approve?",
+		Type: "MsgRequest",
+		ToID: uint32Ptr(targetID),
+		Body: "approve?",
 	}); err != nil {
 		t.Fatalf("send MsgRequest: %v", err)
 	}
@@ -1598,15 +1600,20 @@ func TestAnonymousSendRequest(t *testing.T) {
 	if requestID == "" {
 		t.Fatal("expected non-empty request_id in event")
 	}
+	replyToken := evRes.replyToken
+	if replyToken == "" {
+		t.Fatal("expected non-empty reply_token in event")
+	}
 
 	// Reply to the request.
 	replyConn, _, replyWriter := connectRaw(t, sock)
 	defer replyConn.Close()
 
 	if err := replyWriter.SendRequest(&protocol.Request{
-		Type:      "MsgReply",
-		RequestID: requestID,
-		Body:      "ack",
+		Type:       "MsgReply",
+		RequestID:  requestID,
+		ReplyToken: replyToken,
+		Body:       "ack",
 	}); err != nil {
 		t.Fatalf("send MsgReply: %v", err)
 	}
@@ -1718,10 +1725,16 @@ func TestHookDenied(t *testing.T) {
 	// Run Hook() in a goroutine — it will block waiting for the gateway reply.
 	target := &client.Target{Local: dir}
 	var out strings.Builder
-	hookDone := make(chan struct{ blocked bool; err error }, 1)
+	hookDone := make(chan struct {
+		blocked bool
+		err     error
+	}, 1)
 	go func() {
 		blocked, err := client.Hook(target, strings.NewReader(`{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}`), &out)
-		hookDone <- struct{ blocked bool; err error }{blocked, err}
+		hookDone <- struct {
+			blocked bool
+			err     error
+		}{blocked, err}
 	}()
 
 	// Simulate gateway receiving the request and replying DENIED.
@@ -1745,18 +1758,23 @@ func TestHookDenied(t *testing.T) {
 			t.Fatalf("expected Event, got %q", resp.Type)
 		}
 		var reqData struct {
-			RequestID string `json:"request_id"`
+			RequestID  string `json:"request_id"`
+			ReplyToken string `json:"reply_token"`
 		}
 		if err := json.Unmarshal(resp.Event.Data, &reqData); err != nil {
 			t.Fatalf("unmarshal RequestData: %v", err)
+		}
+		if reqData.ReplyToken == "" {
+			t.Fatal("expected non-empty reply_token")
 		}
 		// Reply with DENIED.
 		replyConn, _, replyWriter := connectRaw(t, sock)
 		defer replyConn.Close()
 		if err := replyWriter.SendRequest(&protocol.Request{
-			Type:      "MsgReply",
-			RequestID: reqData.RequestID,
-			Body:      "DENIED: too dangerous",
+			Type:       "MsgReply",
+			RequestID:  reqData.RequestID,
+			ReplyToken: reqData.ReplyToken,
+			Body:       "DENIED: too dangerous",
 		}); err != nil {
 			t.Fatalf("send MsgReply: %v", err)
 		}

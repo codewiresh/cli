@@ -72,6 +72,7 @@ type Request struct {
 	ToName       string  `json:"to_name,omitempty"`
 	Body         string  `json:"body,omitempty"`
 	RequestID    string  `json:"request_id,omitempty"`
+	ReplyToken   string  `json:"reply_token,omitempty"`
 	Delivery     string  `json:"delivery,omitempty"`
 	Verb         string  `json:"verb,omitempty"`
 	AudienceNode string  `json:"audience_node,omitempty"`
@@ -136,15 +137,16 @@ type Response struct {
 
 // MessageResponse represents a message in an inbox read result.
 type MessageResponse struct {
-	MessageID string `json:"message_id"`
-	Timestamp string `json:"timestamp"`
-	From      uint32 `json:"from"`
-	FromName  string `json:"from_name,omitempty"`
-	To        uint32 `json:"to"`
-	ToName    string `json:"to_name,omitempty"`
-	Body      string `json:"body"`
-	EventType string `json:"type"` // "direct.message", "message.request", "message.reply"
-	RequestID string `json:"request_id,omitempty"`
+	MessageID  string `json:"message_id"`
+	Timestamp  string `json:"timestamp"`
+	From       uint32 `json:"from"`
+	FromName   string `json:"from_name,omitempty"`
+	To         uint32 `json:"to"`
+	ToName     string `json:"to_name,omitempty"`
+	Body       string `json:"body"`
+	EventType  string `json:"type"` // "direct.message", "message.request", "message.reply"
+	RequestID  string `json:"request_id,omitempty"`
+	ReplyToken string `json:"reply_token,omitempty"`
 }
 
 // SessionEvent is a typed event pushed to subscribers.

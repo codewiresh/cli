@@ -331,6 +331,81 @@ func TestRequestReplyRejectedForWrongSession(t *testing.T) {
 	}
 }
 
+func TestRequestReplyTokenAllowsDetachedResponder(t *testing.T) {
+	sm, err := NewSessionManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create session manager: %v", err)
+	}
+
+	recipient := launchSleepSession(t, sm)
+	if err := sm.SetName(recipient, "gateway"); err != nil {
+		t.Fatalf("SetName failed: %v", err)
+	}
+
+	requestID, replyCh, err := sm.SendRequest(0, recipient, "approve?")
+	if err != nil {
+		t.Fatalf("SendRequest failed: %v", err)
+	}
+
+	events, err := sm.ReadMessages(recipient, 0)
+	if err != nil {
+		t.Fatalf("ReadMessages failed: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 message in recipient log, got %d", len(events))
+	}
+	var req RequestData
+	if err := json.Unmarshal(events[0].Data, &req); err != nil {
+		t.Fatalf("failed to unmarshal request data: %v", err)
+	}
+	if req.RequestID != requestID {
+		t.Fatalf("request RequestID: expected %q, got %q", requestID, req.RequestID)
+	}
+	if req.ReplyToken == "" {
+		t.Fatal("expected non-empty reply token")
+	}
+
+	if err := sm.SendReplyWithToken(requestID, req.ReplyToken, "DENIED"); err != nil {
+		t.Fatalf("SendReplyWithToken failed: %v", err)
+	}
+
+	select {
+	case reply := <-replyCh:
+		if reply.From != recipient {
+			t.Fatalf("reply From: expected %d, got %d", recipient, reply.From)
+		}
+		if reply.FromName != "gateway" {
+			t.Fatalf("reply FromName: expected %q, got %q", "gateway", reply.FromName)
+		}
+		if reply.Body != "DENIED" {
+			t.Fatalf("reply Body: expected %q, got %q", "DENIED", reply.Body)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for reply on channel")
+	}
+}
+
+func TestRequestReplyInvalidTokenRejected(t *testing.T) {
+	sm, err := NewSessionManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create session manager: %v", err)
+	}
+
+	recipient := launchSleepSession(t, sm)
+	requestID, _, err := sm.SendRequest(0, recipient, "approve?")
+	if err != nil {
+		t.Fatalf("SendRequest failed: %v", err)
+	}
+
+	err = sm.SendReplyWithToken(requestID, "rpl_invalid", "DENIED")
+	if err == nil {
+		t.Fatal("expected invalid reply token to be rejected")
+	}
+	if !strings.Contains(err.Error(), "invalid reply token") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestRequestReplyAfterCleanup(t *testing.T) {
 	sm, err := NewSessionManager(t.TempDir())
 	if err != nil {

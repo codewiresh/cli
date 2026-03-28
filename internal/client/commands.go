@@ -1169,6 +1169,91 @@ func Nodes(dataDir string, opts RelayAuthOptions) error {
 	return nil
 }
 
+type NodeEnrollment struct {
+	ID              string    `json:"id"`
+	NetworkID       string    `json:"network_id"`
+	NodeName        string    `json:"node_name,omitempty"`
+	EnrollmentToken string    `json:"enrollment_token"`
+	UsesRemaining   int       `json:"uses_remaining"`
+	ExpiresAt       time.Time `json:"expires_at"`
+}
+
+func CreateNodeEnrollment(dataDir string, opts RelayAuthOptions, nodeName string, uses int, ttl string) (*NodeEnrollment, error) {
+	relayURL, authToken, networkID, err := loadRelayAuth(dataDir, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"network_id": networkID,
+		"node_name":  nodeName,
+		"uses":       uses,
+		"ttl":        ttl,
+	})
+	req, err := http.NewRequest(http.MethodPost, relayURL+"/api/v1/node-enrollments", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+authToken)
+
+	resp, err := relayHTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("contacting relay: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("failed to create enrollment: %s", string(body))
+	}
+
+	var enrollment NodeEnrollment
+	if err := json.NewDecoder(resp.Body).Decode(&enrollment); err != nil {
+		return nil, fmt.Errorf("parsing enrollment response: %w", err)
+	}
+	return &enrollment, nil
+}
+
+func EnrollNode(dataDir string, opts RelayAuthOptions, enrollmentToken, nodeName string) error {
+	cfgAuth, err := loadConfigFromDir(dataDir)
+	if err != nil {
+		return err
+	}
+	relayURL := cfgAuth.relayURL
+	if opts.RelayURL != "" {
+		relayURL = opts.RelayURL
+	}
+	if relayURL == "" {
+		return fmt.Errorf("relay not configured (set CODEWIRE_RELAY_URL or pass --relay-url)")
+	}
+	redeemed, err := relay.RedeemNodeEnrollment(context.Background(), relayURL, enrollmentToken, nodeName)
+	if err != nil {
+		return err
+	}
+
+	cfg, err := config.LoadConfig(dataDir)
+	if err != nil {
+		cfg = &config.Config{}
+	}
+	cfg.RelayURL = &relayURL
+	cfg.RelayToken = &redeemed.NodeToken
+	if strings.TrimSpace(redeemed.NetworkID) != "" {
+		cfg.RelayNetwork = &redeemed.NetworkID
+	}
+	if strings.TrimSpace(redeemed.NodeName) != "" {
+		cfg.Node.Name = strings.TrimSpace(redeemed.NodeName)
+	} else if strings.TrimSpace(nodeName) != "" {
+		cfg.Node.Name = strings.TrimSpace(nodeName)
+	}
+	if err := config.SaveConfig(dataDir, cfg); err != nil {
+		return fmt.Errorf("saving relay config: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "Node %q enrolled\n", cfg.Node.Name)
+	return nil
+}
+
 func saveRelayNetwork(dataDir, networkID string) error {
 	cfg, err := config.LoadConfig(dataDir)
 	if err != nil {
@@ -1576,12 +1661,13 @@ func Request(target *Target, fromID *uint32, toID uint32, body string, timeout u
 // ---------------------------------------------------------------------------
 
 // Reply sends a reply to a pending request.
-func Reply(target *Target, fromID *uint32, requestID string, body string) error {
+func Reply(target *Target, fromID *uint32, requestID, replyToken, body string) error {
 	resp, err := requestResponse(target, &protocol.Request{
-		Type:      "MsgReply",
-		ID:        fromID,
-		RequestID: requestID,
-		Body:      body,
+		Type:       "MsgReply",
+		ID:         fromID,
+		RequestID:  requestID,
+		ReplyToken: replyToken,
+		Body:       body,
 	})
 	if err != nil {
 		return err
@@ -2098,24 +2184,21 @@ func Gateway(target *Target, name, execCmd, notifyMethod string) error {
 				continue
 			}
 			var reqData struct {
-				RequestID string `json:"request_id"`
-				From      uint32 `json:"from"`
-				FromName  string `json:"from_name"`
-				Body      string `json:"body"`
+				RequestID  string `json:"request_id"`
+				ReplyToken string `json:"reply_token"`
+				From       uint32 `json:"from"`
+				FromName   string `json:"from_name"`
+				Body       string `json:"body"`
 			}
 			if err := json.Unmarshal(resp.Event.Data, &reqData); err != nil {
 				continue
 			}
-			var targetSessionID uint32
-			if resp.SessionID != nil {
-				targetSessionID = *resp.SessionID
-			}
-			go gatewayHandleRequest(ctx, target, execCmd, notifyMethod, targetSessionID, reqData.RequestID, reqData.Body, reqData.FromName)
+			go gatewayHandleRequest(ctx, target, execCmd, notifyMethod, reqData.RequestID, reqData.ReplyToken, reqData.Body, reqData.FromName)
 		}
 	}
 }
 
-func gatewayHandleRequest(ctx context.Context, target *Target, execCmd, notifyMethod string, targetSessionID uint32, requestID, body, fromName string) {
+func gatewayHandleRequest(ctx context.Context, target *Target, execCmd, notifyMethod, requestID, replyToken, body, fromName string) {
 	reply := gatewayEvaluate(ctx, execCmd, body, fromName)
 	upperReply := strings.ToUpper(reply)
 
@@ -2123,16 +2206,11 @@ func gatewayHandleRequest(ctx context.Context, target *Target, execCmd, notifyMe
 		gatewayNotify(notifyMethod, body, fromName)
 	}
 
-	var fromID *uint32
-	if targetSessionID != 0 {
-		fromID = &targetSessionID
-	}
-
 	if _, err := requestResponse(target, &protocol.Request{
-		Type:      "MsgReply",
-		ID:        fromID,
-		RequestID: requestID,
-		Body:      reply,
+		Type:       "MsgReply",
+		RequestID:  requestID,
+		ReplyToken: replyToken,
+		Body:       reply,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "[cw gateway] reply error: %v\n", err)
 	} else {

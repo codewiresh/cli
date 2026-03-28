@@ -3,6 +3,8 @@ package relay
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -201,7 +203,9 @@ func buildMux(hub *NodeHub, sessions *PendingSessions, st store.Store, cfg Relay
 	// Node registration (issues a random node token).
 	mux.Handle("GET /api/v1/networks", authMiddleware(http.HandlerFunc(networkListHandler(st))))
 	mux.Handle("POST /api/v1/networks", authMiddleware(http.HandlerFunc(networkCreateHandler(st))))
-	mux.Handle("POST /api/v1/nodes", authMiddleware(http.HandlerFunc(nodeRegisterHandler(st))))
+	mux.Handle("POST /api/v1/node-enrollments", authMiddleware(http.HandlerFunc(nodeEnrollmentCreateHandler(st))))
+	mux.HandleFunc("POST /api/v1/node-enrollments/redeem", nodeEnrollmentRedeemHandler(st))
+	mux.Handle("POST /api/v1/nodes", authMiddleware(http.HandlerFunc(nodeRegisterDeprecatedHandler())))
 	mux.Handle("DELETE /api/v1/nodes/{name}", authMiddleware(http.HandlerFunc(nodeRevokeHandler(st))))
 	mux.Handle("GET /api/v1/nodes", authMiddleware(http.HandlerFunc(nodesListHandler(st))))
 
@@ -390,61 +394,116 @@ func networkCreateHandler(st store.Store) http.HandlerFunc {
 	}
 }
 
-// --- Node Registration ---
+// --- Node Enrollment ---
 
-func nodeRegisterHandler(st store.Store) http.HandlerFunc {
+type nodeEnrollmentCreateRequest struct {
+	NetworkID string `json:"network_id,omitempty"`
+	NodeName  string `json:"node_name,omitempty"`
+	Uses      int    `json:"uses,omitempty"`
+	TTL       string `json:"ttl,omitempty"`
+}
+
+type nodeEnrollmentRedeemRequest struct {
+	NodeName        string `json:"node_name,omitempty"`
+	EnrollmentToken string `json:"enrollment_token"`
+	PeerURL         string `json:"peer_url,omitempty"`
+}
+
+func nodeEnrollmentCreateHandler(st store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			NodeName  string `json:"node_name"`
-			NetworkID string `json:"network_id,omitempty"`
-			PeerURL   string `json:"peer_url,omitempty"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NodeName == "" {
-			http.Error(w, "node_name required", http.StatusBadRequest)
+		var req nodeEnrollmentCreateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
+
 		networkID, err := requiredNetworkID(req.NetworkID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+
 		auth := oauth.GetAuth(r.Context())
-		if _, ok, err := requireMembership(r.Context(), st, networkID, auth); err != nil {
+		member, ok, err := requireMembership(r.Context(), st, networkID, auth)
+		if err != nil {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
-		} else if !ok {
+		}
+		if !ok {
 			writeMembershipRequired(w)
 			return
 		}
 
-		token := generateToken()
-
-		var githubID *int64
-		if auth != nil && auth.UserID != 0 {
-			githubID = &auth.UserID
+		uses := req.Uses
+		if uses <= 0 {
+			uses = 1
+		}
+		ttl := 10 * time.Minute
+		if strings.TrimSpace(req.TTL) != "" {
+			parsed, parseErr := time.ParseDuration(req.TTL)
+			if parseErr != nil {
+				http.Error(w, "invalid ttl", http.StatusBadRequest)
+				return
+			}
+			ttl = parsed
 		}
 
-		node := store.NodeRecord{
-			NetworkID:    networkID,
-			Name:         req.NodeName,
-			Token:        token,
-			PeerURL:      strings.TrimSpace(req.PeerURL),
-			GitHubID:     githubID,
-			AuthorizedAt: time.Now().UTC(),
-			LastSeenAt:   time.Now().UTC(),
-		}
-		if err := st.NodeRegister(r.Context(), node); err != nil {
+		enrollment, token, err := createNodeEnrollment(r.Context(), st, networkID, member.Subject, member.Subject, req.NodeName, uses, ttl)
+		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
-			"status":     "registered",
-			"node_token": token,
-			"node_name":  req.NodeName,
-			"network_id": networkID,
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":               enrollment.ID,
+			"network_id":       enrollment.NetworkID,
+			"node_name":        enrollment.NodeName,
+			"owner_subject":    enrollment.OwnerSubject,
+			"issued_by":        enrollment.IssuedBy,
+			"uses_remaining":   enrollment.UsesRemaining,
+			"expires_at":       enrollment.ExpiresAt,
+			"enrollment_token": token,
 		})
+	}
+}
+
+func nodeEnrollmentRedeemHandler(st store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req nodeEnrollmentRedeemRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		redeemed, err := redeemNodeEnrollment(r.Context(), st, req.EnrollmentToken, req.NodeName, redeemEnrollmentOptions{
+			peerURL: req.PeerURL,
+		})
+		if err != nil {
+			switch err {
+			case errEnrollmentTokenRequired, errEnrollmentNodeNameRequired:
+				http.Error(w, err.Error(), http.StatusBadRequest)
+			case errEnrollmentInvalid, errEnrollmentNodeNameMismatch:
+				http.Error(w, err.Error(), http.StatusForbidden)
+			default:
+				http.Error(w, "internal error", http.StatusInternalServerError)
+			}
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"status":        "registered",
+			"node_token":    redeemed.NodeToken,
+			"node_name":     redeemed.NodeName,
+			"network_id":    redeemed.NetworkID,
+			"enrollment_id": redeemed.EnrollmentID,
+		})
+	}
+}
+
+func nodeRegisterDeprecatedHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "direct node registration is disabled; use /api/v1/node-enrollments and /api/v1/node-enrollments/redeem", http.StatusGone)
 	}
 }
 
@@ -773,27 +832,30 @@ func joinHandler(st store.Store) http.HandlerFunc {
 			githubID = invite.CreatedBy
 		}
 
-		token := generateToken()
-		node := store.NodeRecord{
-			NetworkID:    networkID,
-			Name:         req.NodeName,
-			Token:        token,
-			GitHubID:     githubID,
-			AuthorizedAt: time.Now().UTC(),
-			LastSeenAt:   time.Now().UTC(),
+		ownerSubject := ""
+		if githubID != nil {
+			ownerSubject = fmt.Sprintf("github:%d", *githubID)
 		}
-
-		if err := st.NodeRegister(r.Context(), node); err != nil {
+		_, enrollmentToken, err := createNodeEnrollment(r.Context(), st, networkID, ownerSubject, ownerSubject, req.NodeName, 1, 10*time.Minute)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		redeemed, err := redeemNodeEnrollment(r.Context(), st, enrollmentToken, req.NodeName, redeemEnrollmentOptions{
+			githubID: githubID,
+		})
+		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
-			"status":     "registered",
-			"node_token": token,
-			"node_name":  req.NodeName,
-			"network_id": networkID,
+			"status":        "registered",
+			"node_token":    redeemed.NodeToken,
+			"node_name":     redeemed.NodeName,
+			"network_id":    redeemed.NetworkID,
+			"enrollment_id": redeemed.EnrollmentID,
 		})
 	}
 }
@@ -992,4 +1054,9 @@ func generateToken() string {
 	b := make([]byte, 32)
 	rand.Read(b)
 	return fmt.Sprintf("%x", b)
+}
+
+func hashEnrollmentToken(token string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	return hex.EncodeToString(sum[:])
 }

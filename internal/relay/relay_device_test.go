@@ -295,6 +295,15 @@ func TestDevicePollHandler_Authorized(t *testing.T) {
 	if node.Name != "auth-node" {
 		t.Errorf("node.Name = %q, want %q", node.Name, "auth-node")
 	}
+	if node.EnrollmentID == "" {
+		t.Error("node.EnrollmentID should not be empty")
+	}
+	if node.OwnerSubject != "oidc:user_sub_abc" {
+		t.Errorf("node.OwnerSubject = %q, want %q", node.OwnerSubject, "oidc:user_sub_abc")
+	}
+	if node.AuthorizedBy != "oidc:user_sub_abc" {
+		t.Errorf("node.AuthorizedBy = %q, want %q", node.AuthorizedBy, "oidc:user_sub_abc")
+	}
 
 	// Step 4: poll again — should return cached authorized result.
 	pollBody2, _ := json.Marshal(map[string]string{"poll_token": authGot.PollToken})

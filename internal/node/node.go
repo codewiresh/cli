@@ -80,7 +80,7 @@ func NewNode(dataDir string) (*Node, error) {
 func (n *Node) Run(ctx context.Context) error {
 	// Write PID file.
 	pid := os.Getpid()
-	if err := os.WriteFile(n.pidPath, []byte(fmt.Sprintf("%d", pid)), 0o644); err != nil {
+	if err := os.WriteFile(n.pidPath, []byte(fmt.Sprintf("%d", pid)), 0o600); err != nil {
 		return fmt.Errorf("writing pid file: %w", err)
 	}
 
@@ -90,6 +90,10 @@ func (n *Node) Run(ctx context.Context) error {
 	ln, err := net.Listen("unix", n.socketPath)
 	if err != nil {
 		return fmt.Errorf("listening on unix socket: %w", err)
+	}
+	if err := os.Chmod(n.socketPath, 0o600); err != nil {
+		_ = ln.Close()
+		return fmt.Errorf("hardening unix socket permissions: %w", err)
 	}
 	slog.Info("listening on unix socket", "path", n.socketPath)
 

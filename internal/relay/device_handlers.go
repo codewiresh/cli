@@ -225,18 +225,18 @@ func devicePollHandler(st store.Store, p *oauth.OIDCProvider) http.HandlerFunc {
 			return
 		}
 
-		// Register node with a new random token.
-		nodeToken := generateToken()
-		if err := st.NodeRegister(r.Context(), store.NodeRecord{
-			NetworkID:    flow.NetworkID,
-			Name:         flow.NodeName,
-			Token:        nodeToken,
-			AuthorizedAt: now,
-			LastSeenAt:   now,
-		}); err != nil {
+		subject := "oidc:" + sub
+		_, enrollmentToken, err := createNodeEnrollment(r.Context(), st, flow.NetworkID, subject, subject, flow.NodeName, 1, 10*time.Minute)
+		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
+		redeemed, err := redeemNodeEnrollment(r.Context(), st, enrollmentToken, flow.NodeName, redeemEnrollmentOptions{})
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		nodeToken := redeemed.NodeToken
 
 		// Mark the device flow as complete.
 		if err := st.OIDCDeviceFlowComplete(r.Context(), req.PollToken, nodeToken); err != nil {

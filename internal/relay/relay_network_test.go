@@ -68,20 +68,15 @@ func TestNodesListRequiresMembershipAndScopesByNetwork(t *testing.T) {
 
 	registerNode := func(networkID, nodeName string) {
 		t.Helper()
-		body, _ := json.Marshal(map[string]string{
-			"network_id": networkID,
-			"node_name":  nodeName,
-		})
-		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/nodes", bytes.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer admin-token")
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Fatalf("register node: %v", err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("register node status = %d", resp.StatusCode)
+		now := time.Now().UTC()
+		if err := st.NodeRegister(context.Background(), store.NodeRecord{
+			NetworkID:    networkID,
+			Name:         nodeName,
+			Token:        "token-" + networkID + "-" + nodeName,
+			AuthorizedAt: now,
+			LastSeenAt:   now,
+		}); err != nil {
+			t.Fatalf("NodeRegister(%s, %s): %v", networkID, nodeName, err)
 		}
 	}
 
@@ -145,6 +140,139 @@ func TestNodesListRequiresMembershipAndScopesByNetwork(t *testing.T) {
 	}
 	if len(nodes) != 1 || nodes[0].NetworkID != "network-a" {
 		t.Fatalf("all nodes = %#v, want only network-a membership scope", nodes)
+	}
+}
+
+func TestDirectNodeRegistrationDeprecated(t *testing.T) {
+	st, err := store.NewSQLiteStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	memberToken := createGitHubSession(t, st, 404, "deprecator")
+	now := time.Now().UTC()
+	if err := st.NetworkMemberUpsert(context.Background(), store.NetworkMember{
+		NetworkID: "network-a",
+		Subject:   "github:404",
+		Role:      store.NetworkRoleOwner,
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("NetworkMemberUpsert: %v", err)
+	}
+
+	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+		BaseURL:   "http://relay.test",
+		AuthMode:  "token",
+		AuthToken: "admin-token",
+	}, nil, networkauth.NewReplayCache(), nil))
+	defer srv.Close()
+
+	body, _ := json.Marshal(map[string]string{
+		"network_id": "network-a",
+		"node_name":  "dev-1",
+	})
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/nodes", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+memberToken)
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("direct node registration request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusGone {
+		t.Fatalf("direct node registration status = %d, want 410", resp.StatusCode)
+	}
+}
+
+func TestNodeEnrollmentCreateAndRedeem(t *testing.T) {
+	st, err := store.NewSQLiteStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	memberToken := createGitHubSession(t, st, 303, "builder")
+	now := time.Now().UTC()
+	if err := st.NetworkMemberUpsert(context.Background(), store.NetworkMember{
+		NetworkID: "network-a",
+		Subject:   "github:303",
+		Role:      store.NetworkRoleOwner,
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("NetworkMemberUpsert: %v", err)
+	}
+
+	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+		BaseURL:   "http://relay.test",
+		AuthMode:  "token",
+		AuthToken: "admin-token",
+	}, nil, networkauth.NewReplayCache(), nil))
+	defer srv.Close()
+
+	body, _ := json.Marshal(map[string]any{
+		"network_id": "network-a",
+		"node_name":  "dev-1",
+		"uses":       1,
+		"ttl":        "10m",
+	})
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/node-enrollments", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+memberToken)
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("create enrollment: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("create enrollment status = %d", resp.StatusCode)
+	}
+
+	var created struct {
+		ID              string `json:"id"`
+		EnrollmentToken string `json:"enrollment_token"`
+		NetworkID       string `json:"network_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode enrollment: %v", err)
+	}
+	if created.EnrollmentToken == "" || created.ID == "" || created.NetworkID != "network-a" {
+		t.Fatalf("created enrollment = %+v", created)
+	}
+
+	redeemBody, _ := json.Marshal(map[string]string{
+		"enrollment_token": created.EnrollmentToken,
+		"node_name":        "dev-1",
+	})
+	redeemReq, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/node-enrollments/redeem", bytes.NewReader(redeemBody))
+	redeemReq.Header.Set("Content-Type", "application/json")
+	redeemResp, err := srv.Client().Do(redeemReq)
+	if err != nil {
+		t.Fatalf("redeem enrollment: %v", err)
+	}
+	defer redeemResp.Body.Close()
+	if redeemResp.StatusCode != http.StatusOK {
+		t.Fatalf("redeem enrollment status = %d", redeemResp.StatusCode)
+	}
+
+	var redeemed struct {
+		NodeToken string `json:"node_token"`
+		NodeName  string `json:"node_name"`
+		NetworkID string `json:"network_id"`
+	}
+	if err := json.NewDecoder(redeemResp.Body).Decode(&redeemed); err != nil {
+		t.Fatalf("decode redeem response: %v", err)
+	}
+	if redeemed.NodeToken == "" || redeemed.NodeName != "dev-1" || redeemed.NetworkID != "network-a" {
+		t.Fatalf("redeemed = %+v", redeemed)
+	}
+
+	node, err := st.NodeGetByToken(context.Background(), redeemed.NodeToken)
+	if err != nil {
+		t.Fatalf("NodeGetByToken: %v", err)
+	}
+	if node == nil || node.OwnerSubject != "github:303" || node.EnrollmentID != created.ID {
+		t.Fatalf("node = %+v", node)
 	}
 }
 
@@ -334,6 +462,78 @@ func TestAuthenticatedNetworkJoinAddsMembership(t *testing.T) {
 	}
 	if member == nil || member.Role != store.NetworkRoleMember {
 		t.Fatalf("member = %#v, want joined member", member)
+	}
+}
+
+func TestInviteJoinBootstrapsNodeViaEnrollment(t *testing.T) {
+	st, err := store.NewSQLiteStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	now := time.Now().UTC()
+	creatorID := int64(101)
+	if err := st.InviteCreate(context.Background(), store.Invite{
+		NetworkID:     "network-invite",
+		Token:         "CW-INV-BOOTSTRAP",
+		CreatedBy:     &creatorID,
+		UsesRemaining: 1,
+		ExpiresAt:     now.Add(time.Hour),
+		CreatedAt:     now,
+	}); err != nil {
+		t.Fatalf("InviteCreate: %v", err)
+	}
+
+	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+		BaseURL:   "http://relay.test",
+		AuthMode:  "token",
+		AuthToken: "admin-token",
+	}, nil, networkauth.NewReplayCache(), nil))
+	defer srv.Close()
+
+	body, _ := json.Marshal(map[string]string{
+		"invite_token": "CW-INV-BOOTSTRAP",
+		"node_name":    "bootstrap-node",
+	})
+	resp, err := srv.Client().Post(srv.URL+"/api/v1/join", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("join bootstrap: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("join bootstrap status = %d", resp.StatusCode)
+	}
+
+	var result struct {
+		NodeToken    string `json:"node_token"`
+		EnrollmentID string `json:"enrollment_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode join bootstrap: %v", err)
+	}
+	if result.NodeToken == "" || result.EnrollmentID == "" {
+		t.Fatalf("join bootstrap result = %+v", result)
+	}
+
+	node, err := st.NodeGetByToken(context.Background(), result.NodeToken)
+	if err != nil {
+		t.Fatalf("NodeGetByToken: %v", err)
+	}
+	if node == nil {
+		t.Fatal("expected node")
+	}
+	if node.Name != "bootstrap-node" || node.NetworkID != "network-invite" {
+		t.Fatalf("node = %#v", node)
+	}
+	if node.EnrollmentID == "" {
+		t.Fatal("expected enrollment_id on node")
+	}
+	if node.OwnerSubject != "github:101" || node.AuthorizedBy != "github:101" {
+		t.Fatalf("node ownership = %#v", node)
+	}
+	if node.GitHubID == nil || *node.GitHubID != creatorID {
+		t.Fatalf("node github_id = %#v, want %d", node.GitHubID, creatorID)
 	}
 }
 

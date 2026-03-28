@@ -232,6 +232,7 @@ type SessionManager struct {
 
 type pendingRequest struct {
 	replyCh                   chan ReplyData
+	replyToken                string
 	allowedReplierSessionID   uint32
 	allowedReplierSessionName string
 }
@@ -240,8 +241,11 @@ type pendingRequest struct {
 // sessions.json (if present) to restore the next session ID counter. If the
 // file is corrupt it is backed up and an empty session list is used.
 func NewSessionManager(dataDir string) (*SessionManager, error) {
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("creating data dir: %w", err)
+	}
+	if err := os.Chmod(dataDir, 0o700); err != nil {
+		return nil, fmt.Errorf("hardening data dir permissions: %w", err)
 	}
 
 	var startID uint32 = 1
@@ -470,6 +474,7 @@ func (m *SessionManager) sendRequestWithMetadata(fromID uint32, fromNameOverride
 	}
 
 	requestID := randomRequestID()
+	replyToken := randomReplyToken()
 
 	var fromName string
 	if fromNameOverride != "" {
@@ -485,12 +490,13 @@ func (m *SessionManager) sendRequestWithMetadata(fromID uint32, fromNameOverride
 	toSess.mu.Unlock()
 
 	reqData := RequestData{
-		RequestID: requestID,
-		From:      fromID,
-		FromName:  fromName,
-		To:        toID,
-		ToName:    toName,
-		Body:      body,
+		RequestID:  requestID,
+		ReplyToken: replyToken,
+		From:       fromID,
+		FromName:   fromName,
+		To:         toID,
+		ToName:     toName,
+		Body:       body,
 	}
 	event := NewRequestEvent(reqData)
 
@@ -512,6 +518,7 @@ func (m *SessionManager) sendRequestWithMetadata(fromID uint32, fromNameOverride
 	m.pendingRequestsMu.Lock()
 	m.pendingRequests[requestID] = pendingRequest{
 		replyCh:                   replyCh,
+		replyToken:                replyToken,
 		allowedReplierSessionID:   toID,
 		allowedReplierSessionName: toName,
 	}
@@ -523,15 +530,21 @@ func (m *SessionManager) sendRequestWithMetadata(fromID uint32, fromNameOverride
 // SendReply sends a reply to a pending request. It looks up the reply channel,
 // sends the reply, and records the reply event in both sessions' message logs.
 func (m *SessionManager) SendReply(fromID uint32, requestID string, body string) error {
-	return m.sendReplyWithMetadata(fromID, "", nil, requestID, body, true)
+	return m.sendReplyWithMetadata(fromID, "", nil, requestID, "", body, true)
 }
 
 // SendRemoteReply sends a reply from an authenticated remote sender.
 func (m *SessionManager) SendRemoteReply(fromName string, fromSessionID *uint32, requestID string, body string) error {
-	return m.sendReplyWithMetadata(0, fromName, fromSessionID, requestID, body, false)
+	return m.sendReplyWithMetadata(0, fromName, fromSessionID, requestID, "", body, false)
 }
 
-func (m *SessionManager) sendReplyWithMetadata(fromID uint32, fromNameOverride string, fromSessionIDOverride *uint32, requestID string, body string, logSender bool) error {
+// SendReplyWithToken redeems a request-scoped reply token instead of trusting
+// caller-supplied session identity on the wire.
+func (m *SessionManager) SendReplyWithToken(requestID, replyToken, body string) error {
+	return m.sendReplyWithMetadata(0, "", nil, requestID, replyToken, body, true)
+}
+
+func (m *SessionManager) sendReplyWithMetadata(fromID uint32, fromNameOverride string, fromSessionIDOverride *uint32, requestID, replyToken, body string, logSender bool) error {
 	m.pendingRequestsMu.Lock()
 	pending, ok := m.pendingRequests[requestID]
 	m.pendingRequestsMu.Unlock()
@@ -543,6 +556,16 @@ func (m *SessionManager) sendReplyWithMetadata(fromID uint32, fromNameOverride s
 	effectiveFromID := fromID
 	if fromSessionIDOverride != nil {
 		effectiveFromID = *fromSessionIDOverride
+	}
+	if replyToken != "" {
+		if replyToken != pending.replyToken {
+			return fmt.Errorf("invalid reply token for request %q", requestID)
+		}
+	}
+	// Request-scoped reply tokens are the explicit capability for callers that
+	// do not otherwise have an authenticated session identity on the wire.
+	if effectiveFromID == 0 && fromNameOverride == "" && fromSessionIDOverride == nil && replyToken != "" {
+		effectiveFromID = pending.allowedReplierSessionID
 	}
 	if effectiveFromID == 0 || effectiveFromID != pending.allowedReplierSessionID {
 		return fmt.Errorf("request %q may only be replied to by session %d", requestID, pending.allowedReplierSessionID)
@@ -583,7 +606,7 @@ func (m *SessionManager) sendReplyWithMetadata(fromID uint32, fromNameOverride s
 	if logSender && fromOK && fromSess.messageLog != nil {
 		fromSess.messageLog.Append(event)
 	}
-	if logSender && fromID != 0 {
+	if logSender && effectiveFromID != 0 {
 		m.Subscriptions.Publish(effectiveFromID, nil, event)
 	}
 
@@ -627,6 +650,10 @@ func randomMessageID() string {
 
 func randomRequestID() string {
 	return randomOpaqueID("req_")
+}
+
+func randomReplyToken() string {
+	return randomOpaqueID("rpl_")
 }
 
 func randomOpaqueID(prefix string) string {

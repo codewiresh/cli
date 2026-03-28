@@ -941,15 +941,16 @@ func eventToMessageResponse(e session.Event) *protocol.MessageResponse {
 			return nil
 		}
 		return &protocol.MessageResponse{
-			MessageID: d.RequestID,
-			Timestamp: e.Timestamp.Format(time.RFC3339Nano),
-			From:      d.From,
-			FromName:  d.FromName,
-			To:        d.To,
-			ToName:    d.ToName,
-			Body:      d.Body,
-			EventType: string(e.Type),
-			RequestID: d.RequestID,
+			MessageID:  d.RequestID,
+			Timestamp:  e.Timestamp.Format(time.RFC3339Nano),
+			From:       d.From,
+			FromName:   d.FromName,
+			To:         d.To,
+			ToName:     d.ToName,
+			Body:       d.Body,
+			EventType:  string(e.Type),
+			RequestID:  d.RequestID,
+			ReplyToken: d.ReplyToken,
 		}
 	case session.EventReply:
 		var d session.ReplyData
@@ -1114,8 +1115,18 @@ func handleMsgReply(writer connection.FrameWriter, manager *session.SessionManag
 	if req.ID != nil {
 		fromID = *req.ID
 	}
+	if fromID == 0 && strings.TrimSpace(req.ReplyToken) == "" {
+		_ = writer.SendResponse(&protocol.Response{Type: "Error", Message: "missing sender identity or reply_token"})
+		return
+	}
 
-	if err := manager.SendReply(fromID, req.RequestID, req.Body); err != nil {
+	var err error
+	if strings.TrimSpace(req.ReplyToken) != "" {
+		err = manager.SendReplyWithToken(req.RequestID, strings.TrimSpace(req.ReplyToken), req.Body)
+	} else {
+		err = manager.SendReply(fromID, req.RequestID, req.Body)
+	}
+	if err != nil {
 		_ = writer.SendResponse(&protocol.Response{Type: "Error", Message: err.Error()})
 		return
 	}

@@ -42,10 +42,10 @@ type SessionCreatedData struct {
 }
 
 type SessionStatusData struct {
-	From       string  `json:"from"`
-	To         string  `json:"to"`
-	ExitCode   *int    `json:"exit_code,omitempty"`
-	DurationMs *int64  `json:"duration_ms,omitempty"`
+	From       string `json:"from"`
+	To         string `json:"to"`
+	ExitCode   *int   `json:"exit_code,omitempty"`
+	DurationMs *int64 `json:"duration_ms,omitempty"`
 }
 
 type OutputSummaryData struct {
@@ -76,12 +76,13 @@ type DirectMessageData struct {
 }
 
 type RequestData struct {
-	RequestID string `json:"request_id"`
-	From      uint32 `json:"from"`
-	FromName  string `json:"from_name,omitempty"`
-	To        uint32 `json:"to"`
-	ToName    string `json:"to_name,omitempty"`
-	Body      string `json:"body"`
+	RequestID  string `json:"request_id"`
+	ReplyToken string `json:"reply_token,omitempty"`
+	From       uint32 `json:"from"`
+	FromName   string `json:"from_name,omitempty"`
+	To         uint32 `json:"to"`
+	ToName     string `json:"to_name,omitempty"`
+	Body       string `json:"body"`
 }
 
 type ReplyData struct {

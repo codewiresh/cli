@@ -347,23 +347,27 @@ func TestRequestReplyE2E(t *testing.T) {
 	}
 
 	// Find the request message and extract request_id.
-	var requestID string
+	var requestID, replyToken string
 	for _, msg := range *resp.Messages {
 		if msg.Body == "what is the status?" {
 			requestID = msg.RequestID
+			replyToken = msg.ReplyToken
 			break
 		}
 	}
 	if requestID == "" {
 		t.Fatalf("could not find request_id in responder's inbox, got %+v", *resp.Messages)
 	}
+	if replyToken == "" {
+		t.Fatalf("could not find reply_token in responder's inbox, got %+v", *resp.Messages)
+	}
 
 	// Send the reply.
 	resp = requestResponse(t, sock, &protocol.Request{
-		Type:      "MsgReply",
-		ID:        uint32Ptr(responderID),
-		RequestID: requestID,
-		Body:      "all systems go",
+		Type:       "MsgReply",
+		RequestID:  requestID,
+		ReplyToken: replyToken,
+		Body:       "all systems go",
 	})
 	if resp.Type != "MsgReplySent" {
 		t.Fatalf("MsgReply: expected MsgReplySent, got %s: %s", resp.Type, resp.Message)

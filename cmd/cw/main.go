@@ -1227,6 +1227,7 @@ func networkCmd() *cobra.Command {
 		networksCmd(),
 		createNetworkCmd(),
 		joinNetworkCmd(),
+		enrollCmd(),
 		currentNetworkCmd(),
 		useNetworkCmd(),
 		clearNetworkCmd(),
@@ -1235,6 +1236,86 @@ func networkCmd() *cobra.Command {
 		revokeCmd(),
 	)
 
+	return cmd
+}
+
+func enrollCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "enroll",
+		Short: "Create or redeem node enrollment grants",
+	}
+
+	cmd.AddCommand(
+		enrollCreateCmd(),
+		enrollRedeemCmd(),
+	)
+
+	return cmd
+}
+
+func enrollCreateCmd() *cobra.Command {
+	var (
+		nodeName  string
+		uses      int
+		ttl       string
+		networkID string
+		relayURL  string
+		authToken string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create a short-lived node enrollment token",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			enrollment, err := client.CreateNodeEnrollment(dataDir(), client.RelayAuthOptions{
+				RelayURL:  relayURL,
+				AuthToken: authToken,
+				NetworkID: networkID,
+			}, nodeName, uses, ttl)
+			if err != nil {
+				return err
+			}
+
+			fmt.Fprintf(os.Stderr, "Enrollment created\n\n")
+			fmt.Fprintf(os.Stderr, "  Token:   %s\n", enrollment.EnrollmentToken)
+			fmt.Fprintf(os.Stderr, "  Network: %s\n", enrollment.NetworkID)
+			if enrollment.NodeName != "" {
+				fmt.Fprintf(os.Stderr, "  Node:    %s\n", enrollment.NodeName)
+			}
+			fmt.Fprintf(os.Stderr, "  Uses:    %d\n", enrollment.UsesRemaining)
+			fmt.Fprintf(os.Stderr, "  Expires: %s\n", enrollment.ExpiresAt.Format(time.RFC3339))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&nodeName, "node-name", "", "Optional node name to bind the enrollment to")
+	cmd.Flags().IntVar(&uses, "uses", 1, "Number of times the enrollment can be redeemed")
+	cmd.Flags().StringVar(&ttl, "ttl", "10m", "Time-to-live for the enrollment (e.g. 5m, 10m, 1h)")
+	cmd.Flags().StringVar(&networkID, "network", "", "Network to create the enrollment in (default: configured network)")
+	cmd.Flags().StringVar(&relayURL, "relay-url", "", "Relay base URL override")
+	cmd.Flags().StringVar(&authToken, "token", "", "Relay auth token override (session token or token-mode admin token)")
+	return cmd
+}
+
+func enrollRedeemCmd() *cobra.Command {
+	var (
+		nodeName string
+		relayURL string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "redeem <token>",
+		Short: "Redeem a node enrollment token and store the resulting node token locally",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return client.EnrollNode(dataDir(), client.RelayAuthOptions{
+				RelayURL: relayURL,
+			}, args[0], nodeName)
+		},
+	}
+
+	cmd.Flags().StringVar(&nodeName, "node-name", "", "Node name to redeem as (required unless embedded in the enrollment)")
+	cmd.Flags().StringVar(&relayURL, "relay-url", "", "Relay base URL override")
 	return cmd
 }
 
@@ -1760,7 +1841,7 @@ func requestCmd() *cobra.Command {
 // ---------------------------------------------------------------------------
 
 func replyCmd() *cobra.Command {
-	var from string
+	var from, replyToken string
 
 	cmd := &cobra.Command{
 		Use:   "reply <request-id> <body>",
@@ -1816,11 +1897,12 @@ func replyCmd() *cobra.Command {
 				fromID = &resolved
 			}
 
-			return client.Reply(target, fromID, args[0], args[1])
+			return client.Reply(target, fromID, args[0], replyToken, args[1])
 		},
 	}
 
 	cmd.Flags().StringVarP(&from, "from", "f", "", "Sender session (ID or name)")
+	cmd.Flags().StringVar(&replyToken, "reply-token", "", "Request-scoped reply capability for system or detached responders")
 
 	return cmd
 }

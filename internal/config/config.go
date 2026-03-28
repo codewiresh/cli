@@ -185,12 +185,15 @@ func deriveHostedRelayURL() string {
 
 // SaveConfig writes config.toml inside dataDir, creating the directory if needed.
 func SaveConfig(dataDir string, cfg *Config) error {
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return fmt.Errorf("creating data dir: %w", err)
+	}
+	if err := os.Chmod(dataDir, 0o700); err != nil {
+		return fmt.Errorf("hardening data dir permissions: %w", err)
 	}
 
 	path := filepath.Join(dataDir, "config.toml")
-	f, err := os.Create(path)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("creating %s: %w", path, err)
 	}
@@ -227,12 +230,15 @@ func LoadServersConfig(dataDir string) (*ServersConfig, error) {
 // Save writes the ServersConfig to servers.toml inside dataDir, creating
 // the directory if necessary.
 func (s *ServersConfig) Save(dataDir string) error {
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return fmt.Errorf("creating data dir: %w", err)
+	}
+	if err := os.Chmod(dataDir, 0o700); err != nil {
+		return fmt.Errorf("hardening data dir permissions: %w", err)
 	}
 
 	path := filepath.Join(dataDir, "servers.toml")
-	f, err := os.Create(path)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("creating %s: %w", path, err)
 	}

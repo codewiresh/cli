@@ -420,6 +420,10 @@ func getNodeTools() []tool {
 						"type":        "integer",
 						"description": "Session ID sending the reply (optional)",
 					},
+					"reply_token": map[string]interface{}{
+						"type":        "string",
+						"description": "Request-scoped reply capability for detached/system responders",
+					},
 				},
 				"required": []string{"request_id", "body"},
 			},
@@ -1027,12 +1031,14 @@ func toolReply(dataDir string, args map[string]interface{}) (string, error) {
 	if requestID == "" {
 		return "", fmt.Errorf("missing request_id")
 	}
+	replyToken, _ := args["reply_token"].(string)
 	body, _ := args["body"].(string)
 
 	req := &protocol.Request{
-		Type:      "MsgReply",
-		RequestID: requestID,
-		Body:      body,
+		Type:       "MsgReply",
+		RequestID:  requestID,
+		ReplyToken: replyToken,
+		Body:       body,
 	}
 	if v, ok := args["from_session_id"].(float64); ok {
 		id := uint32(v)
