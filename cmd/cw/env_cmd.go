@@ -37,6 +37,7 @@ func envParentCmd() *cobra.Command {
 	cmd.AddCommand(envPruneCmd())
 	cmd.AddCommand(envNukeCmd())
 	cmd.AddCommand(envLogsCmd())
+	cmd.AddCommand(portParentCmd())
 	return cmd
 }
 

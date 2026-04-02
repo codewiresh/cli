@@ -411,3 +411,19 @@ type FileEntry struct {
 	Mode    string `json:"mode"`
 	ModTime string `json:"mod_time"`
 }
+
+type EnvironmentPort struct {
+	ID            string `json:"id"`
+	EnvironmentID string `json:"environment_id"`
+	Port          int    `json:"port"`
+	Label         string `json:"label"`
+	Access        string `json:"access"`
+	PreviewURL    string `json:"preview_url,omitempty"`
+	CreatedAt     string `json:"created_at"`
+}
+
+type CreatePortRequest struct {
+	Port   int    `json:"port"`
+	Label  string `json:"label"`
+	Access string `json:"access,omitempty"`
+}

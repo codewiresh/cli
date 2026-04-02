@@ -91,6 +91,26 @@ func (c *Client) StartEnvironment(orgID, envID string) (*StatusResponse, error) 
 	return &resp, nil
 }
 
+func (c *Client) CreatePort(orgID, envID string, req *CreatePortRequest) (*EnvironmentPort, error) {
+	var port EnvironmentPort
+	if err := c.do("POST", fmt.Sprintf("/api/v1/organizations/%s/environments/%s/ports", orgID, envID), req, &port); err != nil {
+		return nil, err
+	}
+	return &port, nil
+}
+
+func (c *Client) ListPorts(orgID, envID string) ([]EnvironmentPort, error) {
+	var ports []EnvironmentPort
+	if err := c.do("GET", fmt.Sprintf("/api/v1/organizations/%s/environments/%s/ports", orgID, envID), nil, &ports); err != nil {
+		return nil, err
+	}
+	return ports, nil
+}
+
+func (c *Client) DeletePort(orgID, envID, portID string) error {
+	return c.do("DELETE", fmt.Sprintf("/api/v1/organizations/%s/environments/%s/ports/%s", orgID, envID, portID), nil, nil)
+}
+
 func (c *Client) ListPresets(orgID string) ([]Preset, error) {
 	path := fmt.Sprintf("/api/v1/organizations/%s/presets", orgID)
 	var presets []Preset
