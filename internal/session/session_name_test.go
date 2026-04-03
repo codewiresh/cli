@@ -212,6 +212,72 @@ func TestNameReleasedOnKill(t *testing.T) {
 	}
 }
 
+func TestSessionHooksReceiveNameAndTags(t *testing.T) {
+	dir := t.TempDir()
+	sm, err := NewSessionManager(dir)
+	if err != nil {
+		t.Fatalf("NewSessionManager: %v", err)
+	}
+
+	type nameChange struct {
+		oldName string
+		newName string
+		tags    []string
+	}
+	nameChanges := make([]nameChange, 0, 2)
+	exitCalls := make([]nameChange, 0, 1)
+	sm.SetNameChangeHook(func(_ uint32, oldName, newName string, tags []string) error {
+		nameChanges = append(nameChanges, nameChange{
+			oldName: oldName,
+			newName: newName,
+			tags:    append([]string(nil), tags...),
+		})
+		return nil
+	})
+	sm.SetSessionExitHook(func(_ uint32, name string, tags []string) {
+		exitCalls = append(exitCalls, nameChange{
+			newName: name,
+			tags:    append([]string(nil), tags...),
+		})
+	})
+
+	id, err := sm.Launch([]string{"sleep", "5"}, "/tmp", nil, nil, "", "group:mesh", "alpha")
+	if err != nil {
+		t.Fatalf("Launch failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = sm.Kill(id)
+		time.Sleep(100 * time.Millisecond)
+	})
+
+	if err := sm.SetName(id, "agent-a"); err != nil {
+		t.Fatalf("SetName(agent-a): %v", err)
+	}
+	if err := sm.SetName(id, "agent-b"); err != nil {
+		t.Fatalf("SetName(agent-b): %v", err)
+	}
+	if err := sm.Kill(id); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	if len(nameChanges) != 2 {
+		t.Fatalf("nameChanges = %#v", nameChanges)
+	}
+	if nameChanges[0].oldName != "" || nameChanges[0].newName != "agent-a" {
+		t.Fatalf("initial name change = %#v", nameChanges[0])
+	}
+	if nameChanges[1].oldName != "agent-a" || nameChanges[1].newName != "agent-b" {
+		t.Fatalf("rename change = %#v", nameChanges[1])
+	}
+	if len(exitCalls) == 0 || exitCalls[0].newName != "agent-b" {
+		t.Fatalf("exitCalls = %#v", exitCalls)
+	}
+	if len(exitCalls[0].tags) != 2 || exitCalls[0].tags[0] != "group:mesh" {
+		t.Fatalf("exit hook tags = %#v", exitCalls[0].tags)
+	}
+}
+
 func TestNameReleasedOnNaturalExit(t *testing.T) {
 	dir := t.TempDir()
 	sm, err := NewSessionManager(dir)

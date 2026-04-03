@@ -8,10 +8,18 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/codewiresh/codewire/internal/store"
 )
 
 // FetchVerifierBundle fetches the current verifier bundle for a network.
 func FetchVerifierBundle(ctx context.Context, client *http.Client, relayURL, networkID string) (*VerifierBundle, error) {
+	return FetchVerifierBundleWithToken(ctx, client, relayURL, networkID, "")
+}
+
+// FetchVerifierBundleWithToken fetches the current verifier bundle for a
+// network, optionally authenticating with a bearer token.
+func FetchVerifierBundleWithToken(ctx context.Context, client *http.Client, relayURL, networkID, authToken string) (*VerifierBundle, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -23,6 +31,9 @@ func FetchVerifierBundle(ctx context.Context, client *http.Client, relayURL, net
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("building verifier bundle request: %w", err)
+	}
+	if strings.TrimSpace(authToken) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(authToken))
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -123,4 +134,100 @@ func IssueNodeSenderDelegation(ctx context.Context, client *http.Client, relayUR
 		return nil, fmt.Errorf("decoding sender delegation response: %w", err)
 	}
 	return &issued, nil
+}
+
+// FetchNodeGroupBindings fetches the effective group bindings for one session on
+// the authenticated node.
+func FetchNodeGroupBindings(ctx context.Context, client *http.Client, relayURL, nodeToken, nodeName, sessionName string) ([]store.GroupBinding, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	query := url.Values{}
+	if strings.TrimSpace(nodeName) != "" {
+		query.Set("node_name", strings.TrimSpace(nodeName))
+	}
+	query.Set("session_name", strings.TrimSpace(sessionName))
+
+	requestURL := strings.TrimRight(strings.TrimSpace(relayURL), "/") + "/api/v1/groups/bindings?" + query.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("building group bindings request: %w", err)
+	}
+	if strings.TrimSpace(nodeToken) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(nodeToken))
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetching group bindings: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetching group bindings returned HTTP %d", resp.StatusCode)
+	}
+	var bindings []store.GroupBinding
+	if err := json.NewDecoder(resp.Body).Decode(&bindings); err != nil {
+		return nil, fmt.Errorf("decoding group bindings response: %w", err)
+	}
+	return bindings, nil
+}
+
+// AddNodeGroupMember registers one session on the authenticated node as a group member.
+func AddNodeGroupMember(ctx context.Context, client *http.Client, relayURL, nodeToken, groupName, nodeName, sessionName string) error {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	payload, err := json.Marshal(map[string]string{
+		"node_name":    strings.TrimSpace(nodeName),
+		"session_name": strings.TrimSpace(sessionName),
+	})
+	if err != nil {
+		return fmt.Errorf("encoding group member add request: %w", err)
+	}
+	requestURL := strings.TrimRight(strings.TrimSpace(relayURL), "/") + "/api/v1/groups/" + url.PathEscape(strings.TrimSpace(groupName)) + "/members"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("building group member add request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if strings.TrimSpace(nodeToken) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(nodeToken))
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("adding group member: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("adding group member returned HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// RemoveNodeGroupMember removes one session on the authenticated node from a group.
+func RemoveNodeGroupMember(ctx context.Context, client *http.Client, relayURL, nodeToken, groupName, nodeName, sessionName string) error {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	query := url.Values{}
+	if strings.TrimSpace(nodeName) != "" {
+		query.Set("node_name", strings.TrimSpace(nodeName))
+	}
+	query.Set("session_name", strings.TrimSpace(sessionName))
+	requestURL := strings.TrimRight(strings.TrimSpace(relayURL), "/") + "/api/v1/groups/" + url.PathEscape(strings.TrimSpace(groupName)) + "/members?" + query.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, requestURL, nil)
+	if err != nil {
+		return fmt.Errorf("building group member remove request: %w", err)
+	}
+	if strings.TrimSpace(nodeToken) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(nodeToken))
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("removing group member: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("removing group member returned HTTP %d", resp.StatusCode)
+	}
+	return nil
 }

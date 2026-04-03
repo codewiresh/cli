@@ -37,6 +37,47 @@ type NetworkMember struct {
 	CreatedBy string    `json:"created_by,omitempty"`
 }
 
+const (
+	GroupMessagesInternalOnly = "internal-only"
+	GroupMessagesOpen         = "open"
+	GroupDebugNone            = "none"
+	GroupDebugObserveOnly     = "observe-only"
+	GroupDebugFull            = "full"
+)
+
+// Group is a named communication boundary inside one network.
+type Group struct {
+	NetworkID string    `json:"network_id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+	CreatedBy string    `json:"created_by,omitempty"`
+}
+
+// GroupMember binds one named session on one node to a group.
+type GroupMember struct {
+	NetworkID   string    `json:"network_id"`
+	GroupName   string    `json:"group_name"`
+	NodeName    string    `json:"node_name"`
+	SessionName string    `json:"session_name"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// GroupPolicy controls interaction rules for one group.
+type GroupPolicy struct {
+	NetworkID      string    `json:"network_id"`
+	GroupName      string    `json:"group_name"`
+	MessagesPolicy string    `json:"messages_policy"`
+	DebugPolicy    string    `json:"debug_policy"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// GroupBinding is the effective policy-bearing membership of one session.
+type GroupBinding struct {
+	GroupName      string `json:"group_name"`
+	MessagesPolicy string `json:"messages_policy"`
+	DebugPolicy    string `json:"debug_policy"`
+}
+
 // NodeRecord is a registered relay node.
 type NodeRecord struct {
 	NetworkID    string    `json:"network_id"`
@@ -157,6 +198,30 @@ type DeviceCode struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+// AccessGrant records a signed remote access capability issued by the relay.
+type AccessGrant struct {
+	ID                  string     `json:"id"`
+	NetworkID           string     `json:"network_id"`
+	TargetNode          string     `json:"target_node"`
+	SessionID           *uint32    `json:"session_id,omitempty"`
+	SessionName         string     `json:"session_name,omitempty"`
+	Verbs               []string   `json:"verbs"`
+	AudienceSubjectKind string     `json:"audience_subject_kind"`
+	AudienceSubjectID   string     `json:"audience_subject_id"`
+	AudienceDisplay     string     `json:"audience_display,omitempty"`
+	IssuedBy            string     `json:"issued_by,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
+	ExpiresAt           time.Time  `json:"expires_at"`
+	RevokedAt           *time.Time `json:"revoked_at,omitempty"`
+}
+
+// AccessGrantFilter narrows relay grant listing.
+type AccessGrantFilter struct {
+	TargetNode        string
+	AudienceSubjectID string
+	ActiveOnly        bool
+}
+
 // Store is the relay's storage interface. All methods are safe for concurrent use.
 type Store interface {
 	// KV store — shared across all nodes.
@@ -172,6 +237,16 @@ type Store interface {
 	NetworkMemberGet(ctx context.Context, networkID, subject string) (*NetworkMember, error)
 	NetworkMemberUpsert(ctx context.Context, member NetworkMember) error
 	NetworkMemberCount(ctx context.Context, networkID string) (int, error)
+	GroupCreate(ctx context.Context, group Group) error
+	GroupList(ctx context.Context, networkID string) ([]Group, error)
+	GroupGet(ctx context.Context, networkID, groupName string) (*Group, error)
+	GroupDelete(ctx context.Context, networkID, groupName string) error
+	GroupMemberAdd(ctx context.Context, member GroupMember) error
+	GroupMemberRemove(ctx context.Context, networkID, groupName, nodeName, sessionName string) error
+	GroupMemberList(ctx context.Context, networkID, groupName string) ([]GroupMember, error)
+	GroupBindingsForSession(ctx context.Context, networkID, nodeName, sessionName string) ([]GroupBinding, error)
+	GroupPolicySet(ctx context.Context, policy GroupPolicy) error
+	GroupPolicyGet(ctx context.Context, networkID, groupName string) (*GroupPolicy, error)
 	NodeRegister(ctx context.Context, node NodeRecord) error
 	NodeList(ctx context.Context, networkID string) ([]NodeRecord, error)
 	NodeListAll(ctx context.Context) ([]NodeRecord, error)
@@ -214,10 +289,15 @@ type Store interface {
 	InviteConsume(ctx context.Context, token string) error
 	InviteList(ctx context.Context, networkID string) ([]Invite, error)
 	InviteDelete(ctx context.Context, networkID, token string) error
+	AccessGrantCreate(ctx context.Context, grant AccessGrant) error
+	AccessGrantGet(ctx context.Context, networkID, grantID string) (*AccessGrant, error)
+	AccessGrantList(ctx context.Context, networkID string, filter AccessGrantFilter) ([]AccessGrant, error)
+	AccessGrantRevoke(ctx context.Context, networkID, grantID string, revokedAt time.Time) error
 
 	// OIDC Users.
 	OIDCUserUpsert(ctx context.Context, user OIDCUser) error
 	OIDCUserGetBySub(ctx context.Context, sub string) (*OIDCUser, error)
+	OIDCUserListByUsername(ctx context.Context, username string) ([]OIDCUser, error)
 
 	// OIDC Sessions.
 	OIDCSessionCreate(ctx context.Context, sess OIDCSession) error

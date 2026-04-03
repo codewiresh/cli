@@ -89,6 +89,36 @@ func TestNetworkCommandShape(t *testing.T) {
 	}
 }
 
+func TestAccessCommandShape(t *testing.T) {
+	cmd := accessCmd()
+
+	subcommands := map[string]bool{}
+	for _, sub := range cmd.Commands() {
+		subcommands[sub.Name()] = true
+	}
+
+	for _, required := range []string{"accept", "drop", "grant", "inspect", "list", "prune", "revoke", "watch"} {
+		if !subcommands[required] {
+			t.Fatalf("expected access command to include %q, got %#v", required, subcommands)
+		}
+	}
+}
+
+func TestGroupCommandShape(t *testing.T) {
+	cmd := groupCmd()
+
+	subcommands := map[string]bool{}
+	for _, sub := range cmd.Commands() {
+		subcommands[sub.Name()] = true
+	}
+
+	for _, required := range []string{"create", "delete", "list", "members", "add", "remove", "policy"} {
+		if !subcommands[required] {
+			t.Fatalf("expected group command to include %q, got %#v", required, subcommands)
+		}
+	}
+}
+
 func TestCurrentNetworkCmdPrintsSelectedNetwork(t *testing.T) {
 	home := t.TempDir()
 	oldHome := os.Getenv("HOME")
@@ -231,7 +261,29 @@ func TestInboxCmdRejectsRemoteLocatorWithoutRelayConfig(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "relay not configured") {
+	if !strings.Contains(err.Error(), "remote inbox reads require --grant") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestGroupAddCmdRejectsLocalLocator(t *testing.T) {
+	cmd := groupAddCmd()
+	err := cmd.RunE(cmd, []string{"mesh", "agent-1"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "target must be <node>:<session>") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestGroupRemoveCmdRejectsSessionIDLocator(t *testing.T) {
+	cmd := groupRemoveCmd()
+	err := cmd.RunE(cmd, []string{"mesh", "node-a:123"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "target must be <node>:<session>") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

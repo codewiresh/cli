@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -16,15 +17,51 @@ import (
 const networkAuthNamespace = "relay.networkauth"
 const networkAuthIssuerKey = "issuer.current"
 
-func verifierBundleHandler(st store.Store) http.HandlerFunc {
+var errIssuerStateNotFound = errors.New("issuer state not found")
+
+func verifierBundleHandler(st store.Store, adminToken string, fallback oauth.ExternalTokenValidator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		networkID, err := requiredNetworkID(r.URL.Query().Get("network_id"))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		state, err := loadOrCreateIssuerState(r.Context(), st, networkID)
+
+		if node, nodeErr := nodeAuthFromRequest(r, st); nodeErr == nil && node != nil {
+			if node.NetworkID != networkID {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+		} else {
+			identity := oauth.AuthenticateRequest(r, st, adminToken, fallback)
+			if identity == nil {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if !identity.IsAdmin {
+				subject, subjectErr := membershipSubject(identity)
+				if subjectErr != nil {
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+				member, memberErr := st.NetworkMemberGet(r.Context(), networkID, subject)
+				if memberErr != nil {
+					http.Error(w, "internal error", http.StatusInternalServerError)
+					return
+				}
+				if member == nil {
+					writeMembershipRequired(w)
+					return
+				}
+			}
+		}
+
+		state, err := loadIssuerState(r.Context(), st, networkID)
 		if err != nil {
+			if errors.Is(err, errIssuerStateNotFound) {
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
@@ -148,11 +185,25 @@ func nodeSenderDelegationHandler(st store.Store) http.HandlerFunc {
 			return
 		}
 
+		var sourceGroups []string
+		if sessionName := strings.TrimSpace(body.FromSessionName); sessionName != "" {
+			bindings, err := st.GroupBindingsForSession(r.Context(), node.NetworkID, node.Name, sessionName)
+			if err != nil {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			sourceGroups = make([]string, 0, len(bindings))
+			for _, binding := range bindings {
+				sourceGroups = append(sourceGroups, binding.GroupName)
+			}
+		}
+
 		token, claims, err := networkauth.SignSenderDelegation(
 			state,
 			node.Name,
 			body.FromSessionID,
 			body.FromSessionName,
+			sourceGroups,
 			body.Verbs,
 			body.AudienceNode,
 			time.Now().UTC(),
@@ -170,6 +221,7 @@ func nodeSenderDelegationHandler(st store.Store) http.HandlerFunc {
 			SourceNode:      claims.SourceNode,
 			FromSessionID:   claims.FromSessionID,
 			FromSessionName: claims.FromSessionName,
+			SourceGroups:    append([]string(nil), claims.SourceGroups...),
 			AudienceNode:    claims.AudienceNode,
 			ExpiresAt:       claims.ExpiresAt,
 		})

@@ -81,7 +81,7 @@ func RunRelay(ctx context.Context, cfg RelayConfig) error {
 		derpSrv.Close()
 	}()
 
-	sshSrv, err := NewSSHServer(st, hub, sessions)
+	sshSrv, err := NewSSHServer(cfg.DataDir, st, hub, sessions)
 	if err != nil {
 		return fmt.Errorf("creating SSH server: %w", err)
 	}
@@ -132,7 +132,17 @@ func buildMux(hub *NodeHub, sessions *PendingSessions, st store.Store, cfg Relay
 	if cfg.AuthMode == "oidc" {
 		fallbackAuth = platformSessionAuthValidator(cfg.OIDCIssuer)
 	}
+	accessEvents := NewAccessEventHub()
 	authMiddleware := oauth.RequireAuthWithFallback(st, cfg.AuthToken, fallbackAuth)
+	groupMemberAuth := func(h http.HandlerFunc) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if node, err := nodeAuthFromRequest(r, st); err == nil && node != nil {
+				h(w, r)
+				return
+			}
+			authMiddleware(http.HandlerFunc(h)).ServeHTTP(w, r)
+		})
+	}
 	joinRL := newRateLimiter(10, time.Minute)
 
 	mux := http.NewServeMux()
@@ -195,7 +205,7 @@ func buildMux(hub *NodeHub, sessions *PendingSessions, st store.Store, cfg Relay
 	// Auth config discovery (unauthenticated, used by cw setup).
 	mux.HandleFunc("GET /api/v1/auth/config", authConfigHandler(cfg.AuthMode))
 	mux.Handle("GET /api/v1/auth/validate", authMiddleware(http.HandlerFunc(authValidateHandler())))
-	mux.HandleFunc("GET /api/v1/network-auth/bundle", verifierBundleHandler(st))
+	mux.HandleFunc("GET /api/v1/network-auth/bundle", verifierBundleHandler(st, cfg.AuthToken, fallbackAuth))
 	mux.Handle("POST /api/v1/network-auth/runtime/client", authMiddleware(http.HandlerFunc(clientRuntimeCredentialHandler(st))))
 	mux.HandleFunc("POST /api/v1/network-auth/runtime/node", nodeRuntimeCredentialHandler(st))
 	mux.HandleFunc("POST /api/v1/network-auth/delegation/node", nodeSenderDelegationHandler(st))
@@ -213,6 +223,19 @@ func buildMux(hub *NodeHub, sessions *PendingSessions, st store.Store, cfg Relay
 	mux.Handle("POST /api/v1/invites", authMiddleware(http.HandlerFunc(inviteCreateHandler(st))))
 	mux.Handle("GET /api/v1/invites", authMiddleware(http.HandlerFunc(inviteListHandler(st))))
 	mux.Handle("DELETE /api/v1/invites/{token}", authMiddleware(http.HandlerFunc(inviteDeleteHandler(st))))
+	mux.HandleFunc("GET /api/v1/groups/bindings", groupBindingsHandler(st))
+	mux.Handle("POST /api/v1/groups", authMiddleware(http.HandlerFunc(groupsCreateHandler(st))))
+	mux.Handle("GET /api/v1/groups", authMiddleware(http.HandlerFunc(groupsListHandler(st))))
+	mux.Handle("GET /api/v1/groups/{name}", authMiddleware(http.HandlerFunc(groupsGetHandler(st))))
+	mux.Handle("DELETE /api/v1/groups/{name}", authMiddleware(http.HandlerFunc(groupsDeleteHandler(st))))
+	mux.Handle("POST /api/v1/groups/{name}/members", groupMemberAuth(groupMembersAddHandler(st)))
+	mux.Handle("DELETE /api/v1/groups/{name}/members", groupMemberAuth(groupMembersRemoveHandler(st)))
+	mux.Handle("PUT /api/v1/groups/{name}/policy", authMiddleware(http.HandlerFunc(groupPolicySetHandler(st))))
+	mux.Handle("POST /api/v1/access-grants", authMiddleware(http.HandlerFunc(accessGrantCreateHandler(st))))
+	mux.Handle("GET /api/v1/access-grants", authMiddleware(http.HandlerFunc(accessGrantListHandler(st))))
+	mux.Handle("GET /api/v1/access-grants/{id}", authMiddleware(http.HandlerFunc(accessGrantGetHandler(st))))
+	mux.Handle("DELETE /api/v1/access-grants/{id}", authMiddleware(http.HandlerFunc(accessGrantRevokeHandler(st, accessEvents))))
+	mux.Handle("GET /api/v1/access/cache/events", authMiddleware(http.HandlerFunc(accessCacheEventsHandler(st, accessEvents))))
 
 	// Authenticated membership join.
 	mux.Handle("POST /api/v1/networks/join", authMiddleware(http.HandlerFunc(networkJoinHandler(st))))
@@ -891,6 +914,13 @@ func kvSetHandler(st store.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if _, ok, memberErr := requireMembership(r.Context(), st, networkID, oauth.GetAuth(r.Context())); memberErr != nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		} else if !ok {
+			writeMembershipRequired(w)
+			return
+		}
 
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
@@ -925,6 +955,13 @@ func kvGetHandler(st store.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if _, ok, memberErr := requireMembership(r.Context(), st, networkID, oauth.GetAuth(r.Context())); memberErr != nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		} else if !ok {
+			writeMembershipRequired(w)
+			return
+		}
 
 		val, err := st.KVGet(r.Context(), networkID, ns, key)
 		if err != nil {
@@ -949,6 +986,13 @@ func kvDeleteHandler(st store.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if owner, memberErr := requireOwner(r.Context(), st, networkID, oauth.GetAuth(r.Context())); memberErr != nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		} else if !owner {
+			writeOwnerRequired(w)
+			return
+		}
 
 		if err := st.KVDelete(r.Context(), networkID, ns, key); err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
@@ -965,6 +1009,13 @@ func kvListHandler(st store.Store) http.HandlerFunc {
 		networkID, err := requiredNetworkID(r.URL.Query().Get("network_id"))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if _, ok, memberErr := requireMembership(r.Context(), st, networkID, oauth.GetAuth(r.Context())); memberErr != nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		} else if !ok {
+			writeMembershipRequired(w)
 			return
 		}
 

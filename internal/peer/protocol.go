@@ -28,17 +28,60 @@ func (l SessionLocator) Validate() error {
 
 // PeerRequest is a peer-to-peer messaging request.
 type PeerRequest struct {
-	OpID      string          `json:"op_id"`
-	Type      string          `json:"type"`
-	SenderCap string          `json:"sender_cap,omitempty"`
-	From      *SessionLocator `json:"from,omitempty"`
-	To        *SessionLocator `json:"to,omitempty"`
-	Session   *SessionLocator `json:"session,omitempty"`
-	RequestID string          `json:"request_id,omitempty"`
-	Body      string          `json:"body,omitempty"`
-	Tail      *uint           `json:"tail,omitempty"`
-	Delivery  string          `json:"delivery,omitempty"`
-	TimeoutS  *uint64         `json:"timeout_seconds,omitempty"`
+	OpID        string          `json:"op_id"`
+	Type        string          `json:"type"`
+	SenderCap   string          `json:"sender_cap,omitempty"`
+	ObserverCap string          `json:"observer_cap,omitempty"`
+	From        *SessionLocator `json:"from,omitempty"`
+	To          *SessionLocator `json:"to,omitempty"`
+	Session     *SessionLocator `json:"session,omitempty"`
+	RequestID   string          `json:"request_id,omitempty"`
+	Body        string          `json:"body,omitempty"`
+	Tail        *uint           `json:"tail,omitempty"`
+	Delivery    string          `json:"delivery,omitempty"`
+	TimeoutS    *uint64         `json:"timeout_seconds,omitempty"`
+}
+
+// AuthHello is the first frame on authenticated peer connections.
+type AuthHello struct {
+	Type              string `json:"type"`
+	RuntimeCredential string `json:"runtime_credential"`
+}
+
+func (h AuthHello) Validate() error {
+	if h.Type != "AuthHello" {
+		return fmt.Errorf("unexpected auth hello type %q", h.Type)
+	}
+	if h.RuntimeCredential == "" {
+		return fmt.Errorf("runtime credential is required")
+	}
+	return nil
+}
+
+// AuthAck confirms the bound authenticated principal for a peer connection.
+type AuthAck struct {
+	Type        string `json:"type"`
+	NetworkID   string `json:"network_id,omitempty"`
+	SubjectKind string `json:"subject_kind,omitempty"`
+	SubjectID   string `json:"subject_id,omitempty"`
+	Error       string `json:"error,omitempty"`
+}
+
+func (a AuthAck) Validate() error {
+	switch a.Type {
+	case "AuthAck":
+		if a.NetworkID == "" || a.SubjectKind == "" || a.SubjectID == "" {
+			return fmt.Errorf("auth ack is incomplete")
+		}
+		return nil
+	case "Error":
+		if a.Error == "" {
+			return fmt.Errorf("error auth ack requires message")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unexpected auth ack type %q", a.Type)
+	}
 }
 
 // Validate ensures the request is structurally valid.
@@ -189,4 +232,46 @@ func WriteResponse(w io.Writer, resp *PeerResponse) error {
 		return err
 	}
 	return writeJSONFrame(w, resp)
+}
+
+func ReadAuthHello(r io.Reader) (*AuthHello, error) {
+	hello, err := readJSONFrame[AuthHello](r)
+	if err != nil || hello == nil {
+		return hello, err
+	}
+	if err := hello.Validate(); err != nil {
+		return nil, err
+	}
+	return hello, nil
+}
+
+func WriteAuthHello(w io.Writer, hello *AuthHello) error {
+	if hello == nil {
+		return fmt.Errorf("nil auth hello")
+	}
+	if err := hello.Validate(); err != nil {
+		return err
+	}
+	return writeJSONFrame(w, hello)
+}
+
+func ReadAuthAck(r io.Reader) (*AuthAck, error) {
+	ack, err := readJSONFrame[AuthAck](r)
+	if err != nil || ack == nil {
+		return ack, err
+	}
+	if err := ack.Validate(); err != nil {
+		return nil, err
+	}
+	return ack, nil
+}
+
+func WriteAuthAck(w io.Writer, ack *AuthAck) error {
+	if ack == nil {
+		return fmt.Errorf("nil auth ack")
+	}
+	if err := ack.Validate(); err != nil {
+		return err
+	}
+	return writeJSONFrame(w, ack)
 }

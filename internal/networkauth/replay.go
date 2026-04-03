@@ -36,6 +36,14 @@ func (c *ReplayCache) ConsumeSender(claims *SenderDelegationClaims, now time.Tim
 	return c.consume("sender", claims.NetworkID, claims.JTI, claims.ExpiresAt, now)
 }
 
+// ConsumeObserver marks an observer delegation as used until expiry.
+func (c *ReplayCache) ConsumeObserver(claims *ObserverDelegationClaims, now time.Time) error {
+	if claims == nil {
+		return fmt.Errorf("observer delegation claims are nil")
+	}
+	return c.consume("observer", claims.NetworkID, claims.JTI, claims.ExpiresAt, now)
+}
+
 func (c *ReplayCache) consume(kind, networkID, jti string, expiresAt, now time.Time) error {
 	if c == nil {
 		return nil

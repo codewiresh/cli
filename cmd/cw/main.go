@@ -88,6 +88,7 @@ func main() {
 	rootCmd.AddCommand(
 		// Networking
 		grouped(networkCmd(), "network"),
+		grouped(groupCmd(), "network"),
 		grouped(nodeCmd(), "network"),
 		grouped(relayCmd(), "network"),
 		// Environments
@@ -111,6 +112,7 @@ func main() {
 		grouped(subscribeCmd(), "session"),
 		grouped(waitSessionCmd(), "session"),
 		// Messaging
+		grouped(accessCmd(), "messaging"),
 		grouped(msgCmd(), "messaging"),
 		grouped(inboxCmd(), "messaging"),
 		grouped(requestCmd(), "messaging"),
@@ -244,6 +246,7 @@ func runCmd() *cobra.Command {
 		workDir     string
 		tags        []string
 		name        string
+		group       string
 		envVars     []string
 		autoApprove bool
 		promptFile  string
@@ -300,6 +303,16 @@ Examples:
 			if len(command) == 0 {
 				return fmt.Errorf("command required after --")
 			}
+			group = strings.TrimSpace(group)
+			if group != "" {
+				if strings.TrimSpace(name) == "" {
+					return fmt.Errorf("--group requires --name")
+				}
+				if serverFlag != "" {
+					return fmt.Errorf("--group cannot be used with --server")
+				}
+				tags = appendGroupTag(tags, group)
+			}
 
 			// If --auto-approve, inject --dangerously-skip-permissions after the binary.
 			if autoApprove && len(command) > 0 {
@@ -347,10 +360,18 @@ Examples:
 				if err := ensureNode(); err != nil {
 					return err
 				}
+				if group != "" {
+					if err := validateLocalGroupedRun(group); err != nil {
+						return err
+					}
+				}
 				if workDir == "" {
 					workDir, _ = os.Getwd()
 				}
-				return client.Run(target, command, workDir, name, envVars, stdinData, tags...)
+				if err := client.Run(target, command, workDir, name, envVars, stdinData, tags...); err != nil {
+					return err
+				}
+				return nil
 			case "env":
 				if len(stdinData) > 0 {
 					return fmt.Errorf("--prompt-file is not supported for environment targets yet")
@@ -359,7 +380,7 @@ Examples:
 					workDir = "/workspace"
 				}
 				printEnvironmentRunPreamble(execTarget)
-				result, err := runInEnvironmentTarget(execTarget.Ref, workDir, name, envVars, tags, command)
+				result, err := runInEnvironmentTarget(execTarget.Ref, workDir, name, group, envVars, tags, command)
 				if err != nil {
 					return fmt.Errorf("run: %w", err)
 				}
@@ -373,6 +394,7 @@ Examples:
 	cmd.Flags().StringVarP(&workDir, "dir", "d", "", "Working directory for the session")
 	cmd.Flags().StringSliceVarP(&tags, "tag", "t", nil, "Tags for the session (can be repeated)")
 	cmd.Flags().StringVar(&name, "name", "", "Unique name for the session (alphanumeric + hyphens, 1-32 chars)")
+	cmd.Flags().StringVar(&group, "group", "", "Attach the named session to a relay group")
 	cmd.Flags().StringArrayVarP(&envVars, "env", "e", nil, "Environment variable overrides (KEY=VALUE, can be repeated)")
 	cmd.Flags().StringVar(&on, "on", "", "Override the current target for this command")
 	cmd.Flags().BoolVar(&autoApprove, "auto-approve", false, "Inject --dangerously-skip-permissions after the command binary")
@@ -381,6 +403,31 @@ Examples:
 	_ = cmd.RegisterFlagCompletionFunc("on", targetCompletionFunc)
 
 	return cmd
+}
+
+func appendGroupTag(tags []string, group string) []string {
+	group = strings.TrimSpace(group)
+	if group == "" {
+		return tags
+	}
+	groupTag := "group:" + group
+	for _, tag := range tags {
+		if strings.TrimSpace(tag) == groupTag {
+			return tags
+		}
+	}
+	return append(tags, groupTag)
+}
+
+func validateLocalGroupedRun(group string) error {
+	if _, err := currentNodeName(); err != nil {
+		return err
+	}
+	_, _, _, err := client.LoadRelayAuth(dataDir(), client.RelayAuthOptions{})
+	if err != nil {
+		return fmt.Errorf("--group requires relay configuration: %w", err)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1561,6 +1608,7 @@ func resolveDelivery(delivery, from string) string {
 
 func inboxCmd() *cobra.Command {
 	var tail int
+	var observerGrant string
 
 	cmd := &cobra.Command{
 		Use:               "inbox <session>",
@@ -1586,6 +1634,10 @@ func inboxCmd() *cobra.Command {
 				if !target.IsLocal() {
 					return fmt.Errorf("remote session locators like %q cannot be combined with --server; use the session ID or name on that server directly", args[0])
 				}
+				resolvedGrant, err := resolveObserverGrant(locator, "msg.read", observerGrant)
+				if err != nil {
+					return fmt.Errorf("remote inbox reads require --grant <token> or an accepted matching grant: %w", err)
+				}
 				ctx := context.Background()
 				peerConn, cleanup, err := dialPeerClientForNode(ctx, locator.Node)
 				if err != nil {
@@ -1593,12 +1645,16 @@ func inboxCmd() *cobra.Command {
 				}
 				defer cleanup()
 
-				messages, err := peerclient.Inbox(ctx, peerConn, toPeerSessionLocator(locator), tail)
+				messages, err := peerclient.InboxWithGrant(ctx, peerConn, toPeerSessionLocator(locator), resolvedGrant, tail)
 				if err != nil {
 					return err
 				}
 				printMessageResponses(messages)
 				return nil
+			}
+
+			if strings.TrimSpace(observerGrant) != "" {
+				return fmt.Errorf("--grant is only valid with a remote session locator like <node>:<session>")
 			}
 
 			if target.IsLocal() {
@@ -1622,6 +1678,7 @@ func inboxCmd() *cobra.Command {
 	}
 
 	cmd.Flags().IntVarP(&tail, "tail", "t", 50, "Number of messages to show")
+	cmd.Flags().StringVar(&observerGrant, "grant", "", "Observer grant token for remote inbox reads")
 
 	return cmd
 }
@@ -1632,6 +1689,7 @@ func inboxCmd() *cobra.Command {
 
 func listenCmd() *cobra.Command {
 	var sessionArg string
+	var observerGrant string
 
 	cmd := &cobra.Command{
 		Use:   "listen",
@@ -1664,25 +1722,27 @@ Use 'cw subscribe' only if you need lower-level run events.`,
 				if !target.IsLocal() {
 					return fmt.Errorf("remote session locators like %q cannot be combined with --server; use the session ID or name on that server directly", sessionArg)
 				}
-
+				resolvedGrant, err := resolveObserverGrant(*locator, "msg.listen", observerGrant)
+				if err != nil {
+					return fmt.Errorf("remote message subscriptions require --grant <token> or an accepted matching grant: %w", err)
+				}
 				ctx := context.Background()
 				peerConn, cleanup, err := dialPeerClientForNode(ctx, locator.Node)
 				if err != nil {
 					return err
 				}
 				defer cleanup()
-
-				fmt.Fprintf(os.Stderr, "[cw] listening for messages...\n")
-				return peerclient.Listen(ctx, peerConn, &peer.SessionLocator{
-					Node: locator.Node,
-					ID:   locator.ID,
-					Name: locator.Name,
-				}, func(event *protocol.SessionEvent) error {
+				remoteSession := toPeerSessionLocator(*locator)
+				return peerclient.ListenWithGrant(ctx, peerConn, &remoteSession, resolvedGrant, func(event *protocol.SessionEvent) error {
 					if event != nil {
 						printSessionEvent(event)
 					}
 					return nil
 				})
+			}
+
+			if strings.TrimSpace(observerGrant) != "" {
+				return fmt.Errorf("--grant is only valid with a remote session locator like <node>:<session>")
 			}
 
 			if target.IsLocal() {
@@ -1709,6 +1769,7 @@ Use 'cw subscribe' only if you need lower-level run events.`,
 	}
 
 	cmd.Flags().StringVar(&sessionArg, "session", "", "Filter by session (ID or name)")
+	cmd.Flags().StringVar(&observerGrant, "grant", "", "Observer grant token for remote message subscriptions")
 
 	return cmd
 }

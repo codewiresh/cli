@@ -499,6 +499,79 @@ cw node
 
 `cw login` provides user auth for relay-backed network commands. `cw node` auto-enrolls the machine into the selected network and maintains the persistent relay connection.
 
+### Networks, Groups, and Access
+
+Relay mode now has three distinct scopes:
+
+- `network`: membership and node discovery
+- `group`: which named sessions may message each other inside a network
+- `access`: temporary observer grants for remote `inbox` / `listen`
+
+Use a dedicated network when you want a hard outer boundary, then use groups for
+smaller private meshes inside that network.
+
+```bash
+# Create or select a private network
+cw network create private-agents --use
+
+# Create a group for one isolated agent mesh
+cw group create mesh
+
+# Launch named sessions directly into that group
+cw run --name agent-1 --group mesh -- claude
+cw run --name agent-2 --group mesh -- claude
+cw run --name agent-3 --group mesh -- claude
+
+# Inspect and manage membership
+cw group members mesh
+cw group policy mesh
+cw group delete mesh
+```
+
+Default group policy is:
+
+- `messages=internal-only`
+- `debug=observe-only`
+
+That means grouped sessions can `msg` and `request` each other, but sessions
+outside the group cannot deliver messages into them.
+
+Remote reads are separate. `cw inbox <node>:<session>` and `cw listen --session <node>:<session>`
+require an explicit observer grant:
+
+```bash
+# Owner/admin issues a short-lived observer grant
+cw access grant dev-1:agent-2 --to alice --for 10m
+
+# Recipient can use it directly
+cw inbox dev-1:agent-2 --grant <token>
+cw listen --session dev-1:agent-2 --grant <token>
+
+# Or accept it once and use normal commands
+cw access accept <token>
+cw access list --accepted
+cw access list --accepted --node dev-1 --session agent-2
+cw access inspect <grant-id>
+cw access drop <grant-id>
+cw access prune
+cw access watch
+cw inbox dev-1:agent-2
+cw listen --session dev-1:agent-2
+```
+
+When relay auth is configured, `cw access list --accepted`, `cw access inspect`,
+and `cw access prune` reconcile the local accepted-grant cache against the relay
+and automatically drop revoked or missing grants.
+
+For immediate invalidation across terminals or machines, run:
+
+```bash
+cw access watch
+```
+
+That opens a relay-backed SSE stream for the current network and removes accepted
+grants from the local cache as soon as the relay sees them revoked.
+
 ### Remote Commands
 
 All commands accept an optional node prefix for remote access:
@@ -551,6 +624,8 @@ cw --server my-server attach 1
 ```
 
 - **Network** = user-facing group/scope for related envs and nodes
+- **Group** = smaller communication boundary for named sessions inside a network
+- **Access grant** = short-lived observer capability for remote `inbox` / `listen`
 - **Relay** = SSH gateway + HTTP API backing those networks (node discovery, shared KV, device auth)
 - **Nodes** = connect outward via persistent WebSocket agents (no inbound ports needed)
 - **Clients** = SSH into `<node>@relay:2222`; same PTY experience

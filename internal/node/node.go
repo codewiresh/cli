@@ -21,6 +21,7 @@ import (
 	"github.com/codewiresh/codewire/internal/platform"
 	"github.com/codewiresh/codewire/internal/relay"
 	"github.com/codewiresh/codewire/internal/session"
+	"github.com/codewiresh/codewire/internal/store"
 )
 
 // Node manages PTY sessions, accepting connections over a Unix domain socket
@@ -66,11 +67,13 @@ func NewNode(dataDir string) (*Node, error) {
 		runtimeSeen: networkauth.NewReplayCache(),
 		senderSeen:  networkauth.NewReplayCache(),
 	}
+	mgr.SetNameChangeHook(node.syncRelayGroupMemberships)
+	mgr.SetSessionExitHook(node.cleanupRelayGroupMemberships)
 	node.bundleCache = networkauth.NewBundleCache(func(ctx context.Context) (*networkauth.VerifierBundle, error) {
 		if node.config.RelayURL == nil || strings.TrimSpace(*node.config.RelayURL) == "" {
 			return nil, fmt.Errorf("relay is not configured")
 		}
-		return networkauth.FetchVerifierBundle(ctx, http.DefaultClient, *node.config.RelayURL, node.relayNetworkID())
+		return networkauth.FetchVerifierBundleWithToken(ctx, http.DefaultClient, *node.config.RelayURL, node.relayNetworkID(), node.relayVerifierAuthToken())
 	})
 	return node, nil
 }
@@ -101,9 +104,13 @@ func (n *Node) Run(ctx context.Context) error {
 
 	// Start WebSocket server if configured (direct mode).
 	peerServer := &peer.Server{
-		Sessions:        n.Manager,
-		NodeName:        n.config.Node.Name,
-		AuthorizeSender: n.authorizePeerSender,
+		Sessions:                n.Manager,
+		NodeName:                n.config.Node.Name,
+		AuthorizePeer:           n.authorizePeerRuntime,
+		AuthorizeSender:         n.authorizePeerSender,
+		AuthorizeDelivery:       n.authorizePeerDelivery,
+		AuthorizeObserver:       n.authorizePeerObserver,
+		RequireRemoteSenderAuth: true,
 	}
 
 	if n.config.Node.Listen != nil {
@@ -195,6 +202,7 @@ func (n *Node) Run(ctx context.Context) error {
 			connection.NewUnixWriter(conn),
 			n.Manager,
 			n.KVStore,
+			n.authorizeLocalDelivery,
 			n.issueSenderDelegation,
 		)
 	}
@@ -209,6 +217,22 @@ func resolveUserRelayAuthToken() string {
 		return ""
 	}
 	return strings.TrimSpace(cfg.SessionToken)
+}
+
+func (n *Node) relayVerifierAuthToken() string {
+	if n != nil && n.config != nil && n.config.RelayToken != nil {
+		if token := strings.TrimSpace(*n.config.RelayToken); token != "" {
+			return token
+		}
+	}
+	return resolveUserRelayAuthToken()
+}
+
+func (n *Node) relayNodeToken() string {
+	if n == nil || n.config == nil || n.config.RelayToken == nil {
+		return ""
+	}
+	return strings.TrimSpace(*n.config.RelayToken)
 }
 
 // Cleanup removes the Unix socket and PID files.
@@ -241,18 +265,9 @@ func (n *Node) runWSServer(ctx context.Context, addr string, peerServer *peer.Se
 		wsCtx := r.Context()
 		reader := connection.NewWSReader(wsCtx, wsConn)
 		writer := connection.NewWSWriter(wsCtx, wsConn)
-		handleClient(reader, writer, n.Manager, n.KVStore, n.issueSenderDelegation)
+		handleClient(reader, writer, n.Manager, n.KVStore, n.authorizeLocalDelivery, n.issueSenderDelegation)
 	})
 	mux.HandleFunc("/peer", func(w http.ResponseWriter, r *http.Request) {
-		token := ""
-		if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
-			token = strings.TrimPrefix(authHeader, "Bearer ")
-		}
-		if !n.validatePeerToken(r.Context(), token) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-
 		wsConn, err := websocket.Accept(w, r, nil)
 		if err != nil {
 			slog.Error("peer websocket accept error", "err", err)
@@ -303,30 +318,39 @@ func (n *Node) runTailnetPeerServer(ctx context.Context, peerServer *peer.Server
 	<-ctx.Done()
 }
 
-func (n *Node) validatePeerToken(ctx context.Context, token string) bool {
+func (n *Node) authorizePeerRuntime(ctx context.Context, token string) (*peer.AuthenticatedPeer, error) {
+	if n == nil || n.config == nil {
+		return nil, fmt.Errorf("node config is unavailable")
+	}
 	token = strings.TrimSpace(token)
 	if token == "" {
-		return false
+		return nil, fmt.Errorf("runtime credential is required")
 	}
-	return n.validateRuntimeCredential(ctx, token)
-}
-
-func (n *Node) validateRuntimeCredential(ctx context.Context, token string) bool {
 	if n.bundleCache == nil {
-		return false
+		return nil, fmt.Errorf("verifier bundle is unavailable")
+	}
+	if n.runtimeSeen == nil {
+		return nil, fmt.Errorf("runtime replay cache is unavailable")
 	}
 	bundle, err := n.bundleCache.Get(ctx)
 	if err != nil {
-		return false
+		return nil, fmt.Errorf("loading verifier bundle: %w", err)
 	}
 	claims, err := networkauth.VerifyRuntimeCredential(token, bundle, time.Now().UTC())
 	if err != nil {
-		return false
+		return nil, err
 	}
 	if claims.NetworkID != n.relayNetworkID() {
-		return false
+		return nil, fmt.Errorf("runtime credential network mismatch")
 	}
-	return n.runtimeSeen.ConsumeRuntime(claims, time.Now().UTC()) == nil
+	if err := n.runtimeSeen.ConsumeRuntime(claims, time.Now().UTC()); err != nil {
+		return nil, err
+	}
+	return &peer.AuthenticatedPeer{
+		NetworkID:   claims.NetworkID,
+		SubjectKind: claims.SubjectKind,
+		SubjectID:   claims.SubjectID,
+	}, nil
 }
 
 func (n *Node) relayNetworkID() string {
@@ -334,6 +358,94 @@ func (n *Node) relayNetworkID() string {
 		return ""
 	}
 	return networkauth.ResolveNetworkID(*n.config.RelayNetwork)
+}
+
+func (n *Node) syncRelayGroupMemberships(_ uint32, oldName, newName string, tags []string) error {
+	groups := groupNamesFromTags(tags)
+	if len(groups) == 0 {
+		return nil
+	}
+	if n == nil || n.config == nil || n.config.RelayURL == nil || strings.TrimSpace(*n.config.RelayURL) == "" {
+		return fmt.Errorf("relay is not configured")
+	}
+	if n.relayNodeToken() == "" {
+		return fmt.Errorf("relay node token is unavailable")
+	}
+	nodeName := strings.TrimSpace(n.config.Node.Name)
+	if nodeName == "" {
+		return fmt.Errorf("node name is unavailable")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	newName = strings.TrimSpace(newName)
+	oldName = strings.TrimSpace(oldName)
+	for _, groupName := range groups {
+		if newName != "" {
+			if err := networkauth.AddNodeGroupMember(ctx, http.DefaultClient, *n.config.RelayURL, n.relayNodeToken(), groupName, nodeName, newName); err != nil {
+				return fmt.Errorf("syncing group %q for %s:%s: %w", groupName, nodeName, newName, err)
+			}
+		}
+	}
+	for _, groupName := range groups {
+		if oldName != "" && oldName != newName {
+			if err := networkauth.RemoveNodeGroupMember(ctx, http.DefaultClient, *n.config.RelayURL, n.relayNodeToken(), groupName, nodeName, oldName); err != nil && !strings.Contains(err.Error(), "HTTP 404") {
+				return fmt.Errorf("removing old group member %q for %s:%s: %w", groupName, nodeName, oldName, err)
+			}
+		}
+	}
+	return nil
+}
+
+func (n *Node) cleanupRelayGroupMemberships(_ uint32, name string, tags []string) {
+	groups := groupNamesFromTags(tags)
+	if len(groups) == 0 {
+		return
+	}
+	if n == nil || n.config == nil || n.config.RelayURL == nil || strings.TrimSpace(*n.config.RelayURL) == "" || n.relayNodeToken() == "" {
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	nodeName := strings.TrimSpace(n.config.Node.Name)
+	if nodeName == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, groupName := range groups {
+		if err := networkauth.RemoveNodeGroupMember(ctx, http.DefaultClient, *n.config.RelayURL, n.relayNodeToken(), groupName, nodeName, name); err != nil && !strings.Contains(err.Error(), "HTTP 404") {
+			slog.Warn("failed to clean up relay group membership", "group", groupName, "node", nodeName, "session", name, "err", err)
+		}
+	}
+}
+
+func groupNamesFromTags(tags []string) []string {
+	if len(tags) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(tags))
+	groups := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if !strings.HasPrefix(tag, "group:") {
+			continue
+		}
+		groupName := strings.TrimSpace(strings.TrimPrefix(tag, "group:"))
+		if groupName == "" {
+			continue
+		}
+		if _, ok := seen[groupName]; ok {
+			continue
+		}
+		seen[groupName] = struct{}{}
+		groups = append(groups, groupName)
+	}
+	return groups
 }
 
 func (n *Node) issueSenderDelegation(ctx context.Context, sessionID uint32, verb, audienceNode string) (*networkauth.SenderDelegationResponse, error) {
@@ -412,10 +524,113 @@ func (n *Node) authorizePeerSender(ctx context.Context, verb string, from *peer.
 		return nil, err
 	}
 	return &peer.AuthorizedSender{
-		DisplayName: label,
-		SessionID:   claims.FromSessionID,
-		SessionName: claims.FromSessionName,
+		DisplayName:  label,
+		SessionID:    claims.FromSessionID,
+		SessionName:  claims.FromSessionName,
+		SourceGroups: append([]string(nil), claims.SourceGroups...),
 	}, nil
+}
+
+func (n *Node) authorizePeerDelivery(ctx context.Context, sender *peer.AuthorizedSender, to *peer.SessionLocator, verb string) error {
+	if sender == nil || to == nil {
+		return nil
+	}
+	targetName, err := n.resolveTargetSessionName(to)
+	if err != nil {
+		return err
+	}
+	if targetName == "" {
+		return nil
+	}
+	bindings, err := n.fetchGroupBindings(ctx, targetName)
+	if err != nil {
+		return err
+	}
+	return enforceGroupBindings(bindings, sender.SourceGroups, verb)
+}
+
+func (n *Node) authorizeLocalDelivery(ctx context.Context, fromID, toID uint32, verb string) error {
+	targetName := strings.TrimSpace(n.Manager.GetName(toID))
+	if targetName == "" {
+		return nil
+	}
+	bindings, err := n.fetchGroupBindings(ctx, targetName)
+	if err != nil {
+		return err
+	}
+	var sourceGroups []string
+	if fromID != 0 {
+		sourceGroups = n.Manager.GroupNames(fromID)
+	}
+	return enforceGroupBindings(bindings, sourceGroups, verb)
+}
+
+func (n *Node) authorizePeerObserver(ctx context.Context, principal *peer.AuthenticatedPeer, verb string, session *peer.SessionLocator, observerCap string) error {
+	if principal == nil {
+		return fmt.Errorf("peer principal is unavailable")
+	}
+	if session == nil {
+		return fmt.Errorf("missing session locator")
+	}
+	if strings.TrimSpace(observerCap) == "" {
+		return fmt.Errorf("missing observer grant")
+	}
+	bundle, err := n.bundleCache.Get(ctx)
+	if err != nil {
+		return fmt.Errorf("loading verifier bundle: %w", err)
+	}
+	claims, err := networkauth.VerifyObserverDelegation(observerCap, bundle, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if claims.NetworkID != n.relayNetworkID() {
+		return fmt.Errorf("observer grant network mismatch")
+	}
+	if claims.TargetNode != n.config.Node.Name {
+		return fmt.Errorf("observer grant target node mismatch")
+	}
+	if claims.AudienceSubjectKind != principal.SubjectKind || claims.AudienceSubjectID != principal.SubjectID {
+		return fmt.Errorf("observer grant audience mismatch")
+	}
+	if !delegationAllowsVerb(claims.Verbs, verb) {
+		return fmt.Errorf("observer grant does not allow %s", verb)
+	}
+	if err := n.matchObserverSession(session, claims); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (n *Node) matchObserverSession(locator *peer.SessionLocator, claims *networkauth.ObserverDelegationClaims) error {
+	if locator == nil {
+		return fmt.Errorf("missing session locator")
+	}
+	if locator.ID != nil {
+		if claims.SessionID != nil && *claims.SessionID != *locator.ID {
+			return fmt.Errorf("observer grant session id mismatch")
+		}
+		if claims.SessionName != "" && n.Manager.GetName(*locator.ID) != claims.SessionName {
+			return fmt.Errorf("observer grant session name mismatch")
+		}
+		return nil
+	}
+	if strings.TrimSpace(locator.Name) == "" {
+		return fmt.Errorf("missing session locator")
+	}
+	sessionName := strings.TrimSpace(locator.Name)
+	if claims.SessionName != "" && claims.SessionName != sessionName {
+		return fmt.Errorf("observer grant session name mismatch")
+	}
+	if claims.SessionID != nil {
+		resolved, err := n.Manager.ResolveByName(strings.TrimPrefix(sessionName, "@"))
+		if err != nil {
+			return fmt.Errorf("observer grant session id mismatch")
+		}
+		if resolved != *claims.SessionID {
+			return fmt.Errorf("observer grant session id mismatch")
+		}
+	}
+	return nil
 }
 
 func delegationAllowsVerb(verbs []string, verb string) bool {
@@ -426,6 +641,94 @@ func delegationAllowsVerb(verbs []string, verb string) bool {
 		}
 	}
 	return false
+}
+
+func (n *Node) resolveTargetSessionName(locator *peer.SessionLocator) (string, error) {
+	if locator == nil {
+		return "", fmt.Errorf("missing target session")
+	}
+	if locator.ID != nil {
+		return strings.TrimSpace(n.Manager.GetName(*locator.ID)), nil
+	}
+	return strings.TrimSpace(strings.TrimPrefix(locator.Name, "@")), nil
+}
+
+func (n *Node) fetchGroupBindings(ctx context.Context, sessionName string) ([]store.GroupBinding, error) {
+	if n == nil || n.config == nil {
+		return nil, fmt.Errorf("node config is unavailable")
+	}
+	if strings.TrimSpace(sessionName) == "" {
+		return nil, nil
+	}
+	if n.config.RelayURL == nil || strings.TrimSpace(*n.config.RelayURL) == "" {
+		return n.localGroupBindings(sessionName), nil
+	}
+	if n.config.RelayToken == nil || strings.TrimSpace(*n.config.RelayToken) == "" {
+		return n.localGroupBindings(sessionName), nil
+	}
+	bindings, err := networkauth.FetchNodeGroupBindings(ctx, http.DefaultClient, *n.config.RelayURL, *n.config.RelayToken, n.config.Node.Name, sessionName)
+	if err != nil {
+		return n.localGroupBindings(sessionName), nil
+	}
+	if len(bindings) == 0 {
+		return n.localGroupBindings(sessionName), nil
+	}
+	return bindings, nil
+}
+
+func enforceGroupBindings(bindings []store.GroupBinding, sourceGroups []string, verb string) error {
+	if len(bindings) == 0 {
+		return nil
+	}
+	allowedByOpenPolicy := false
+	for _, binding := range bindings {
+		if binding.MessagesPolicy == store.GroupMessagesOpen {
+			allowedByOpenPolicy = true
+			break
+		}
+	}
+	if allowedByOpenPolicy {
+		return nil
+	}
+
+	sourceSet := make(map[string]struct{}, len(sourceGroups))
+	for _, groupName := range sourceGroups {
+		groupName = strings.TrimSpace(groupName)
+		if groupName == "" {
+			continue
+		}
+		sourceSet[groupName] = struct{}{}
+	}
+	for _, binding := range bindings {
+		if _, ok := sourceSet[strings.TrimSpace(binding.GroupName)]; ok {
+			return nil
+		}
+	}
+	return fmt.Errorf("group policy forbids %s delivery to this session", verb)
+}
+
+func (n *Node) localGroupBindings(sessionName string) []store.GroupBinding {
+	sessionName = strings.TrimSpace(strings.TrimPrefix(sessionName, "@"))
+	if sessionName == "" || n == nil || n.Manager == nil {
+		return nil
+	}
+	sessionID, err := n.Manager.ResolveByName(sessionName)
+	if err != nil {
+		return nil
+	}
+	groups := n.Manager.GroupNames(sessionID)
+	if len(groups) == 0 {
+		return nil
+	}
+	bindings := make([]store.GroupBinding, 0, len(groups))
+	for _, groupName := range groups {
+		bindings = append(bindings, store.GroupBinding{
+			GroupName:      groupName,
+			MessagesPolicy: store.GroupMessagesInternalOnly,
+			DebugPolicy:    store.GroupDebugObserveOnly,
+		})
+	}
+	return bindings
 }
 
 // persistenceManager debounces persist signals from the session manager.

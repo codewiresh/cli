@@ -133,6 +133,94 @@ cw exec --on <target> -- <cmd>   # Exec on a specific target
 
 ---
 
+## Relay Networks, Groups, and Access
+
+In relay mode there are three separate scopes:
+
+- `network`: who belongs to the private space
+- `group`: which named sessions may message each other
+- `access`: temporary observer grants for remote `inbox` / `listen`
+
+For an isolated multi-agent mesh:
+
+```bash
+cw login
+cw network create private-agents --use
+cw node
+
+cw group create mesh
+cw run --name agent-1 --group mesh -- claude
+cw run --name agent-2 --group mesh -- claude
+cw run --name agent-3 --group mesh -- claude
+
+cw group members mesh
+cw group policy mesh
+```
+
+Default group policy is `messages=internal-only` and `debug=observe-only`.
+That means:
+
+- sessions inside `mesh` can `msg` and `request` each other
+- sessions outside `mesh` cannot deliver messages into grouped sessions
+- remote `cw inbox` and `cw listen` still require an explicit observer grant
+
+Issue a temporary observer grant like this:
+
+```bash
+cw access grant dev-1:agent-2 --to alice --for 10m
+cw access accept <token>
+cw inbox dev-1:agent-2
+cw listen --session dev-1:agent-2
+```
+
+Useful group commands:
+
+```bash
+cw group create <name>
+cw group list
+cw group members <name>
+cw group add <group> <node>:<session>
+cw group remove <group> <node>:<session>
+cw group policy <group> --messages internal-only --debug observe-only
+cw group delete <name>
+```
+
+Useful access commands:
+
+```bash
+cw access grant <node>:<session> --to <principal> --for 10m
+cw access list
+cw access list --mine
+cw access list --accepted
+cw access list --accepted --node dev-1 --session agent-2 --verb msg.listen
+cw access inspect <grant-id>
+cw access drop <grant-id>
+cw access revoke <grant-id>
+cw access accept <token>
+cw access prune
+cw access watch
+```
+
+When relay auth is available, local accepted-grant operations reconcile with the
+relay automatically:
+
+- `cw access list --accepted`
+- `cw access inspect <grant-id>`
+- `cw access prune`
+
+That keeps revoked or missing grants from lingering in the local cache.
+
+If you want revocations to land immediately, keep a watcher running:
+
+```bash
+cw access watch
+```
+
+That subscribes to the relay event stream for the current network and removes
+accepted grants from the local cache as soon as the relay revokes them.
+
+---
+
 ## Detach Without Killing
 
 When attached (`cw attach`), press **Ctrl+B d** to detach. The session keeps running.

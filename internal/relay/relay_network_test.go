@@ -350,6 +350,18 @@ func TestKVIsNetworkScopedAndRequiresAuth(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 
+	memberToken := createGitHubSession(t, st, 101, "member")
+	outsiderToken := createGitHubSession(t, st, 202, "outsider")
+	now := time.Now().UTC()
+	if err := st.NetworkMemberUpsert(context.Background(), store.NetworkMember{
+		NetworkID: "network-a",
+		Subject:   "github:101",
+		Role:      store.NetworkRoleOwner,
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("NetworkMemberUpsert: %v", err)
+	}
+
 	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		BaseURL:   "http://relay.test",
 		AuthMode:  "token",
@@ -386,12 +398,15 @@ func TestKVIsNetworkScopedAndRequiresAuth(t *testing.T) {
 	}
 
 	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/api/v1/kv/tasks/build?network_id=network-a", nil)
-	req.Header.Set("Authorization", "Bearer admin-token")
+	req.Header.Set("Authorization", "Bearer "+memberToken)
 	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatalf("network-a kv get: %v", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("network-a member status = %d, want 200", resp.StatusCode)
+	}
 	var valueA bytes.Buffer
 	if _, err := valueA.ReadFrom(resp.Body); err != nil {
 		t.Fatalf("read valueA: %v", err)
@@ -401,18 +416,25 @@ func TestKVIsNetworkScopedAndRequiresAuth(t *testing.T) {
 	}
 
 	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/api/v1/kv/tasks/build?network_id=network-b", nil)
-	req.Header.Set("Authorization", "Bearer admin-token")
+	req.Header.Set("Authorization", "Bearer "+outsiderToken)
 	resp, err = client.Do(req)
 	if err != nil {
-		t.Fatalf("network-b kv get: %v", err)
+		t.Fatalf("network-b outsider kv get: %v", err)
 	}
 	defer resp.Body.Close()
-	var valueB bytes.Buffer
-	if _, err := valueB.ReadFrom(resp.Body); err != nil {
-		t.Fatalf("read valueB: %v", err)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("network-b outsider status = %d, want 403", resp.StatusCode)
 	}
-	if valueB.String() != "beta" {
-		t.Fatalf("network-b value = %q, want beta", valueB.String())
+
+	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/api/v1/kv/tasks/build?network_id=network-b", nil)
+	req.Header.Set("Authorization", "Bearer "+memberToken)
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("network-b member kv get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("network-b member status = %d, want 403", resp.StatusCode)
 	}
 }
 

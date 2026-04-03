@@ -10,3 +10,4 @@ operator/bin/
 .terraform.lock.hcl
 .worktrees/
 .tmp/
+.gocache/

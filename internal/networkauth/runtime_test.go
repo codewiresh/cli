@@ -70,7 +70,7 @@ func TestSignAndVerifySenderDelegation(t *testing.T) {
 
 	sessionID := uint32(17)
 	now := time.Now().UTC()
-	token, claims, err := SignSenderDelegation(state, "dev-1", &sessionID, "planner", []string{"msg", "request"}, "dev-2", now, time.Minute)
+	token, claims, err := SignSenderDelegation(state, "dev-1", &sessionID, "planner", []string{"mesh"}, []string{"msg", "request"}, "dev-2", now, time.Minute)
 	if err != nil {
 		t.Fatalf("SignSenderDelegation: %v", err)
 	}
@@ -85,6 +85,38 @@ func TestSignAndVerifySenderDelegation(t *testing.T) {
 	}
 	if verified.FromSessionName != "planner" {
 		t.Fatalf("FromSessionName = %q", verified.FromSessionName)
+	}
+	if len(verified.SourceGroups) != 1 || verified.SourceGroups[0] != "mesh" {
+		t.Fatalf("SourceGroups = %#v", verified.SourceGroups)
+	}
+	if verified.JTI != claims.JTI {
+		t.Fatalf("JTI = %q, want %q", verified.JTI, claims.JTI)
+	}
+}
+
+func TestSignAndVerifyObserverDelegation(t *testing.T) {
+	state, err := NewIssuerState("project-alpha")
+	if err != nil {
+		t.Fatalf("NewIssuerState: %v", err)
+	}
+
+	sessionID := uint32(29)
+	now := time.Now().UTC()
+	token, claims, err := SignObserverDelegation(state, "dev-2", &sessionID, "coder", []string{"msg.read", "msg.listen"}, SubjectKindClient, "github:1234", now, time.Minute)
+	if err != nil {
+		t.Fatalf("SignObserverDelegation: %v", err)
+	}
+
+	bundle := state.Bundle(now, time.Hour)
+	verified, err := VerifyObserverDelegation(token, bundle, now)
+	if err != nil {
+		t.Fatalf("VerifyObserverDelegation: %v", err)
+	}
+	if verified.TargetNode != "dev-2" {
+		t.Fatalf("TargetNode = %q", verified.TargetNode)
+	}
+	if verified.AudienceSubjectID != "github:1234" {
+		t.Fatalf("AudienceSubjectID = %q", verified.AudienceSubjectID)
 	}
 	if verified.JTI != claims.JTI {
 		t.Fatalf("JTI = %q, want %q", verified.JTI, claims.JTI)

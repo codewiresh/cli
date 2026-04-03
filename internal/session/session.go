@@ -198,6 +198,7 @@ type Session struct {
 	lastOutputAt atomic.Int64 // unix nano
 	eventLog     *EventLog
 	messageLog   *EventLog // JSONL at sessions/{id}/messages.jsonl
+	exitHookSent bool
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +229,8 @@ type SessionManager struct {
 
 	pendingRequestsMu sync.Mutex
 	pendingRequests   map[string]pendingRequest // requestID → pending request state
+	nameChangeHook    func(id uint32, oldName, newName string, tags []string) error
+	sessionExitHook   func(id uint32, name string, tags []string)
 }
 
 type pendingRequest struct {
@@ -288,6 +291,16 @@ func NewSessionManager(dataDir string) (*SessionManager, error) {
 	return sm, nil
 }
 
+// SetNameChangeHook registers a callback invoked before a session name change is committed.
+func (m *SessionManager) SetNameChangeHook(hook func(id uint32, oldName, newName string, tags []string) error) {
+	m.nameChangeHook = hook
+}
+
+// SetSessionExitHook registers a callback invoked after a session exits or is killed.
+func (m *SessionManager) SetSessionExitHook(hook func(id uint32, name string, tags []string)) {
+	m.sessionExitHook = hook
+}
+
 // SetName assigns a unique name to a session. Returns an error if the name is
 // invalid or already taken by another session.
 func (m *SessionManager) SetName(id uint32, name string) error {
@@ -310,6 +323,13 @@ func (m *SessionManager) SetName(id uint32, name string) error {
 	// Remove old name from index if renaming.
 	sess.mu.Lock()
 	oldName := sess.Meta.Name
+	tags := append([]string(nil), sess.Meta.Tags...)
+	if oldName != name && m.nameChangeHook != nil {
+		if err := m.nameChangeHook(id, oldName, name, tags); err != nil {
+			sess.mu.Unlock()
+			return err
+		}
+	}
 	sess.Meta.Name = name
 	sess.mu.Unlock()
 
@@ -317,6 +337,7 @@ func (m *SessionManager) SetName(id uint32, name string) error {
 		delete(m.nameIndex, oldName)
 	}
 	m.nameIndex[name] = id
+	m.triggerPersist()
 
 	return nil
 }
@@ -363,6 +384,31 @@ func (m *SessionManager) GetName(id uint32) string {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	return sess.Meta.Name
+}
+
+// GroupNames returns the session's local group tags, normalized to group names.
+func (m *SessionManager) GroupNames(id uint32) []string {
+	m.mu.RLock()
+	sess, ok := m.sessions[id]
+	m.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	var groups []string
+	for _, tag := range sess.Meta.Tags {
+		tag = strings.TrimSpace(tag)
+		if !strings.HasPrefix(tag, "group:") {
+			continue
+		}
+		groupName := strings.TrimSpace(strings.TrimPrefix(tag, "group:"))
+		if groupName == "" {
+			continue
+		}
+		groups = append(groups, groupName)
+	}
+	return groups
 }
 
 // SendMessage sends a direct message from one session to another, recording it
@@ -915,7 +961,16 @@ func (m *SessionManager) Launch(command []string, workingDir string, env []strin
 		}
 		m.Subscriptions.Publish(id, tags, statusEvent)
 
+		sess.mu.Lock()
+		name := sess.Meta.Name
+		sendExitHook := !sess.exitHookSent
+		sess.exitHookSent = true
+		sess.mu.Unlock()
 		m.releaseName(id)
+		m.triggerPersist()
+		if sendExitHook && m.sessionExitHook != nil {
+			m.sessionExitHook(id, name, append([]string(nil), tags...))
+		}
 	}()
 
 	slog.Info("session launched", "id", id)
@@ -1000,10 +1055,17 @@ func (m *SessionManager) Kill(id uint32) error {
 
 	sess.mu.Lock()
 	sess.Meta.Status = StatusKilled().String()
+	name := sess.Meta.Name
+	tags := append([]string(nil), sess.Meta.Tags...)
+	sendExitHook := !sess.exitHookSent
+	sess.exitHookSent = true
 	sess.mu.Unlock()
 
 	m.triggerPersist()
 	m.releaseName(id)
+	if sendExitHook && m.sessionExitHook != nil {
+		m.sessionExitHook(id, name, tags)
+	}
 	return nil
 }
 

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -63,6 +64,29 @@ func (s *SQLiteStore) migrate() error {
 			PRIMARY KEY (network_id, subject)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_network_members_subject ON network_members(subject)`,
+		`CREATE TABLE IF NOT EXISTS groups (
+			network_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			created_at DATETIME NOT NULL,
+			created_by TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (network_id, name)
+		)`,
+		`CREATE TABLE IF NOT EXISTS group_members (
+			network_id TEXT NOT NULL,
+			group_name TEXT NOT NULL,
+			node_name TEXT NOT NULL,
+			session_name TEXT NOT NULL,
+			created_at DATETIME NOT NULL,
+			PRIMARY KEY (network_id, group_name, node_name, session_name)
+		)`,
+		`CREATE TABLE IF NOT EXISTS group_policies (
+			network_id TEXT NOT NULL,
+			group_name TEXT NOT NULL,
+			messages_policy TEXT NOT NULL,
+			debug_policy TEXT NOT NULL,
+			updated_at DATETIME NOT NULL,
+			PRIMARY KEY (network_id, group_name)
+		)`,
 		`CREATE TABLE IF NOT EXISTS nodes (
 			network_id TEXT NOT NULL,
 			name TEXT NOT NULL,
@@ -139,6 +163,21 @@ func (s *SQLiteStore) migrate() error {
 			expires_at DATETIME NOT NULL,
 			created_at DATETIME NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS access_grants (
+			id TEXT PRIMARY KEY,
+			network_id TEXT NOT NULL,
+			target_node TEXT NOT NULL,
+			session_id INTEGER,
+			session_name TEXT NOT NULL DEFAULT '',
+			verbs TEXT NOT NULL,
+			audience_subject_kind TEXT NOT NULL,
+			audience_subject_id TEXT NOT NULL,
+			audience_display TEXT NOT NULL DEFAULT '',
+			issued_by TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL,
+			expires_at DATETIME NOT NULL,
+			revoked_at DATETIME
+		)`,
 		`CREATE TABLE IF NOT EXISTS revoked_keys (
 			public_key TEXT PRIMARY KEY,
 			revoked_at DATETIME NOT NULL,
@@ -190,6 +229,11 @@ func (s *SQLiteStore) migrate() error {
 	// Ensure unique index on token for NodeGetByToken.
 	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_token ON nodes(token) WHERE token != ''`)
 	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_node_enrollments_token_hash ON node_enrollments(token_hash) WHERE token_hash != ''`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_group_members_network_session ON group_members(network_id, node_name, session_name)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_group_members_network_group ON group_members(network_id, group_name)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_access_grants_network_expires ON access_grants(network_id, expires_at)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_access_grants_network_audience ON access_grants(network_id, audience_subject_id)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_access_grants_network_target ON access_grants(network_id, target_node)`)
 	return nil
 }
 
@@ -301,6 +345,7 @@ func (s *SQLiteStore) cleanupLoop() {
 			s.db.Exec("DELETE FROM sessions WHERE expires_at < ?", now)
 			s.db.Exec("DELETE FROM oauth_state WHERE expires_at < ?", now)
 			s.db.Exec("DELETE FROM invites WHERE expires_at < ?", now)
+			s.db.Exec("DELETE FROM access_grants WHERE expires_at < ?", now)
 			s.db.Exec("DELETE FROM oidc_sessions WHERE expires_at < ?", now)
 			s.db.Exec("DELETE FROM oidc_device_flows WHERE expires_at < ?", now)
 			s.mu.Unlock()
@@ -520,6 +565,288 @@ func (s *SQLiteStore) NetworkMemberCount(_ context.Context, networkID string) (i
 		networkID,
 	).Scan(&count)
 	return count, err
+}
+
+func (s *SQLiteStore) GroupCreate(_ context.Context, group Group) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(
+		`INSERT OR IGNORE INTO networks (network_id, created_at) VALUES (?, ?)`,
+		group.NetworkID, time.Now().UTC(),
+	); err != nil {
+		return err
+	}
+
+	res, err := tx.Exec(
+		`INSERT OR IGNORE INTO groups (network_id, name, created_at, created_by)
+		 VALUES (?, ?, ?, ?)`,
+		group.NetworkID, group.Name, group.CreatedAt, group.CreatedBy,
+	)
+	if err != nil {
+		return err
+	}
+	rowsAffected, _ := res.RowsAffected()
+	if rowsAffected == 0 {
+		return fmt.Errorf("group already exists")
+	}
+
+	if _, err := tx.Exec(
+		`INSERT OR IGNORE INTO group_policies (network_id, group_name, messages_policy, debug_policy, updated_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		group.NetworkID, group.Name, GroupMessagesInternalOnly, GroupDebugObserveOnly, group.CreatedAt,
+	); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) GroupList(_ context.Context, networkID string) ([]Group, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(
+		`SELECT network_id, name, created_at, created_by
+		 FROM groups
+		 WHERE network_id = ?
+		 ORDER BY name`,
+		networkID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var groups []Group
+	for rows.Next() {
+		var group Group
+		if err := rows.Scan(&group.NetworkID, &group.Name, &group.CreatedAt, &group.CreatedBy); err != nil {
+			return nil, err
+		}
+		groups = append(groups, group)
+	}
+	return groups, rows.Err()
+}
+
+func (s *SQLiteStore) GroupGet(_ context.Context, networkID, groupName string) (*Group, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var group Group
+	err := s.db.QueryRow(
+		`SELECT network_id, name, created_at, created_by
+		 FROM groups
+		 WHERE network_id = ? AND name = ?`,
+		networkID, groupName,
+	).Scan(&group.NetworkID, &group.Name, &group.CreatedAt, &group.CreatedBy)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &group, nil
+}
+
+func (s *SQLiteStore) GroupDelete(_ context.Context, networkID, groupName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(
+		`DELETE FROM group_members
+		 WHERE network_id = ? AND group_name = ?`,
+		networkID, groupName,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`DELETE FROM group_policies
+		 WHERE network_id = ? AND group_name = ?`,
+		networkID, groupName,
+	); err != nil {
+		return err
+	}
+	res, err := tx.Exec(
+		`DELETE FROM groups
+		 WHERE network_id = ? AND name = ?`,
+		networkID, groupName,
+	)
+	if err != nil {
+		return err
+	}
+	rowsAffected, _ := res.RowsAffected()
+	if rowsAffected == 0 {
+		return fmt.Errorf("group not found")
+	}
+
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) GroupMemberAdd(_ context.Context, member GroupMember) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var exists int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM groups WHERE network_id = ? AND name = ?`,
+		member.NetworkID, member.GroupName,
+	).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return fmt.Errorf("group not found")
+	}
+
+	_, err := s.db.Exec(
+		`INSERT OR IGNORE INTO group_members (network_id, group_name, node_name, session_name, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		member.NetworkID, member.GroupName, member.NodeName, member.SessionName, member.CreatedAt,
+	)
+	return err
+}
+
+func (s *SQLiteStore) GroupMemberRemove(_ context.Context, networkID, groupName, nodeName, sessionName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	res, err := s.db.Exec(
+		`DELETE FROM group_members
+		 WHERE network_id = ? AND group_name = ? AND node_name = ? AND session_name = ?`,
+		networkID, groupName, nodeName, sessionName,
+	)
+	if err != nil {
+		return err
+	}
+	rowsAffected, _ := res.RowsAffected()
+	if rowsAffected == 0 {
+		return fmt.Errorf("group member not found")
+	}
+	return nil
+}
+
+func (s *SQLiteStore) GroupMemberList(_ context.Context, networkID, groupName string) ([]GroupMember, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(
+		`SELECT network_id, group_name, node_name, session_name, created_at
+		 FROM group_members
+		 WHERE network_id = ? AND group_name = ?
+		 ORDER BY node_name, session_name`,
+		networkID, groupName,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var members []GroupMember
+	for rows.Next() {
+		var member GroupMember
+		if err := rows.Scan(&member.NetworkID, &member.GroupName, &member.NodeName, &member.SessionName, &member.CreatedAt); err != nil {
+			return nil, err
+		}
+		members = append(members, member)
+	}
+	return members, rows.Err()
+}
+
+func (s *SQLiteStore) GroupBindingsForSession(_ context.Context, networkID, nodeName, sessionName string) ([]GroupBinding, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(
+		`SELECT gm.group_name,
+		        COALESCE(gp.messages_policy, ?),
+		        COALESCE(gp.debug_policy, ?)
+		 FROM group_members gm
+		 LEFT JOIN group_policies gp
+		   ON gp.network_id = gm.network_id
+		  AND gp.group_name = gm.group_name
+		 WHERE gm.network_id = ?
+		   AND gm.node_name = ?
+		   AND gm.session_name = ?
+		 ORDER BY gm.group_name`,
+		GroupMessagesInternalOnly,
+		GroupDebugObserveOnly,
+		networkID,
+		nodeName,
+		sessionName,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var bindings []GroupBinding
+	for rows.Next() {
+		var binding GroupBinding
+		if err := rows.Scan(&binding.GroupName, &binding.MessagesPolicy, &binding.DebugPolicy); err != nil {
+			return nil, err
+		}
+		bindings = append(bindings, binding)
+	}
+	return bindings, rows.Err()
+}
+
+func (s *SQLiteStore) GroupPolicySet(_ context.Context, policy GroupPolicy) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var exists int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM groups WHERE network_id = ? AND name = ?`,
+		policy.NetworkID, policy.GroupName,
+	).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return fmt.Errorf("group not found")
+	}
+
+	_, err := s.db.Exec(
+		`INSERT INTO group_policies (network_id, group_name, messages_policy, debug_policy, updated_at)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT (network_id, group_name) DO UPDATE SET
+		   messages_policy = excluded.messages_policy,
+		   debug_policy = excluded.debug_policy,
+		   updated_at = excluded.updated_at`,
+		policy.NetworkID, policy.GroupName, policy.MessagesPolicy, policy.DebugPolicy, policy.UpdatedAt,
+	)
+	return err
+}
+
+func (s *SQLiteStore) GroupPolicyGet(_ context.Context, networkID, groupName string) (*GroupPolicy, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var policy GroupPolicy
+	err := s.db.QueryRow(
+		`SELECT network_id, group_name, messages_policy, debug_policy, updated_at
+		 FROM group_policies
+		 WHERE network_id = ? AND group_name = ?`,
+		networkID, groupName,
+	).Scan(&policy.NetworkID, &policy.GroupName, &policy.MessagesPolicy, &policy.DebugPolicy, &policy.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &policy, nil
 }
 
 func (s *SQLiteStore) NodeRegister(_ context.Context, node NodeRecord) error {
@@ -1048,6 +1375,155 @@ func (s *SQLiteStore) InviteDelete(_ context.Context, networkID, token string) e
 	return err
 }
 
+// --- Access Grants ---
+
+func (s *SQLiteStore) AccessGrantCreate(_ context.Context, grant AccessGrant) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	verbsJSON, err := json.Marshal(grant.Verbs)
+	if err != nil {
+		return err
+	}
+
+	var sessionID any
+	if grant.SessionID != nil {
+		sessionID = int64(*grant.SessionID)
+	}
+
+	_, err = s.db.Exec(
+		`INSERT INTO access_grants (id, network_id, target_node, session_id, session_name, verbs, audience_subject_kind, audience_subject_id, audience_display, issued_by, created_at, expires_at, revoked_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		grant.ID, grant.NetworkID, grant.TargetNode, sessionID, grant.SessionName, string(verbsJSON), grant.AudienceSubjectKind, grant.AudienceSubjectID, grant.AudienceDisplay, grant.IssuedBy, grant.CreatedAt, grant.ExpiresAt, grant.RevokedAt,
+	)
+	return err
+}
+
+func (s *SQLiteStore) AccessGrantGet(_ context.Context, networkID, grantID string) (*AccessGrant, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	row := s.db.QueryRow(
+		`SELECT id, network_id, target_node, session_id, session_name, verbs, audience_subject_kind, audience_subject_id, audience_display, issued_by, created_at, expires_at, revoked_at
+		 FROM access_grants WHERE network_id = ? AND id = ?`,
+		networkID, grantID,
+	)
+	grant, err := scanAccessGrant(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return grant, nil
+}
+
+func (s *SQLiteStore) AccessGrantList(_ context.Context, networkID string, filter AccessGrantFilter) ([]AccessGrant, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	query := `SELECT id, network_id, target_node, session_id, session_name, verbs, audience_subject_kind, audience_subject_id, audience_display, issued_by, created_at, expires_at, revoked_at
+		FROM access_grants WHERE network_id = ?`
+	args := []any{networkID}
+	if strings.TrimSpace(filter.TargetNode) != "" {
+		query += " AND target_node = ?"
+		args = append(args, strings.TrimSpace(filter.TargetNode))
+	}
+	if strings.TrimSpace(filter.AudienceSubjectID) != "" {
+		query += " AND audience_subject_id = ?"
+		args = append(args, strings.TrimSpace(filter.AudienceSubjectID))
+	}
+	if filter.ActiveOnly {
+		query += " AND expires_at > ? AND revoked_at IS NULL"
+		args = append(args, time.Now().UTC())
+	}
+	query += " ORDER BY created_at DESC"
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var grants []AccessGrant
+	for rows.Next() {
+		grant, err := scanAccessGrant(rows)
+		if err != nil {
+			return nil, err
+		}
+		grants = append(grants, *grant)
+	}
+	return grants, rows.Err()
+}
+
+func (s *SQLiteStore) AccessGrantRevoke(_ context.Context, networkID, grantID string, revokedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	res, err := s.db.Exec(
+		"UPDATE access_grants SET revoked_at = ? WHERE network_id = ? AND id = ? AND revoked_at IS NULL",
+		revokedAt, networkID, grantID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("access grant not found")
+	}
+	return nil
+}
+
+func scanAccessGrant(scanner interface{ Scan(dest ...any) error }) (*AccessGrant, error) {
+	var (
+		grant           AccessGrant
+		sessionID       sql.NullInt64
+		sessionName     string
+		verbsJSON       string
+		revokedAt       sql.NullTime
+		audienceDisplay string
+		issuedBy        string
+		audienceKind    string
+		audienceSubject string
+	)
+	if err := scanner.Scan(
+		&grant.ID,
+		&grant.NetworkID,
+		&grant.TargetNode,
+		&sessionID,
+		&sessionName,
+		&verbsJSON,
+		&audienceKind,
+		&audienceSubject,
+		&audienceDisplay,
+		&issuedBy,
+		&grant.CreatedAt,
+		&grant.ExpiresAt,
+		&revokedAt,
+	); err != nil {
+		return nil, err
+	}
+	if sessionID.Valid {
+		id := uint32(sessionID.Int64)
+		grant.SessionID = &id
+	}
+	grant.SessionName = sessionName
+	grant.AudienceSubjectKind = audienceKind
+	grant.AudienceSubjectID = audienceSubject
+	grant.AudienceDisplay = audienceDisplay
+	grant.IssuedBy = issuedBy
+	if revokedAt.Valid {
+		t := revokedAt.Time
+		grant.RevokedAt = &t
+	}
+	if strings.TrimSpace(verbsJSON) != "" {
+		if err := json.Unmarshal([]byte(verbsJSON), &grant.Verbs); err != nil {
+			return nil, err
+		}
+	}
+	return &grant, nil
+}
+
 // --- Revoked Keys ---
 
 func (s *SQLiteStore) RevokedKeyAdd(_ context.Context, key RevokedKey) error {
@@ -1108,6 +1584,30 @@ func (s *SQLiteStore) OIDCUserGetBySub(_ context.Context, sub string) (*OIDCUser
 		return nil, err
 	}
 	return &u, nil
+}
+
+func (s *SQLiteStore) OIDCUserListByUsername(_ context.Context, username string) ([]OIDCUser, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(
+		"SELECT sub, username, avatar_url, created_at, last_login_at FROM oidc_users WHERE username = ? ORDER BY sub",
+		username,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []OIDCUser
+	for rows.Next() {
+		var u OIDCUser
+		if err := rows.Scan(&u.Sub, &u.Username, &u.AvatarURL, &u.CreatedAt, &u.LastLoginAt); err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
 }
 
 // --- OIDC Sessions ---

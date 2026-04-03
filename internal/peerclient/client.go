@@ -23,17 +23,17 @@ func New(conn net.Conn) *Client {
 
 // DialWebSocket creates a peer client over a WebSocket endpoint.
 func DialWebSocket(ctx context.Context, url, token string) (*Client, *websocket.Conn, error) {
-	opts := &websocket.DialOptions{}
-	if token != "" {
-		opts.HTTPHeader = map[string][]string{
-			"Authorization": {"Bearer " + token},
-		}
-	}
-	nc, ws, err := peer.DialWebSocket(ctx, url, opts)
+	nc, ws, err := peer.DialWebSocket(ctx, url, &websocket.DialOptions{})
 	if err != nil {
 		return nil, nil, err
 	}
-	return New(nc), ws, nil
+	client := New(nc)
+	if err := client.Authenticate(ctx, token); err != nil {
+		_ = client.Close()
+		_ = ws.Close(websocket.StatusPolicyViolation, err.Error())
+		return nil, nil, err
+	}
+	return client, ws, nil
 }
 
 // Close closes the underlying connection.
@@ -70,4 +70,32 @@ func (c *Client) Do(_ context.Context, req *peer.PeerRequest) (*peer.PeerRespons
 		return resp, fmt.Errorf("%s", resp.Error)
 	}
 	return resp, nil
+}
+
+// Authenticate binds the connection to a verified runtime principal.
+func (c *Client) Authenticate(_ context.Context, runtimeCredential string) error {
+	if c == nil || c.conn == nil {
+		return fmt.Errorf("client connection is nil")
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err := peer.WriteAuthHello(c.conn, &peer.AuthHello{
+		Type:              "AuthHello",
+		RuntimeCredential: runtimeCredential,
+	}); err != nil {
+		return err
+	}
+	ack, err := peer.ReadAuthAck(c.conn)
+	if err != nil {
+		return err
+	}
+	if ack == nil {
+		return fmt.Errorf("connection closed before auth ack")
+	}
+	if ack.Type == "Error" {
+		return fmt.Errorf("%s", ack.Error)
+	}
+	return nil
 }

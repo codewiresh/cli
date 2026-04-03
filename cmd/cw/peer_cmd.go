@@ -103,6 +103,11 @@ func dialPeerClientForNode(ctx context.Context, nodeName string) (*peerclient.Cl
 	}
 
 	client := peerclient.New(tcpConn)
+	if err := client.Authenticate(ctx, runtimeCred); err != nil {
+		_ = client.Close()
+		_ = tailnetConn.Close()
+		return nil, nil, fmt.Errorf("authenticating peer connection for node %q: %w", nodeName, err)
+	}
 	return client, func() {
 		_ = client.Close()
 		_ = tailnetConn.Close()
@@ -181,6 +186,17 @@ func resolveRemoteDelivery(delivery string) string {
 		return "inbox"
 	}
 	return delivery
+}
+
+func resolveObserverGrant(locator sessionLocator, verb, explicitGrant string) (string, error) {
+	if strings.TrimSpace(explicitGrant) != "" {
+		return strings.TrimSpace(explicitGrant), nil
+	}
+	_, _, networkID, err := client.LoadRelayAuth(dataDir(), client.RelayAuthOptions{})
+	if err != nil {
+		return "", err
+	}
+	return client.ResolveAcceptedAccessGrant(dataDir(), networkID, locator.Node, locator.ID, locator.Name, verb)
 }
 
 func printMessageResponses(messages []protocol.MessageResponse) {

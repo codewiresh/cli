@@ -14,16 +14,31 @@ import (
 
 // Server handles peer messaging requests against a local SessionManager.
 type Server struct {
-	Sessions        *session.SessionManager
-	NodeName        string
-	AuthorizeSender func(context.Context, string, *SessionLocator, string) (*AuthorizedSender, error)
+	Sessions          *session.SessionManager
+	NodeName          string
+	AuthorizePeer     func(context.Context, string) (*AuthenticatedPeer, error)
+	AuthorizeSender   func(context.Context, string, *SessionLocator, string) (*AuthorizedSender, error)
+	AuthorizeDelivery func(context.Context, *AuthorizedSender, *SessionLocator, string) error
+	AuthorizeObserver func(context.Context, *AuthenticatedPeer, string, *SessionLocator, string) error
+	// RequireRemoteSenderAuth enforces capability-based auth for remote peer RPC.
+	// When enabled, remote writes require a verified sender delegation and remote
+	// inbox/listen operations are rejected until explicit read capabilities exist.
+	RequireRemoteSenderAuth bool
+}
+
+// AuthenticatedPeer is the authenticated remote principal bound to a connection.
+type AuthenticatedPeer struct {
+	NetworkID   string
+	SubjectKind string
+	SubjectID   string
 }
 
 // AuthorizedSender is the verified remote sender identity for cross-node traffic.
 type AuthorizedSender struct {
-	DisplayName string
-	SessionID   *uint32
-	SessionName string
+	DisplayName  string
+	SessionID    *uint32
+	SessionName  string
+	SourceGroups []string
 }
 
 // Serve accepts connections until the listener is closed or ctx is canceled.
@@ -54,6 +69,10 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 // ServeConn serves peer requests on a single connection.
 func (s *Server) ServeConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
+	principal, err := s.authenticateConn(ctx, conn)
+	if err != nil {
+		return
+	}
 	for {
 		req, err := ReadRequest(conn)
 		if err != nil {
@@ -63,24 +82,59 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) {
 			return
 		}
 		if req.Type == "MsgListen" {
-			s.handleMsgListen(conn, req)
+			s.handleMsgListen(ctx, principal, conn, req)
 			return
 		}
-		resp := s.handle(ctx, req)
+		resp := s.handle(ctx, principal, req)
 		if writeErr := WriteResponse(conn, resp); writeErr != nil {
 			return
 		}
 	}
 }
 
-func (s *Server) handle(ctx context.Context, req *PeerRequest) *PeerResponse {
+func (s *Server) authenticateConn(ctx context.Context, conn net.Conn) (*AuthenticatedPeer, error) {
+	authorizePeer := s.AuthorizePeer
+	if authorizePeer == nil {
+		return nil, nil
+	}
+
+	hello, err := ReadAuthHello(conn)
+	if err != nil {
+		_ = WriteAuthAck(conn, &AuthAck{Type: "Error", Error: "peer authentication failed"})
+		return nil, err
+	}
+	if hello == nil {
+		_ = WriteAuthAck(conn, &AuthAck{Type: "Error", Error: "peer authentication failed"})
+		return nil, fmt.Errorf("peer authentication failed")
+	}
+	principal, err := authorizePeer(ctx, hello.RuntimeCredential)
+	if err != nil {
+		_ = WriteAuthAck(conn, &AuthAck{Type: "Error", Error: err.Error()})
+		return nil, err
+	}
+	if principal == nil {
+		_ = WriteAuthAck(conn, &AuthAck{Type: "Error", Error: "peer authentication failed"})
+		return nil, fmt.Errorf("peer authentication failed")
+	}
+	if err := WriteAuthAck(conn, &AuthAck{
+		Type:        "AuthAck",
+		NetworkID:   principal.NetworkID,
+		SubjectKind: principal.SubjectKind,
+		SubjectID:   principal.SubjectID,
+	}); err != nil {
+		return nil, err
+	}
+	return principal, nil
+}
+
+func (s *Server) handle(ctx context.Context, principal *AuthenticatedPeer, req *PeerRequest) *PeerResponse {
 	switch req.Type {
 	case "MsgSend":
 		return s.handleMsgSend(ctx, req)
 	case "MsgRequest":
 		return s.handleMsgRequest(ctx, req)
 	case "MsgRead":
-		return s.handleMsgRead(req)
+		return s.handleMsgRead(ctx, principal, req)
 	case "MsgListen":
 		return &PeerResponse{OpID: req.OpID, Type: "Error", Error: "MsgListen must be served as a stream"}
 	case "MsgReply":
@@ -95,11 +149,17 @@ func (s *Server) handleMsgSend(ctx context.Context, req *PeerRequest) *PeerRespo
 	if err != nil {
 		return &PeerResponse{OpID: req.OpID, Type: "Error", Error: err.Error()}
 	}
+	if s.RequireRemoteSenderAuth && req.From == nil {
+		return &PeerResponse{OpID: req.OpID, Type: "Error", Error: "remote send requires verified sender delegation"}
+	}
 
 	var msgID string
 	if req.From != nil {
 		authorized, err := s.authorizeSender(ctx, "msg", req)
 		if err != nil {
+			return &PeerResponse{OpID: req.OpID, Type: "Error", Error: err.Error()}
+		}
+		if err := s.authorizeDelivery(ctx, authorized, req.To, "msg"); err != nil {
 			return &PeerResponse{OpID: req.OpID, Type: "Error", Error: err.Error()}
 		}
 		msgID, err = s.Sessions.SendRemoteMessage(authorized.DisplayName, toID, req.Body)
@@ -117,7 +177,18 @@ func (s *Server) handleMsgSend(ctx context.Context, req *PeerRequest) *PeerRespo
 	}
 }
 
-func (s *Server) handleMsgRead(req *PeerRequest) *PeerResponse {
+func (s *Server) handleMsgRead(ctx context.Context, principal *AuthenticatedPeer, req *PeerRequest) *PeerResponse {
+	if s.RequireRemoteSenderAuth {
+		if principal == nil {
+			return &PeerResponse{OpID: req.OpID, Type: "Error", Error: "peer authentication is required"}
+		}
+		if req.Session == nil {
+			return &PeerResponse{OpID: req.OpID, Type: "Error", Error: "remote inbox reads require a session"}
+		}
+		if err := s.authorizeObserver(ctx, principal, "msg.read", req.Session, req.ObserverCap); err != nil {
+			return &PeerResponse{OpID: req.OpID, Type: "Error", Error: err.Error()}
+		}
+	}
 	sessionID, err := s.resolveLocal(req.Session)
 	if err != nil {
 		return &PeerResponse{OpID: req.OpID, Type: "Error", Error: err.Error()}
@@ -154,6 +225,9 @@ func (s *Server) handleMsgRequest(ctx context.Context, req *PeerRequest) *PeerRe
 	if err != nil {
 		return &PeerResponse{OpID: req.OpID, Type: "Error", Error: err.Error()}
 	}
+	if s.RequireRemoteSenderAuth && req.From == nil {
+		return &PeerResponse{OpID: req.OpID, Type: "Error", Error: "remote request requires verified sender delegation"}
+	}
 
 	var (
 		requestID string
@@ -163,6 +237,9 @@ func (s *Server) handleMsgRequest(ctx context.Context, req *PeerRequest) *PeerRe
 	if req.From != nil {
 		authorized, err := s.authorizeSender(ctx, "request", req)
 		if err != nil {
+			return &PeerResponse{OpID: req.OpID, Type: "Error", Error: err.Error()}
+		}
+		if err := s.authorizeDelivery(ctx, authorized, req.To, "request"); err != nil {
 			return &PeerResponse{OpID: req.OpID, Type: "Error", Error: err.Error()}
 		}
 		fromLabel = authorized.DisplayName
@@ -228,7 +305,17 @@ func (s *Server) authorizeSender(ctx context.Context, verb string, req *PeerRequ
 	return s.AuthorizeSender(ctx, verb, req.From, req.SenderCap)
 }
 
+func (s *Server) authorizeDelivery(ctx context.Context, sender *AuthorizedSender, to *SessionLocator, verb string) error {
+	if s.AuthorizeDelivery == nil {
+		return nil
+	}
+	return s.AuthorizeDelivery(ctx, sender, to, verb)
+}
+
 func (s *Server) handleMsgReply(ctx context.Context, req *PeerRequest) *PeerResponse {
+	if s.RequireRemoteSenderAuth && req.From == nil {
+		return &PeerResponse{OpID: req.OpID, Type: "Error", Error: "remote reply requires verified sender delegation"}
+	}
 	if req.From != nil {
 		authorized, err := s.authorizeSender(ctx, "reply", req)
 		if err != nil {
@@ -249,7 +336,21 @@ func (s *Server) handleMsgReply(ctx context.Context, req *PeerRequest) *PeerResp
 	}
 }
 
-func (s *Server) handleMsgListen(conn net.Conn, req *PeerRequest) {
+func (s *Server) handleMsgListen(ctx context.Context, principal *AuthenticatedPeer, conn net.Conn, req *PeerRequest) {
+	if s.RequireRemoteSenderAuth {
+		if principal == nil {
+			_ = WriteResponse(conn, &PeerResponse{OpID: req.OpID, Type: "Error", Error: "peer authentication is required"})
+			return
+		}
+		if req.Session == nil {
+			_ = WriteResponse(conn, &PeerResponse{OpID: req.OpID, Type: "Error", Error: "remote message subscriptions require a session"})
+			return
+		}
+		if err := s.authorizeObserver(ctx, principal, "msg.listen", req.Session, req.ObserverCap); err != nil {
+			_ = WriteResponse(conn, &PeerResponse{OpID: req.OpID, Type: "Error", Error: err.Error()})
+			return
+		}
+	}
 	var sessionID *uint32
 	if req.Session != nil {
 		resolved, err := s.resolveLocal(req.Session)
@@ -289,6 +390,13 @@ func (s *Server) handleMsgListen(conn net.Conn, req *PeerRequest) {
 			return
 		}
 	}
+}
+
+func (s *Server) authorizeObserver(ctx context.Context, principal *AuthenticatedPeer, verb string, session *SessionLocator, observerCap string) error {
+	if s.AuthorizeObserver == nil {
+		return fmt.Errorf("remote observer auth is not configured")
+	}
+	return s.AuthorizeObserver(ctx, principal, verb, session, observerCap)
 }
 
 func (s *Server) resolveLocal(locator *SessionLocator) (uint32, error) {

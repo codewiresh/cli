@@ -11,25 +11,28 @@ import (
 
 const environmentRunExecTimeoutSeconds = 30
 
-var runInEnvironmentTarget = func(envID, workDir, name string, envVars []string, tags []string, command []string) (*platform.ExecResult, error) {
+var runInEnvironmentTarget = func(envID, workDir, name, group string, envVars []string, tags []string, command []string) (*platform.ExecResult, error) {
 	orgID, client, err := getDefaultOrg()
 	if err != nil {
 		return nil, err
 	}
 	return client.ExecInEnvironment(orgID, envID, &platform.ExecRequest{
-		Command:    buildEnvironmentRunCommand(workDir, name, envVars, tags, command),
+		Command:    buildEnvironmentRunCommand(workDir, name, group, envVars, tags, command),
 		WorkingDir: "/workspace",
 		Timeout:    environmentRunExecTimeoutSeconds,
 	})
 }
 
-func buildEnvironmentRunCommand(workDir, name string, envVars []string, tags []string, command []string) []string {
+func buildEnvironmentRunCommand(workDir, name, group string, envVars []string, tags []string, command []string) []string {
 	runCommand := []string{"cw", "run"}
 	if workDir != "" {
 		runCommand = append(runCommand, "--dir", workDir)
 	}
 	if name != "" {
 		runCommand = append(runCommand, "--name", name)
+	}
+	if group != "" {
+		runCommand = append(runCommand, "--group", group)
 	}
 	for _, envVar := range envVars {
 		runCommand = append(runCommand, "--env", envVar)

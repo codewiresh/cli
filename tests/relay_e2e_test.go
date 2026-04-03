@@ -33,7 +33,7 @@ func TestRelayE2E(t *testing.T) {
 	defer httpSrv.Close()
 
 	// SSH server.
-	sshSrv, err := localrelay.NewSSHServer(st, hub, sessions)
+	sshSrv, err := localrelay.NewSSHServer(t.TempDir(), st, hub, sessions)
 	if err != nil {
 		t.Fatalf("creating SSH server: %v", err)
 	}

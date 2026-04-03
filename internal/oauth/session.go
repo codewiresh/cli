@@ -74,7 +74,7 @@ func RequireAuth(st store.Store, adminToken string) func(http.Handler) http.Hand
 func RequireAuthWithFallback(st store.Store, adminToken string, fallback ExternalTokenValidator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			identity := authenticate(r, st, adminToken, fallback)
+			identity := AuthenticateRequest(r, st, adminToken, fallback)
 			if identity == nil {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
@@ -84,6 +84,12 @@ func RequireAuthWithFallback(st store.Store, adminToken string, fallback Externa
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// AuthenticateRequest resolves the caller identity from the request without
+// mutating the request context.
+func AuthenticateRequest(r *http.Request, st store.Store, adminToken string, fallback ExternalTokenValidator) *AuthIdentity {
+	return authenticate(r, st, adminToken, fallback)
 }
 
 // authenticate checks all authentication methods and returns the identity,

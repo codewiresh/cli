@@ -5,11 +5,16 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/subtle"
+	"crypto/x509"
 	"encoding/binary"
+	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -26,10 +31,10 @@ type SSHServer struct {
 }
 
 // NewSSHServer creates an SSH server that authenticates via node tokens.
-func NewSSHServer(st store.Store, hub *NodeHub, sessions *PendingSessions) (*SSHServer, error) {
-	hostKey, err := generateEd25519Key()
+func NewSSHServer(dataDir string, st store.Store, hub *NodeHub, sessions *PendingSessions) (*SSHServer, error) {
+	hostKey, err := loadOrCreateEd25519HostKey(dataDir)
 	if err != nil {
-		return nil, fmt.Errorf("generating host key: %w", err)
+		return nil, fmt.Errorf("loading host key: %w", err)
 	}
 
 	srv := &SSHServer{hub: hub, sessions: sessions}
@@ -217,6 +222,41 @@ func generateSessionID() string {
 func generateEd25519Key() (ssh.Signer, error) {
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
+		return nil, err
+	}
+	return ssh.NewSignerFromKey(priv)
+}
+
+func loadOrCreateEd25519HostKey(dataDir string) (ssh.Signer, error) {
+	if strings.TrimSpace(dataDir) == "" {
+		return generateEd25519Key()
+	}
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return nil, err
+	}
+
+	path := filepath.Join(dataDir, "ssh_host_ed25519")
+	pemBytes, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		return ssh.ParsePrivateKey(pemBytes)
+	case !errors.Is(err, os.ErrNotExist):
+		return nil, err
+	}
+
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		return nil, err
+	}
+	pemBytes = pem.EncodeToMemory(&pem.Block{
+		Type:  "PRIVATE KEY",
+		Bytes: encoded,
+	})
+	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
 		return nil, err
 	}
 	return ssh.NewSignerFromKey(priv)

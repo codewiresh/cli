@@ -27,7 +27,7 @@ func TestSSHConnectAndShell(t *testing.T) {
 
 	// Start the SSH server.
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
-	sshSrv, err := localrelay.NewSSHServer(st, hub, sessions)
+	sshSrv, err := localrelay.NewSSHServer(t.TempDir(), st, hub, sessions)
 	if err != nil {
 		t.Fatal(err)
 	}

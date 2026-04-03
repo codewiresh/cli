@@ -42,6 +42,23 @@ func startRuntimePeerMessagingTestServer(t *testing.T, nodeName, sessionName str
 	peerServer := &peer.Server{
 		Sessions: manager,
 		NodeName: nodeName,
+		AuthorizePeer: func(_ context.Context, runtimeCredential string) (*peer.AuthenticatedPeer, error) {
+			if state == nil {
+				if strings.TrimSpace(runtimeCredential) == "" {
+					return nil, io.EOF
+				}
+				return &peer.AuthenticatedPeer{SubjectKind: networkauth.SubjectKindClient, SubjectID: "client"}, nil
+			}
+			claims, err := networkauth.VerifyRuntimeCredential(runtimeCredential, state.Bundle(time.Now().UTC(), time.Hour), time.Now().UTC())
+			if err != nil {
+				return nil, err
+			}
+			return &peer.AuthenticatedPeer{
+				NetworkID:   claims.NetworkID,
+				SubjectKind: claims.SubjectKind,
+				SubjectID:   claims.SubjectID,
+			}, nil
+		},
 	}
 
 	mux := http.NewServeMux()
@@ -252,6 +269,17 @@ func startRuntimeTailnetRelayNode(t *testing.T, relayNetwork, relaySession, node
 	peerServer := &peer.Server{
 		Sessions: manager,
 		NodeName: nodeName,
+		AuthorizePeer: func(_ context.Context, runtimeCredential string) (*peer.AuthenticatedPeer, error) {
+			claims, err := networkauth.VerifyRuntimeCredential(runtimeCredential, state.Bundle(time.Now().UTC(), time.Hour), time.Now().UTC())
+			if err != nil {
+				return nil, err
+			}
+			return &peer.AuthenticatedPeer{
+				NetworkID:   claims.NetworkID,
+				SubjectKind: claims.SubjectKind,
+				SubjectID:   claims.SubjectID,
+			}, nil
+		},
 	}
 	nodeToken, _, err := networkauth.SignRuntimeCredential(state, networkauth.SubjectKindNode, nodeName, time.Now().UTC(), time.Minute)
 	if err != nil {

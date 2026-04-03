@@ -18,7 +18,7 @@ import (
 // handleClient reads the first control frame from a client, dispatches the
 // request by type, and returns. Each Unix/WebSocket connection is handled
 // by exactly one goroutine calling this function.
-func handleClient(reader connection.FrameReader, writer connection.FrameWriter, manager *session.SessionManager, kvStore *session.KVStore, issueSenderDelegation func(context.Context, uint32, string, string) (*networkauth.SenderDelegationResponse, error)) {
+func handleClient(reader connection.FrameReader, writer connection.FrameWriter, manager *session.SessionManager, kvStore *session.KVStore, authorizeLocalDelivery func(context.Context, uint32, uint32, string) error, issueSenderDelegation func(context.Context, uint32, string, string) (*networkauth.SenderDelegationResponse, error)) {
 	defer reader.Close()
 	defer writer.Close()
 
@@ -61,6 +61,7 @@ func handleClient(reader connection.FrameReader, writer connection.FrameWriter, 
 		}
 		if req.Name != "" {
 			if nameErr := manager.SetName(id, req.Name); nameErr != nil {
+				_ = manager.Kill(id)
 				_ = writer.SendResponse(&protocol.Response{
 					Type:    "Error",
 					Message: nameErr.Error(),
@@ -305,13 +306,13 @@ func handleClient(reader connection.FrameReader, writer connection.FrameWriter, 
 		handleWait(reader, writer, manager, req)
 
 	case "MsgSend":
-		handleMsgSend(writer, manager, req)
+		handleMsgSend(writer, manager, authorizeLocalDelivery, req)
 
 	case "MsgRead":
 		handleMsgRead(writer, manager, req)
 
 	case "MsgRequest":
-		handleMsgRequest(reader, writer, manager, req)
+		handleMsgRequest(reader, writer, manager, authorizeLocalDelivery, req)
 
 	case "MsgReply":
 		handleMsgReply(writer, manager, req)
@@ -835,7 +836,7 @@ func deliveryIncludesInbox(delivery string) bool {
 }
 
 // handleMsgSend processes a MsgSend request.
-func handleMsgSend(writer connection.FrameWriter, manager *session.SessionManager, req protocol.Request) {
+func handleMsgSend(writer connection.FrameWriter, manager *session.SessionManager, authorizeLocalDelivery func(context.Context, uint32, uint32, string) error, req protocol.Request) {
 	toID, err := resolveRecipient(manager, req.ToID, req.ToName)
 	if err != nil {
 		_ = writer.SendResponse(&protocol.Response{Type: "Error", Message: err.Error()})
@@ -846,6 +847,12 @@ func handleMsgSend(writer connection.FrameWriter, manager *session.SessionManage
 	var fromID uint32
 	if req.ID != nil {
 		fromID = *req.ID
+	}
+	if authorizeLocalDelivery != nil {
+		if err := authorizeLocalDelivery(context.Background(), fromID, toID, "msg"); err != nil {
+			_ = writer.SendResponse(&protocol.Response{Type: "Error", Message: err.Error()})
+			return
+		}
 	}
 
 	var msgID string
@@ -977,6 +984,7 @@ func handleMsgRequest(
 	reader connection.FrameReader,
 	writer connection.FrameWriter,
 	manager *session.SessionManager,
+	authorizeLocalDelivery func(context.Context, uint32, uint32, string) error,
 	req protocol.Request,
 ) {
 	toID, err := resolveRecipient(manager, req.ToID, req.ToName)
@@ -988,6 +996,12 @@ func handleMsgRequest(
 	var fromID uint32
 	if req.ID != nil {
 		fromID = *req.ID
+	}
+	if authorizeLocalDelivery != nil {
+		if err := authorizeLocalDelivery(context.Background(), fromID, toID, "request"); err != nil {
+			_ = writer.SendResponse(&protocol.Response{Type: "Error", Message: err.Error()})
+			return
+		}
 	}
 
 	delivery := req.Delivery

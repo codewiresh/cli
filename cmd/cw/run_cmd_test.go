@@ -13,6 +13,7 @@ func TestBuildEnvironmentRunCommandIncludesFlags(t *testing.T) {
 	got := buildEnvironmentRunCommand(
 		"/workspace/app",
 		"planner",
+		"mesh",
 		[]string{"FOO=bar", "A=B"},
 		[]string{"alpha", "beta"},
 		[]string{"claude", "--version"},
@@ -22,6 +23,7 @@ func TestBuildEnvironmentRunCommandIncludesFlags(t *testing.T) {
 		"cw", "run",
 		"--dir", "/workspace/app",
 		"--name", "planner",
+		"--group", "mesh",
 		"--env", "FOO=bar",
 		"--env", "A=B",
 		"--tag", "alpha",
@@ -56,12 +58,13 @@ func TestRunCmdUsesCurrentEnvironmentTarget(t *testing.T) {
 		}, nil
 	}
 
-	var gotEnvID, gotWorkDir, gotName string
+	var gotEnvID, gotWorkDir, gotName, gotGroup string
 	var gotEnvVars, gotTags, gotCommand []string
-	runInEnvironmentTarget = func(envID, workDir, name string, envVars []string, tags []string, command []string) (*platform.ExecResult, error) {
+	runInEnvironmentTarget = func(envID, workDir, name, group string, envVars []string, tags []string, command []string) (*platform.ExecResult, error) {
 		gotEnvID = envID
 		gotWorkDir = workDir
 		gotName = name
+		gotGroup = group
 		gotEnvVars = append([]string(nil), envVars...)
 		gotTags = append([]string(nil), tags...)
 		gotCommand = append([]string(nil), command...)
@@ -69,7 +72,7 @@ func TestRunCmdUsesCurrentEnvironmentTarget(t *testing.T) {
 	}
 
 	cmd := runCmd()
-	cmd.SetArgs([]string{"--name", "planner", "--tag", "alpha", "--env", "FOO=bar", "--", "claude", "--version"})
+	cmd.SetArgs([]string{"--name", "planner", "--group", "mesh", "--tag", "alpha", "--env", "FOO=bar", "--", "claude", "--version"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("run command failed: %v", err)
 	}
@@ -83,14 +86,36 @@ func TestRunCmdUsesCurrentEnvironmentTarget(t *testing.T) {
 	if gotName != "planner" {
 		t.Fatalf("name = %q, want planner", gotName)
 	}
+	if gotGroup != "mesh" {
+		t.Fatalf("group = %q, want mesh", gotGroup)
+	}
 	if len(gotEnvVars) != 1 || gotEnvVars[0] != "FOO=bar" {
 		t.Fatalf("env vars = %#v", gotEnvVars)
 	}
-	if len(gotTags) != 1 || gotTags[0] != "alpha" {
+	if len(gotTags) != 2 || gotTags[0] != "alpha" || gotTags[1] != "group:mesh" {
 		t.Fatalf("tags = %#v", gotTags)
 	}
 	if strings.Join(gotCommand, "\x00") != strings.Join([]string{"claude", "--version"}, "\x00") {
 		t.Fatalf("command = %#v", gotCommand)
+	}
+}
+
+func TestRunCmdRequiresNameForGroup(t *testing.T) {
+	cmd := runCmd()
+	cmd.SetArgs([]string{"--group", "mesh", "--", "claude"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected grouped run without name to fail")
+	}
+	if !strings.Contains(err.Error(), "--group requires --name") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAppendGroupTagDeduplicates(t *testing.T) {
+	got := appendGroupTag([]string{"alpha", "group:mesh"}, "mesh")
+	if strings.Join(got, "\x00") != strings.Join([]string{"alpha", "group:mesh"}, "\x00") {
+		t.Fatalf("tags = %#v", got)
 	}
 }
 

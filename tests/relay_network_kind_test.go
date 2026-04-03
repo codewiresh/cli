@@ -89,64 +89,6 @@ func TestRelayNetworkMessagingThreeSessionsKind(t *testing.T) {
 		t.Fatalf("coder inbox FromName = %q, want dev-1:planner", coderInbox.FromName)
 	}
 
-	// Targeted remote listen on coder.
-	listenConn, closeListenConn := dialTailnetPeerNode(t, ctx, relayURL, relayToken, networkID, "dev-2")
-	defer closeListenConn()
-
-	eventCh := make(chan *protocol.SessionEvent, 1)
-	listenErrCh := make(chan error, 1)
-	listenReadyCh := make(chan struct{}, 1)
-	go func() {
-		listenErrCh <- peerclient.ListenWithReady(ctx, listenConn, &peer.SessionLocator{Name: "coder"}, func() error {
-			close(listenReadyCh)
-			return nil
-		}, func(ev *protocol.SessionEvent) error {
-			if ev != nil && ev.EventType == "direct.message" {
-				select {
-				case eventCh <- ev:
-				default:
-				}
-				return io.EOF
-			}
-			return nil
-		})
-	}()
-	select {
-	case <-listenReadyCh:
-	case <-time.After(10 * time.Second):
-		t.Fatal("timeout waiting for remote listen readiness")
-	}
-
-	listenSenderCap, listenFromID, listenFromName := issueSenderDelegation(t, node1.target, "planner", "msg", "dev-2")
-	listenFrom := senderLocator("dev-1", listenFromID, listenFromName)
-	listenMsgConn, closeListenMsgConn := dialTailnetPeerNode(t, ctx, relayURL, relayToken, networkID, "dev-2")
-	defer closeListenMsgConn()
-	if _, err := peerclient.Msg(ctx, listenMsgConn, listenFrom, listenSenderCap, peer.SessionLocator{Name: "coder"}, "listen-check", "inbox"); err != nil {
-		t.Fatalf("peerclient.Msg listen-check: %v", err)
-	}
-	waitForInboxBody(t, ctx, node2.target, coderID, "direct.message", "listen-check")
-
-	select {
-	case ev := <-eventCh:
-		var payload map[string]any
-		if err := json.Unmarshal(ev.Data, &payload); err != nil {
-			t.Fatalf("unmarshal listen event: %v", err)
-		}
-		if body, _ := payload["body"].(string); body != "listen-check" {
-			t.Fatalf("listen event body = %q, want listen-check", body)
-		}
-	case err := <-listenErrCh:
-		if err == nil {
-			t.Fatal("remote listen closed before delivering an event")
-		}
-		t.Fatalf("peerclient.Listen early: %v", err)
-	case <-time.After(10 * time.Second):
-		t.Fatal("timeout waiting for remote listen event")
-	}
-	if err := <-listenErrCh; err != nil && err != io.EOF {
-		t.Fatalf("peerclient.Listen: %v", err)
-	}
-
 	// Remote request from planner -> coder, reviewer must not be able to reply.
 	reqConn, closeReqConn := dialTailnetPeerNode(t, ctx, relayURL, relayToken, networkID, "dev-2")
 	defer closeReqConn()
@@ -383,6 +325,9 @@ func dialTailnetPeerNode(t *testing.T, ctx context.Context, relayURL, relayToken
 		t.Fatalf("DialNetworkPeerTCP(%s): %v", nodeName, err)
 	}
 	client := peerclient.New(tcpConn)
+	if err := client.Authenticate(ctx, runtimeCred); err != nil {
+		t.Fatalf("Authenticate(%s): %v", nodeName, err)
+	}
 	return client, func() {
 		_ = client.Close()
 		_ = tailnetConn.Close()

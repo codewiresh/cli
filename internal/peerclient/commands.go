@@ -48,15 +48,21 @@ func Msg(ctx context.Context, conn Requester, from *peer.SessionLocator, senderC
 
 // Inbox reads a remote inbox via peer RPC.
 func Inbox(ctx context.Context, conn Requester, session peer.SessionLocator, tail int) ([]protocol.MessageResponse, error) {
+	return InboxWithGrant(ctx, conn, session, "", tail)
+}
+
+// InboxWithGrant reads a remote inbox via peer RPC using an observer capability.
+func InboxWithGrant(ctx context.Context, conn Requester, session peer.SessionLocator, observerCap string, tail int) ([]protocol.MessageResponse, error) {
 	if err := session.Validate(); err != nil {
 		return nil, err
 	}
 	t := uint(tail)
 	resp, err := conn.Do(ctx, &peer.PeerRequest{
-		OpID:    uuid.NewString(),
-		Type:    "MsgRead",
-		Session: &session,
-		Tail:    &t,
+		OpID:        uuid.NewString(),
+		Type:        "MsgRead",
+		Session:     &session,
+		ObserverCap: observerCap,
+		Tail:        &t,
 	})
 	if err != nil {
 		return nil, err
@@ -116,16 +122,27 @@ func Reply(ctx context.Context, conn Requester, from *peer.SessionLocator, sende
 
 // Listen opens a streaming peer RPC listen operation and invokes onEvent for each event.
 func Listen(ctx context.Context, client *Client, session *peer.SessionLocator, onEvent func(*protocol.SessionEvent) error) error {
-	return listen(ctx, client, session, nil, onEvent)
+	return ListenWithGrant(ctx, client, session, "", onEvent)
 }
 
 // ListenWithReady opens a streaming peer RPC listen operation and calls onReady once
 // the remote subscription has acknowledged the listen request.
 func ListenWithReady(ctx context.Context, client *Client, session *peer.SessionLocator, onReady func() error, onEvent func(*protocol.SessionEvent) error) error {
-	return listen(ctx, client, session, onReady, onEvent)
+	return listen(ctx, client, session, "", onReady, onEvent)
 }
 
-func listen(ctx context.Context, client *Client, session *peer.SessionLocator, onReady func() error, onEvent func(*protocol.SessionEvent) error) error {
+// ListenWithGrant opens a streaming peer RPC listen operation using an observer capability.
+func ListenWithGrant(ctx context.Context, client *Client, session *peer.SessionLocator, observerCap string, onEvent func(*protocol.SessionEvent) error) error {
+	return listen(ctx, client, session, observerCap, nil, onEvent)
+}
+
+// ListenWithGrantAndReady opens a streaming peer RPC listen operation using an observer
+// capability and invokes onReady after the remote side acknowledges the subscription.
+func ListenWithGrantAndReady(ctx context.Context, client *Client, session *peer.SessionLocator, observerCap string, onReady func() error, onEvent func(*protocol.SessionEvent) error) error {
+	return listen(ctx, client, session, observerCap, onReady, onEvent)
+}
+
+func listen(ctx context.Context, client *Client, session *peer.SessionLocator, observerCap string, onReady func() error, onEvent func(*protocol.SessionEvent) error) error {
 	if client == nil || client.conn == nil {
 		return fmt.Errorf("client connection is nil")
 	}
@@ -139,9 +156,10 @@ func listen(ctx context.Context, client *Client, session *peer.SessionLocator, o
 	defer client.mu.Unlock()
 
 	req := &peer.PeerRequest{
-		OpID:    uuid.NewString(),
-		Type:    "MsgListen",
-		Session: session,
+		OpID:        uuid.NewString(),
+		Type:        "MsgListen",
+		ObserverCap: observerCap,
+		Session:     session,
 	}
 	if err := peer.WriteRequest(client.conn, req); err != nil {
 		return err

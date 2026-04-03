@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/codewiresh/codewire/internal/networkauth"
 	"github.com/codewiresh/codewire/internal/peer"
 	"github.com/codewiresh/codewire/internal/peerclient"
+	"github.com/codewiresh/codewire/internal/protocol"
 )
 
 func setupPeerRuntimeNode(t *testing.T, networkID string) (*Node, string, string, *networkauth.IssuerState) {
@@ -43,20 +45,42 @@ func setupPeerRuntimeNode(t *testing.T, networkID string) (*Node, string, string
 	}
 
 	relaySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/network-auth/bundle" {
+		switch r.URL.Path {
+		case "/api/v1/network-auth/bundle":
+			if got := r.Header.Get("Authorization"); got != "Bearer relay-node-token" {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if got := r.URL.Query().Get("network_id"); got != networkID {
+				t.Fatalf("network_id = %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(state.Bundle(time.Now().UTC(), time.Hour))
+		case "/api/v1/groups/bindings":
+			if got := r.Header.Get("Authorization"); got != "Bearer relay-node-token" {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode([]any{})
+		case "/api/v1/groups/mesh/members", "/api/v1/groups/other/members":
+			if got := r.Header.Get("Authorization"); got != "Bearer relay-node-token" {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+		default:
 			http.NotFound(w, r)
 			return
 		}
-		if got := r.URL.Query().Get("network_id"); got != networkID {
-			t.Fatalf("network_id = %q", got)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(state.Bundle(time.Now().UTC(), time.Hour))
 	}))
 	t.Cleanup(relaySrv.Close)
 	relayURL := relaySrv.URL
 	n.config.RelayURL = &relayURL
 	n.config.RelayNetwork = &networkID
+	relayNodeToken := "relay-node-token"
+	n.config.RelayToken = &relayNodeToken
 
 	oldListen := n.config.Node.Listen
 	t.Cleanup(func() { n.config.Node.Listen = oldListen })
@@ -74,9 +98,13 @@ func setupPeerRuntimeNode(t *testing.T, networkID string) (*Node, string, string
 
 	go func() {
 		_ = n.runWSServer(ctx, addr, &peer.Server{
-			Sessions:        n.Manager,
-			NodeName:        n.config.Node.Name,
-			AuthorizeSender: n.authorizePeerSender,
+			Sessions:                n.Manager,
+			NodeName:                n.config.Node.Name,
+			AuthorizePeer:           n.authorizePeerRuntime,
+			AuthorizeSender:         n.authorizePeerSender,
+			AuthorizeDelivery:       n.authorizePeerDelivery,
+			AuthorizeObserver:       n.authorizePeerObserver,
+			RequireRemoteSenderAuth: true,
 		})
 	}()
 	time.Sleep(50 * time.Millisecond)
@@ -85,7 +113,7 @@ func setupPeerRuntimeNode(t *testing.T, networkID string) (*Node, string, string
 }
 
 func TestPeerWebSocketEndpointRequiresRuntimeCredential(t *testing.T) {
-	_, baseURL, token, _ := setupPeerRuntimeNode(t, "project-alpha")
+	n, baseURL, token, state := setupPeerRuntimeNode(t, "project-alpha")
 
 	client, ws, err := peerclient.DialWebSocket(context.Background(), baseURL, token)
 	if err != nil {
@@ -94,23 +122,46 @@ func TestPeerWebSocketEndpointRequiresRuntimeCredential(t *testing.T) {
 	defer ws.CloseNow()
 	defer client.Close()
 
-	msgID, err := peerclient.Msg(context.Background(), client, nil, "", peer.SessionLocator{Name: "coder"}, "hello over /peer", "inbox")
+	if _, err := peerclient.Msg(context.Background(), client, nil, "", peer.SessionLocator{Name: "coder"}, "hello over /peer", "inbox"); err == nil {
+		t.Fatal("expected anonymous remote message to be rejected")
+	}
+
+	delegation, _, err := networkauth.SignSenderDelegation(state, "dev-1", nil, "planner", nil, []string{"msg"}, n.config.Node.Name, time.Now().UTC(), time.Minute)
 	if err != nil {
-		t.Fatalf("Msg: %v", err)
+		t.Fatalf("SignSenderDelegation: %v", err)
+	}
+	msgID, err := peerclient.Msg(context.Background(), client, &peer.SessionLocator{Node: "dev-1", Name: "planner"}, delegation, peer.SessionLocator{Name: "coder"}, "hello over /peer", "inbox")
+	if err != nil {
+		t.Fatalf("delegated Msg: %v", err)
 	}
 	if msgID == "" {
 		t.Fatal("expected non-empty message id")
 	}
 
-	messages, err := peerclient.Inbox(context.Background(), client, peer.SessionLocator{Name: "coder"}, 10)
+	recipientID, err := n.Manager.ResolveByName("coder")
 	if err != nil {
-		t.Fatalf("Inbox: %v", err)
+		t.Fatalf("ResolveByName: %v", err)
 	}
-	if len(messages) != 1 {
-		t.Fatalf("messages len = %d, want 1", len(messages))
+	events, err := n.Manager.ReadMessages(recipientID, 10)
+	if err != nil {
+		t.Fatalf("ReadMessages: %v", err)
 	}
-	if messages[0].Body != "hello over /peer" {
-		t.Fatalf("message body = %q", messages[0].Body)
+	if len(events) != 1 {
+		t.Fatalf("messages len = %d, want 1", len(events))
+	}
+	if _, err := peerclient.Inbox(context.Background(), client, peer.SessionLocator{Name: "coder"}, 10); err == nil {
+		t.Fatal("expected remote inbox reads to be rejected")
+	}
+	observerGrant, _, err := networkauth.SignObserverDelegation(state, n.config.Node.Name, nil, "coder", []string{"msg.read", "msg.listen"}, networkauth.SubjectKindClient, "github:1234", time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatalf("SignObserverDelegation: %v", err)
+	}
+	messages, err := peerclient.InboxWithGrant(context.Background(), client, peer.SessionLocator{Name: "coder"}, observerGrant, 10)
+	if err != nil {
+		t.Fatalf("InboxWithGrant: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Body != "hello over /peer" {
+		t.Fatalf("messages = %#v", messages)
 	}
 }
 
@@ -177,7 +228,7 @@ func TestAuthorizePeerSenderRejectsSenderDelegationReplay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveByName: %v", err)
 	}
-	delegation, _, err := networkauth.SignSenderDelegation(state, "dev-1", &sessionID, "coder", []string{"msg"}, n.config.Node.Name, time.Now().UTC(), time.Minute)
+	delegation, _, err := networkauth.SignSenderDelegation(state, "dev-1", &sessionID, "coder", nil, []string{"msg"}, n.config.Node.Name, time.Now().UTC(), time.Minute)
 	if err != nil {
 		t.Fatalf("SignSenderDelegation: %v", err)
 	}
@@ -193,5 +244,228 @@ func TestAuthorizePeerSenderRejectsSenderDelegationReplay(t *testing.T) {
 
 	if _, err := n.authorizePeerSender(context.Background(), "msg", from, delegation); err == nil {
 		t.Fatal("expected replayed sender delegation to fail")
+	}
+}
+
+func TestPeerWebSocketListenRequiresObserverGrant(t *testing.T) {
+	n, baseURL, token, state := setupPeerRuntimeNode(t, "project-alpha")
+
+	client, ws, err := peerclient.DialWebSocket(context.Background(), baseURL, token)
+	if err != nil {
+		t.Fatalf("DialWebSocket: %v", err)
+	}
+	defer ws.CloseNow()
+	defer client.Close()
+
+	session := &peer.SessionLocator{Name: "coder"}
+	if err := peerclient.ListenWithGrant(context.Background(), client, session, "", func(*protocol.SessionEvent) error { return nil }); err == nil {
+		t.Fatal("expected listen without observer grant to fail")
+	}
+	_ = client.Close()
+	ws.CloseNow()
+
+	token, _, err = networkauth.SignRuntimeCredential(state, networkauth.SubjectKindClient, "github:1234", time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatalf("SignRuntimeCredential: %v", err)
+	}
+	client, ws, err = peerclient.DialWebSocket(context.Background(), baseURL, token)
+	if err != nil {
+		t.Fatalf("DialWebSocket second: %v", err)
+	}
+	defer ws.CloseNow()
+	defer client.Close()
+
+	observerGrant, _, err := networkauth.SignObserverDelegation(state, n.config.Node.Name, nil, "coder", []string{"msg.listen"}, networkauth.SubjectKindClient, "github:1234", time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatalf("SignObserverDelegation: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventsCh := make(chan *protocol.SessionEvent, 1)
+	readyCh := make(chan struct{}, 1)
+	errCh := make(chan error, 1)
+	var once sync.Once
+	go func() {
+		errCh <- peerclient.ListenWithGrantAndReady(ctx, client, session, observerGrant, func() error {
+			readyCh <- struct{}{}
+			return nil
+		}, func(event *protocol.SessionEvent) error {
+			once.Do(func() {
+				eventsCh <- event
+				cancel()
+			})
+			return nil
+		})
+	}()
+
+	select {
+	case <-readyCh:
+	case err := <-errCh:
+		t.Fatalf("listen exited early: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for listen ack")
+	}
+
+	recipientID, err := n.Manager.ResolveByName("coder")
+	if err != nil {
+		t.Fatalf("ResolveByName: %v", err)
+	}
+	if _, err := n.Manager.SendMessage(0, recipientID, "hello listen"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	select {
+	case event := <-eventsCh:
+		if event == nil || event.EventType != "direct.message" {
+			t.Fatalf("event = %#v", event)
+		}
+	case err := <-errCh:
+		if err != nil && err != context.Canceled {
+			t.Fatalf("listen error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for listen event")
+	}
+}
+
+func TestPeerWebSocketRejectsCrossGroupMessage(t *testing.T) {
+	n, baseURL, token, state := setupPeerRuntimeNode(t, "project-alpha")
+
+	groupedID, err := n.Manager.Launch([]string{"sleep", "30"}, "/tmp", nil, nil, "", "group:mesh")
+	if err != nil {
+		t.Fatalf("Launch grouped session: %v", err)
+	}
+	t.Cleanup(func() { _ = n.Manager.Kill(groupedID) })
+	if err := n.Manager.SetName(groupedID, "mesh-agent"); err != nil {
+		t.Fatalf("SetName grouped session: %v", err)
+	}
+
+	client, ws, err := peerclient.DialWebSocket(context.Background(), baseURL, token)
+	if err != nil {
+		t.Fatalf("DialWebSocket: %v", err)
+	}
+	defer ws.CloseNow()
+	defer client.Close()
+
+	delegation, _, err := networkauth.SignSenderDelegation(state, "dev-1", nil, "outsider", []string{"other"}, []string{"msg"}, n.config.Node.Name, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatalf("SignSenderDelegation: %v", err)
+	}
+	if _, err := peerclient.Msg(context.Background(), client, &peer.SessionLocator{Node: "dev-1", Name: "outsider"}, delegation, peer.SessionLocator{Name: "mesh-agent"}, "blocked", "inbox"); err == nil {
+		t.Fatal("expected cross-group message to be rejected")
+	}
+}
+
+func TestPeerWebSocketRejectsCrossGroupRequest(t *testing.T) {
+	n, baseURL, token, state := setupPeerRuntimeNode(t, "project-alpha")
+
+	groupedID, err := n.Manager.Launch([]string{"sleep", "30"}, "/tmp", nil, nil, "", "group:mesh")
+	if err != nil {
+		t.Fatalf("Launch grouped session: %v", err)
+	}
+	t.Cleanup(func() { _ = n.Manager.Kill(groupedID) })
+	if err := n.Manager.SetName(groupedID, "mesh-agent"); err != nil {
+		t.Fatalf("SetName grouped session: %v", err)
+	}
+
+	client, ws, err := peerclient.DialWebSocket(context.Background(), baseURL, token)
+	if err != nil {
+		t.Fatalf("DialWebSocket: %v", err)
+	}
+	defer ws.CloseNow()
+	defer client.Close()
+
+	delegation, _, err := networkauth.SignSenderDelegation(state, "dev-1", nil, "outsider", []string{"other"}, []string{"request"}, n.config.Node.Name, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatalf("SignSenderDelegation: %v", err)
+	}
+	if _, err := peerclient.Request(context.Background(), client, &peer.SessionLocator{Node: "dev-1", Name: "outsider"}, delegation, peer.SessionLocator{Name: "mesh-agent"}, "blocked request", 1, "inbox"); err == nil {
+		t.Fatal("expected cross-group request to be rejected")
+	}
+}
+
+func TestAuthorizeLocalDeliveryRejectsCrossGroupMessage(t *testing.T) {
+	n, _, _, _ := setupPeerRuntimeNode(t, "project-alpha")
+
+	fromID, err := n.Manager.Launch([]string{"sleep", "30"}, "/tmp", nil, nil, "", "group:other")
+	if err != nil {
+		t.Fatalf("Launch source session: %v", err)
+	}
+	t.Cleanup(func() { _ = n.Manager.Kill(fromID) })
+	if err := n.Manager.SetName(fromID, "other-agent"); err != nil {
+		t.Fatalf("SetName source session: %v", err)
+	}
+
+	toID, err := n.Manager.Launch([]string{"sleep", "30"}, "/tmp", nil, nil, "", "group:mesh")
+	if err != nil {
+		t.Fatalf("Launch target session: %v", err)
+	}
+	t.Cleanup(func() { _ = n.Manager.Kill(toID) })
+	if err := n.Manager.SetName(toID, "mesh-agent"); err != nil {
+		t.Fatalf("SetName target session: %v", err)
+	}
+
+	if err := n.authorizeLocalDelivery(context.Background(), fromID, toID, "msg"); err == nil {
+		t.Fatal("expected local cross-group delivery to be rejected")
+	}
+}
+
+func TestNodeSyncsGroupMembershipOnNameChangeAndExit(t *testing.T) {
+	dir := t.TempDir()
+	n, err := NewNode(dir)
+	if err != nil {
+		t.Fatalf("NewNode: %v", err)
+	}
+
+	var requests []string
+	relaySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
+		if got := r.Header.Get("Authorization"); got != "Bearer relay-node-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Path != "/api/v1/groups/mesh/members" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodPost:
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+		case http.MethodDelete:
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer relaySrv.Close()
+
+	relayURL := relaySrv.URL
+	relayToken := "relay-node-token"
+	n.config.RelayURL = &relayURL
+	n.config.RelayToken = &relayToken
+	n.config.Node.Name = "node-a"
+
+	sessionID, err := n.Manager.Launch([]string{"sleep", "30"}, "/tmp", nil, nil, "", "group:mesh")
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	if err := n.Manager.SetName(sessionID, "agent-1"); err != nil {
+		t.Fatalf("SetName: %v", err)
+	}
+	if err := n.Manager.Kill(sessionID); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+
+	if len(requests) != 2 {
+		t.Fatalf("requests = %#v", requests)
+	}
+	if requests[0] != "POST /api/v1/groups/mesh/members?" {
+		t.Fatalf("add request = %q", requests[0])
+	}
+	if requests[1] != "DELETE /api/v1/groups/mesh/members?node_name=node-a&session_name=agent-1" {
+		t.Fatalf("remove request = %q", requests[1])
 	}
 }

@@ -199,7 +199,7 @@ func loadIssuerState(ctx context.Context, st store.Store, networkID string) (*ne
 		return nil, err
 	}
 	if len(raw) == 0 {
-		return nil, fmt.Errorf("issuer state not found")
+		return nil, errIssuerStateNotFound
 	}
 
 	var state networkauth.IssuerState
