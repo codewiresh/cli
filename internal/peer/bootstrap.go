@@ -82,11 +82,16 @@ func DialEnvironmentPeerTCP(ctx context.Context, client *platform.Client, orgID,
 	}
 	debugf("initial derp target host=%s port=%d insecure=%t", serverHost, derpPort, insecure)
 
+	logger := slog.Default()
+	if os.Getenv("CW_DEBUG_TAILNET") != "" {
+		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	}
+
 	conn, err := tailnetlib.NewConn(&tailnetlib.Options{
 		ID:        clientID,
 		Addresses: []netip.Prefix{clientAddr},
 		DERPMap:   derpMap,
-		Logger:    slog.Default(),
+		Logger:    logger,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("wireguard conn: %w", err)
