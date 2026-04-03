@@ -159,6 +159,20 @@ func DialEnvironmentPeerTCP(ctx context.Context, client *platform.Client, orgID,
 						insecure = region.Nodes[0].InsecureForTests
 					}
 					debugf("received derp map host=%s port=%d insecure=%t", node, port, insecure)
+					if os.Getenv("CW_DERP_ONLY") != "" {
+						// Strip STUN nodes to force relay-only mode.
+						for _, region := range resp.DERPMap.Regions {
+							filtered := make([]*tailcfg.DERPNode, 0, len(region.Nodes))
+							for _, n := range region.Nodes {
+								if !n.STUNOnly {
+									n.STUNPort = -1
+									filtered = append(filtered, n)
+								}
+							}
+							region.Nodes = filtered
+						}
+						debugf("DERP-only mode: stripped STUN nodes")
+					}
 					conn.SetDERPMap(resp.DERPMap)
 				}
 				if resp.Type == "peer_update" && len(resp.Nodes) > 0 {
