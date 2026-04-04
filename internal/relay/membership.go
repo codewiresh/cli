@@ -11,6 +11,22 @@ import (
 	"github.com/codewiresh/codewire/internal/store"
 )
 
+func normalizeIdentitySubject(sub string) string {
+	sub = strings.TrimSpace(sub)
+	switch {
+	case sub == "":
+		return ""
+	case strings.HasPrefix(sub, "github:"),
+		strings.HasPrefix(sub, "oidc:"),
+		strings.HasPrefix(sub, "user:"):
+		return sub
+	case strings.HasPrefix(sub, "platform:"):
+		return "user:" + strings.TrimPrefix(sub, "platform:")
+	default:
+		return "oidc:" + sub
+	}
+}
+
 func membershipSubject(identity *oauth.AuthIdentity) (string, error) {
 	switch {
 	case identity == nil:
@@ -18,7 +34,7 @@ func membershipSubject(identity *oauth.AuthIdentity) (string, error) {
 	case identity.IsAdmin:
 		return "admin", nil
 	case identity.Sub != "":
-		return "oidc:" + identity.Sub, nil
+		return normalizeIdentitySubject(identity.Sub), nil
 	case identity.UserID != 0:
 		return fmt.Sprintf("github:%d", identity.UserID), nil
 	default:

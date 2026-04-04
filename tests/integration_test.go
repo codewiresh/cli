@@ -1071,7 +1071,7 @@ func TestMultiplexedWatch(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Use WatchMultiByTag with a writer to capture output.
-	target := &client.Target{Local: filepath.Join(dir, "codewire.sock")}
+	target := &client.Target{Local: dir}
 	var buf strings.Builder
 	timeout := uint64(5)
 	err := client.WatchMultiByTag(target, "mux-test", &buf, &timeout)
@@ -1198,7 +1198,7 @@ func TestCorruptSessionsJsonRecovery(t *testing.T) {
 func TestResolveSessionOrTag(t *testing.T) {
 	dir := tempDir(t, "resolve-tag")
 	sock := startTestNode(t, dir)
-	target := &client.Target{Local: filepath.Join(dir, "codewire.sock")}
+	target := &client.Target{Local: dir}
 
 	// Launch two sessions with tag "batch-99"
 	r1 := requestResponse(t, sock, &protocol.Request{
@@ -1245,7 +1245,7 @@ func TestResolveSessionOrTag(t *testing.T) {
 func TestWaitByTagPositional(t *testing.T) {
 	dir := tempDir(t, "wait-tag-positional")
 	sock := startTestNode(t, dir)
-	target := &client.Target{Local: filepath.Join(dir, "codewire.sock")}
+	target := &client.Target{Local: dir}
 
 	// Launch two short-lived sessions tagged "wt-42"
 	for i := 0; i < 2; i++ {
@@ -1277,7 +1277,7 @@ func TestWaitByTagPositional(t *testing.T) {
 func TestListStatusFilter(t *testing.T) {
 	dir := tempDir(t, "list-status")
 	sock := startTestNode(t, dir)
-	target := &client.Target{Local: filepath.Join(dir, "codewire.sock")}
+	target := &client.Target{Local: dir}
 
 	// Launch one long-running and one short session
 	requestResponse(t, sock, &protocol.Request{
@@ -1645,7 +1645,7 @@ func TestHookNoGateway(t *testing.T) {
 	dir := tempDir(t, "hook-no-gateway")
 	sock := startTestNode(t, dir)
 
-	target := &client.Target{Local: filepath.Join(dir, "codewire.sock")}
+	target := &client.Target{Local: dir}
 	_ = sock // node is running but no gateway session
 
 	var out strings.Builder
@@ -1667,7 +1667,7 @@ func TestHookReadOnlyBypass(t *testing.T) {
 	t.Parallel()
 	dir := tempDir(t, "hook-readonly")
 	_ = startTestNode(t, dir)
-	target := &client.Target{Local: filepath.Join(dir, "codewire.sock")}
+	target := &client.Target{Local: dir}
 
 	for _, tool := range []string{"Read", "Glob", "Grep", "WebFetch", "WebSearch", "TodoRead", "TaskList", "TaskGet"} {
 		tool := tool
@@ -1723,7 +1723,7 @@ func TestHookDenied(t *testing.T) {
 	}
 
 	// Run Hook() in a goroutine — it will block waiting for the gateway reply.
-	target := &client.Target{Local: filepath.Join(dir, "codewire.sock")}
+	target := &client.Target{Local: dir}
 	var out strings.Builder
 	hookDone := make(chan struct {
 		blocked bool

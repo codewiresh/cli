@@ -269,7 +269,7 @@ func clientSubjectID(identity *oauth.AuthIdentity) string {
 	case identity.IsAdmin:
 		return "admin"
 	case identity.Sub != "":
-		return "oidc:" + identity.Sub
+		return normalizeIdentitySubject(identity.Sub)
 	case identity.UserID != 0:
 		return fmt.Sprintf("github:%d", identity.UserID)
 	case strings.TrimSpace(identity.Username) != "":

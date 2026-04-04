@@ -57,14 +57,11 @@ func NewNode(dataDir string) (*Node, error) {
 	}
 	slog.Info("auth token ready", "token", token)
 
-	runtimeDir := SocketDir(dataDir)
-	_ = os.MkdirAll(runtimeDir, 0o700)
-
 	node := &Node{
 		Manager:     mgr,
 		KVStore:     session.NewKVStore(),
-		socketPath:  filepath.Join(runtimeDir, "codewire.sock"),
-		pidPath:     filepath.Join(runtimeDir, "codewire.pid"),
+		socketPath:  filepath.Join(dataDir, "codewire.sock"),
+		pidPath:     filepath.Join(dataDir, "codewire.pid"),
 		config:      cfg,
 		dataDir:     dataDir,
 		runtimeSeen: networkauth.NewReplayCache(),
@@ -242,51 +239,6 @@ func (n *Node) relayNodeToken() string {
 func (n *Node) Cleanup() {
 	_ = os.Remove(n.socketPath)
 	_ = os.Remove(n.pidPath)
-}
-
-// SocketDir returns a directory suitable for Unix domain sockets.
-//
-// Some filesystems (9PFS in Xen guests, some network mounts) don't support
-// Unix sockets. We probe the data directory first; if bind() fails with
-// ENOTSUP or EOPNOTSUPP, fall back to $XDG_RUNTIME_DIR, /codewire/run,
-// or /tmp in that order.
-func SocketDir(dataDir string) string {
-	if canBindUnixSocket(dataDir) {
-		return dataDir
-	}
-	slog.Warn("data directory does not support Unix sockets, using fallback", "dataDir", dataDir)
-
-	for _, candidate := range []string{
-		os.Getenv("XDG_RUNTIME_DIR"),
-		"/codewire/run",
-		"/tmp",
-	} {
-		if candidate == "" {
-			continue
-		}
-		dir := filepath.Join(candidate, "codewire")
-		_ = os.MkdirAll(dir, 0o700)
-		if canBindUnixSocket(dir) {
-			slog.Info("using fallback socket directory", "dir", dir)
-			return dir
-		}
-	}
-	// Last resort: return dataDir and let the caller deal with the error.
-	return dataDir
-}
-
-// canBindUnixSocket probes whether the given directory supports Unix sockets
-// by attempting a bind + immediate cleanup.
-func canBindUnixSocket(dir string) bool {
-	probe := filepath.Join(dir, ".sock-probe")
-	_ = os.Remove(probe)
-	ln, err := net.Listen("unix", probe)
-	if err != nil {
-		return false
-	}
-	ln.Close()
-	_ = os.Remove(probe)
-	return true
 }
 
 // runWSServer starts an HTTP server that upgrades /ws connections to WebSocket

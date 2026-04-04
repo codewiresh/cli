@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	urlpkg "net/url"
 	"strings"
@@ -46,15 +47,22 @@ func platformSessionAuthValidator(issuer string) oauth.ExternalTokenValidator {
 
 		resp, err := upstreamPlatformAuthHTTPClient.Do(req)
 		if err != nil {
+			slog.Warn("relay platform auth request failed", "url", sessionURL, "error", err)
 			return nil
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
+			slog.Warn("relay platform auth rejected token", "url", sessionURL, "status", resp.StatusCode)
 			return nil
 		}
 
 		var sessionResp platformSessionResponse
-		if err := json.NewDecoder(resp.Body).Decode(&sessionResp); err != nil || sessionResp.User == nil {
+		if err := json.NewDecoder(resp.Body).Decode(&sessionResp); err != nil {
+			slog.Warn("relay platform auth decode failed", "url", sessionURL, "error", err)
+			return nil
+		}
+		if sessionResp.User == nil {
+			slog.Warn("relay platform auth returned no user", "url", sessionURL)
 			return nil
 		}
 
@@ -64,7 +72,7 @@ func platformSessionAuthValidator(issuer string) oauth.ExternalTokenValidator {
 		}
 		sub := strings.TrimSpace(sessionResp.User.ID)
 		if sub != "" {
-			sub = "platform:" + sub
+			sub = "user:" + sub
 		}
 
 		if sub == "" && username == "" {

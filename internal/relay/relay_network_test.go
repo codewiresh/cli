@@ -343,6 +343,78 @@ func TestOIDCAuthAcceptsPlatformSessionBearer(t *testing.T) {
 	}
 }
 
+func TestOIDCAuthPlatformSessionMapsToRelayMembership(t *testing.T) {
+	var upstream *httptest.Server
+	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"issuer":                        upstream.URL,
+				"authorization_endpoint":        upstream.URL + "/auth",
+				"token_endpoint":                upstream.URL + "/token",
+				"userinfo_endpoint":             upstream.URL + "/userinfo",
+				"device_authorization_endpoint": upstream.URL + "/device",
+			})
+		case "/api/auth/get-session":
+			if got := r.Header.Get("Authorization"); got != "Bearer platform-session-token" {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"user": map[string]string{
+					"id":    "user_123",
+					"email": "n@noeljackson.com",
+					"name":  "Noel Jackson",
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	st, err := store.NewSQLiteStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	now := time.Now().UTC()
+	if err := st.NetworkEnsure(context.Background(), "network-a"); err != nil {
+		t.Fatalf("NetworkEnsure: %v", err)
+	}
+	if err := st.NetworkMemberUpsert(context.Background(), store.NetworkMember{
+		NetworkID: "network-a",
+		Subject:   "user:user_123",
+		Role:      store.NetworkRoleOwner,
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("NetworkMemberUpsert: %v", err)
+	}
+
+	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+		BaseURL:          "http://relay.test",
+		AuthMode:         "oidc",
+		OIDCIssuer:       upstream.URL,
+		OIDCClientID:     "codewire-relay",
+		OIDCClientSecret: "secret",
+	}, nil, networkauth.NewReplayCache(), nil))
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/network-auth/runtime/client?network_id=network-a", nil)
+	req.Header.Set("Authorization", "Bearer platform-session-token")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("runtime credential request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
 func TestKVIsNetworkScopedAndRequiresAuth(t *testing.T) {
 	st, err := store.NewSQLiteStore(t.TempDir())
 	if err != nil {
