@@ -2365,12 +2365,25 @@ func ensureNode() error {
 	exe, _ := os.Executable()
 	cmd := exec.Command(exe, "node")
 	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
+	// Write node stdout/stderr to a log file for diagnostics.
+	logPath := filepath.Join(dir, "node.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err == nil {
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+	}
+
 	if err := cmd.Start(); err != nil {
+		if logFile != nil {
+			logFile.Close()
+		}
 		return fmt.Errorf("spawning node: %w", err)
+	}
+	// Close our handle; the child inherited the fd.
+	if logFile != nil {
+		logFile.Close()
 	}
 	fmt.Fprintf(os.Stderr, "[cw] node started (pid %d)\n", cmd.Process.Pid)
 
@@ -2383,7 +2396,7 @@ func ensureNode() error {
 		}
 	}
 
-	return fmt.Errorf("node failed to start (socket not available after 5s)")
+	return fmt.Errorf("node failed to start (socket not available after 5s). Check %s for details", logPath)
 }
 
 func resolveRelayURL() (string, error) {
