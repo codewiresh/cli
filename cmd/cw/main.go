@@ -2327,7 +2327,8 @@ func resolveTarget() (*client.Target, error) {
 	dir := dataDir()
 
 	if serverFlag == "" {
-		return &client.Target{Local: dir}, nil
+		runtimeDir := node.SocketDir(dir)
+		return &client.Target{Local: filepath.Join(runtimeDir, "codewire.sock")}, nil
 	}
 
 	url := serverFlag
@@ -2349,7 +2350,9 @@ func resolveTarget() (*client.Target, error) {
 
 func ensureNode() error {
 	dir := dataDir()
-	sock := filepath.Join(dir, "codewire.sock")
+	_ = os.MkdirAll(dir, 0o755)
+	runtimeDir := node.SocketDir(dir)
+	sock := filepath.Join(runtimeDir, "codewire.sock")
 
 	// Check if node is already running.
 	if conn, err := net.Dial("unix", sock); err == nil {
@@ -2359,7 +2362,6 @@ func ensureNode() error {
 
 	// Clean stale socket.
 	_ = os.Remove(sock)
-	_ = os.MkdirAll(dir, 0o755)
 
 	// Spawn `cw node` in background.
 	exe, _ := os.Executable()

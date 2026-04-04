@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"path/filepath"
 	"strings"
 
 	"nhooyr.io/websocket"
@@ -17,7 +16,7 @@ import (
 // Target describes where to connect: either a local Unix socket or a remote
 // WebSocket endpoint.
 type Target struct {
-	Local string // dataDir path (empty if remote)
+	Local string // full socket path (empty if remote)
 	URL   string // ws:// or wss:// URL for remote
 	Token string // auth token for remote
 }
@@ -29,8 +28,7 @@ func (t *Target) IsLocal() bool { return t.Local != "" }
 // and FrameWriter pair. The caller is responsible for closing both.
 func (t *Target) Connect() (connection.FrameReader, connection.FrameWriter, error) {
 	if t.IsLocal() {
-		sockPath := filepath.Join(t.Local, "codewire.sock")
-		conn, err := net.Dial("unix", sockPath)
+		conn, err := net.Dial("unix", t.Local)
 		if err != nil {
 			return nil, nil, fmt.Errorf("connecting to local socket: %w", err)
 		}

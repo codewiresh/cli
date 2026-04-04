@@ -183,7 +183,7 @@ func startRelayKindNode(t *testing.T, parent context.Context, relayURL, relayTok
 		done <- n.Run(ctx)
 	}()
 
-	target := &client.Target{Local: dataDir}
+	target := &client.Target{Local: filepath.Join(dataDir, "codewire.sock")}
 	waitForLocalNodeReady(t, ctx, dataDir, done)
 
 	t.Cleanup(func() {
