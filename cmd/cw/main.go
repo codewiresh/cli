@@ -100,6 +100,7 @@ func main() {
 		grouped(currentCmd(), "environment"),
 		grouped(execCmd(), "environment"),
 		grouped(sshCmd(), "environment"),
+		grouped(vscodeCmd(), "environment"),
 		grouped(platformListCmd(), "environment"),
 		// Sessions
 		grouped(runCmd(), "session"),
