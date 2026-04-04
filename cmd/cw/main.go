@@ -128,6 +128,7 @@ func main() {
 		grouped(orgsCmd(), "platform"),
 		grouped(resourcesCmd(), "platform"),
 		grouped(secretsCmd(), "platform"),
+		grouped(apiKeysCmd(), "platform"),
 		grouped(costCmd(), "platform"),
 		grouped(billingCmd(), "platform"),
 		grouped(githubCmd(), "platform"),
