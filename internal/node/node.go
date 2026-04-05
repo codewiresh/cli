@@ -92,7 +92,17 @@ func (n *Node) Run(ctx context.Context) error {
 
 	ln, err := net.Listen("unix", n.socketPath)
 	if err != nil {
-		return fmt.Errorf("listening on unix socket: %w", err)
+		// Fall back to /tmp if home dir doesn't support unix sockets (e.g. 9PFS).
+		tmpSocket := "/tmp/codewire/codewire.sock"
+		os.MkdirAll(filepath.Dir(tmpSocket), 0o700)
+		_ = os.Remove(tmpSocket)
+		ln, err = net.Listen("unix", tmpSocket)
+		if err != nil {
+			return fmt.Errorf("listening on unix socket: %w", err)
+		}
+		n.socketPath = tmpSocket
+		// Symlink so clients find it at the expected path.
+		_ = os.Symlink(tmpSocket, filepath.Join(n.dataDir, "codewire.sock"))
 	}
 	if err := os.Chmod(n.socketPath, 0o600); err != nil {
 		_ = ln.Close()
