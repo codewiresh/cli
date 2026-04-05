@@ -140,7 +140,7 @@ func LoadConfig(dataDir string) (*Config, error) {
 		}
 	}
 	if cfg.RelayNetwork == nil {
-		if network := os.Getenv("CODEWIRE_RELAY_NETWORK"); network != "" {
+		if network := os.Getenv("CODEWIRE_NETWORK_ID"); network != "" {
 			cfg.RelayNetwork = &network
 		}
 	}
