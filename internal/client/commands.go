@@ -2024,6 +2024,7 @@ func loadConfigFromDir(dataDir string) (*relayAuthConfig, error) {
 	var cfg struct {
 		RelayURL     *string `toml:"relay_url"`
 		RelayNetwork *string `toml:"relay_network"`
+		RelayToken   *string `toml:"relay_token"`
 	}
 
 	if len(data) > 0 {
@@ -2038,6 +2039,9 @@ func loadConfigFromDir(dataDir string) (*relayAuthConfig, error) {
 	}
 	if cfg.RelayNetwork != nil {
 		result.relayNetwork = *cfg.RelayNetwork
+	}
+	if cfg.RelayToken != nil && *cfg.RelayToken != "" {
+		result.authToken = *cfg.RelayToken
 	}
 	if relayURL := os.Getenv("CODEWIRE_RELAY_URL"); relayURL != "" {
 		result.relayURL = relayURL
