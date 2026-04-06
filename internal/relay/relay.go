@@ -218,7 +218,7 @@ func buildMux(hub *NodeHub, sessions *PendingSessions, st store.Store, cfg Relay
 	mux.HandleFunc("POST /api/v1/node-enrollments/redeem", nodeEnrollmentRedeemHandler(st))
 	mux.Handle("POST /api/v1/nodes", authMiddleware(http.HandlerFunc(nodeRegisterDeprecatedHandler())))
 	mux.Handle("DELETE /api/v1/nodes/{name}", authMiddleware(http.HandlerFunc(nodeRevokeHandler(st))))
-	mux.Handle("GET /api/v1/nodes", authMiddleware(http.HandlerFunc(nodesListHandler(st))))
+	mux.Handle("GET /api/v1/nodes", groupMemberAuth(nodesListHandler(st)))
 
 	// Invite management (owner-only).
 	mux.Handle("POST /api/v1/invites", authMiddleware(http.HandlerFunc(inviteCreateHandler(st))))
