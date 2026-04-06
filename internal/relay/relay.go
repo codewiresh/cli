@@ -231,7 +231,11 @@ func buildMux(hub *NodeHub, sessions *PendingSessions, st store.Store, cfg Relay
 			}
 			resp := make([]nodeResponse, 0, len(nodes))
 			for _, n := range nodes {
-				resp = append(resp, nodeResponse{Name: n.Name, PeerURL: n.PeerURL})
+				resp = append(resp, nodeResponse{
+					Name:      n.Name,
+					PeerURL:   n.PeerURL,
+					Connected: time.Since(n.LastSeenAt) < 2*time.Minute,
+				})
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(resp)
