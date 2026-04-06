@@ -165,6 +165,13 @@ func envConnectHint(env platform.Environment) string {
 	return "cw ssh " + ref
 }
 
+func environmentStateLabel(env platform.Environment) string {
+	if env.DeletionGraceUntil != nil && env.State != "destroyed" && env.State != "destroying" {
+		return stateColor("deleting")
+	}
+	return stateColor(env.State)
+}
+
 func environmentDisplayName(env platform.Environment) string {
 	if env.Name != nil && strings.TrimSpace(*env.Name) != "" {
 		return *env.Name
@@ -191,15 +198,12 @@ func environmentCardLines(env platform.Environment, currentRef string) []string 
 	if env.Protected {
 		protectTag = " [protected]"
 	}
-	if env.DeletionGraceUntil != nil {
-		protectTag = " [deleting]"
-	}
 
 	lines := []string{
 		fmt.Sprintf("%s [%s]  %s  %s%s%s",
 			bold(environmentDisplayName(env)),
 			dim(shortEnvID(env.ID)),
-			stateColor(env.State),
+			environmentStateLabel(env),
 			timeAgo(env.CreatedAt),
 			marker,
 			protectTag,
@@ -213,6 +217,9 @@ func environmentCardLines(env platform.Environment, currentRef string) []string 
 	}
 	if env.Network != nil && strings.TrimSpace(*env.Network) != "" {
 		lines = append(lines, fmt.Sprintf("  network: %s", *env.Network))
+	}
+	if env.DeletionGraceUntil != nil {
+		lines = append(lines, fmt.Sprintf("  deleting at: %s", *env.DeletionGraceUntil))
 	}
 	if hint := envConnectHint(env); hint != "--" {
 		lines = append(lines, fmt.Sprintf("  connect: %s", hint))
@@ -619,16 +626,6 @@ Examples:
 				req.IncludeUserSecrets = &f
 			}
 
-			// Resolve Claude OAuth token if Claude is one of the configured agents.
-			if requestHasAgent(req, "claude-code") {
-				token := resolveClaudeOAuthToken()
-				if token != "" {
-					req.AgentEnv = map[string]string{
-						"CLAUDE_CODE_OAUTH_TOKEN": token,
-					}
-				}
-			}
-
 			var env *platform.Environment
 			err = withReauth(client, func() error {
 				var createErr error
@@ -774,7 +771,7 @@ func envInfoCmd() *cobra.Command {
 			fmt.Printf("%-14s %s\n", bold("ID:"), dim(env.ID))
 			fmt.Printf("%-14s %s\n", bold("Name:"), envName)
 			fmt.Printf("%-14s %s\n", bold("Type:"), env.Type)
-			fmt.Printf("%-14s %s\n", bold("State:"), stateColor(env.State))
+			fmt.Printf("%-14s %s\n", bold("State:"), environmentStateLabel(*env))
 			fmt.Printf("%-14s %s\n", bold("DesiredState:"), stateColor(env.DesiredState))
 			fmt.Printf("%-14s %s\n", bold("PresetID:"), dim(env.PresetID))
 			if env.Network != nil && strings.TrimSpace(*env.Network) != "" {
