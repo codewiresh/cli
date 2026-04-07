@@ -110,7 +110,7 @@ func localCreateCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.Backend, "backend", "", "Local runtime backend (docker, incus, or firecracker)")
+	cmd.Flags().StringVar(&opts.Backend, "backend", "", "Local runtime backend (docker, lima, incus, or experimental firecracker)")
 	cmd.Flags().StringVar(&opts.Name, "name", "", "Instance name (defaults to the repo directory name)")
 	cmd.Flags().StringVar(&opts.Path, "path", ".", "Project directory to associate with the local instance")
 	cmd.Flags().StringVar(&opts.File, "file", "codewire.yaml", "Preset file path, relative to --path when not absolute")
@@ -213,17 +213,18 @@ func localListCmd() *cobra.Command {
 
 			names := sortedLocalInstanceNames(state)
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			tableHeader(w, "NAME", "BACKEND", "STATE", "IMAGE", "REPO")
+			tableHeader(w, "NAME", "BACKEND", "STATE", "PORTS", "IMAGE", "REPO")
 			for _, name := range names {
 				instance := state.Instances[name]
 				status, err := localRuntimeStatus(&instance)
 				if err != nil {
 					status = "unknown"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
 					instance.Name,
 					instance.Backend,
 					stateColor(status),
+					localPortSummary(&instance),
 					instance.Image,
 					instance.RepoPath,
 				)
@@ -255,6 +256,17 @@ func localInfoCmd() *cobra.Command {
 			fmt.Printf("%-10s %s\n", bold("Image:"), instance.Image)
 			fmt.Printf("%-10s %s\n", bold("Repo:"), instance.RepoPath)
 			fmt.Printf("%-10s %s\n", bold("Workdir:"), instance.Workdir)
+			if ports := localPortSummary(instance); ports != "" {
+				fmt.Printf("%-10s %s\n", bold("Ports:"), ports)
+			}
+			if instance.Backend == "lima" {
+				if vmType := strings.TrimSpace(instance.LimaVMType); vmType != "" {
+					fmt.Printf("%-10s %s\n", bold("VMType:"), vmType)
+				}
+				if mountType := strings.TrimSpace(instance.LimaMountType); mountType != "" {
+					fmt.Printf("%-10s %s\n", bold("MountType:"), mountType)
+				}
+			}
 			if instance.Preset != "" {
 				fmt.Printf("%-10s %s\n", bold("Preset:"), instance.Preset)
 			}
@@ -275,15 +287,18 @@ func localInfoCmd() *cobra.Command {
 func localPortsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ports [name] --publish <host>:<guest>",
-		Short: "Forward ports from host to a local Firecracker instance",
+		Short: "Forward ports from host to a local runtime when the backend supports it",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			instance, err := resolveLocalInstanceArg(optionalArg(args))
 			if err != nil {
 				return err
 			}
+			if instance.Backend == "lima" {
+				return fmt.Errorf("port forwarding for lima instances is managed by Lima configuration; recreate the instance with desired ports in codewire.yaml")
+			}
 			if instance.Backend != "firecracker" {
-				return fmt.Errorf("port forwarding only supported for firecracker backend (use docker -p for docker)")
+				return fmt.Errorf("interactive 'cw local ports' forwarding is only available for the experimental firecracker backend; use backend-native port mapping for docker or configured forwards for lima")
 			}
 
 			publish, _ := cmd.Flags().GetStringSlice("publish")
@@ -326,6 +341,33 @@ func optionalArg(args []string) string {
 		return ""
 	}
 	return args[0]
+}
+
+func localPortSummary(instance *cwconfig.LocalInstance) string {
+	if instance == nil || len(instance.Ports) == 0 {
+		return ""
+	}
+
+	parts := make([]string, 0, len(instance.Ports))
+	for _, port := range instance.Ports {
+		if port.Port <= 0 {
+			continue
+		}
+
+		var part string
+		switch instance.Backend {
+		case "lima":
+			part = fmt.Sprintf("%d -> %d", port.Port, port.Port)
+		default:
+			part = fmt.Sprintf("%d", port.Port)
+		}
+		if label := strings.TrimSpace(port.Label); label != "" {
+			part += " (" + label + ")"
+		}
+		parts = append(parts, part)
+	}
+
+	return strings.Join(parts, ", ")
 }
 
 func prepareLocalInstance(opts localCreateOptions) (cwconfig.LocalInstance, error) {
@@ -522,6 +564,8 @@ func createLocalRuntime(instance *cwconfig.LocalInstance) error {
 		return createLocalIncusInstance(instance)
 	case "docker":
 		return createLocalDockerInstance(instance)
+	case "lima":
+		return createLocalLimaInstance(instance)
 	case "firecracker":
 		return createLocalFirecrackerInstance(instance)
 	default:
@@ -535,6 +579,8 @@ func startLocalRuntime(instance *cwconfig.LocalInstance) error {
 		return runIncus("start", instance.RuntimeName)
 	case "docker":
 		return runDocker("start", instance.RuntimeName)
+	case "lima":
+		return startLocalLimaInstance(instance)
 	case "firecracker":
 		if err := startLocalFirecrackerInstance(instance); err != nil {
 			return err
@@ -551,6 +597,8 @@ func stopLocalRuntime(instance *cwconfig.LocalInstance) error {
 		return runIncus("stop", instance.RuntimeName, "--force")
 	case "docker":
 		return runDocker("stop", "-t", "0", instance.RuntimeName)
+	case "lima":
+		return stopLocalLimaInstance(instance)
 	case "firecracker":
 		if err := stopLocalFirecrackerInstance(instance); err != nil {
 			return err
@@ -583,6 +631,8 @@ func deleteLocalRuntime(instance *cwconfig.LocalInstance) error {
 			return fmt.Errorf("docker rm %s: %v\n%s", instance.RuntimeName, err, strings.TrimSpace(string(out)))
 		}
 		return nil
+	case "lima":
+		return deleteLocalLimaInstance(instance)
 	case "firecracker":
 		return deleteLocalFirecrackerInstance(instance)
 	default:
@@ -596,6 +646,8 @@ func localRuntimeStatus(instance *cwconfig.LocalInstance) (string, error) {
 		return incusInstanceStatus(instance.RuntimeName)
 	case "docker":
 		return dockerContainerStatus(instance.RuntimeName)
+	case "lima":
+		return limaInstanceStatus(instance)
 	case "firecracker":
 		return firecrackerInstanceStatus(instance)
 	default:

@@ -2,8 +2,11 @@ package main
 
 import (
 	"errors"
+	"io"
+	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	cwconfig "github.com/codewiresh/codewire/internal/config"
@@ -366,6 +369,320 @@ func TestCreateLocalDockerInstanceCleansUpOnFailure(t *testing.T) {
 	wantLast := []string{"docker", "rm", "-f", "cw-repo"}
 	if !reflect.DeepEqual(gotLast, wantLast) {
 		t.Fatalf("last call = %#v, want %#v", gotLast, wantLast)
+	}
+}
+
+func TestLimaCreateCommandArgs(t *testing.T) {
+	origGOOS := localGOOS
+	t.Cleanup(func() { localGOOS = origGOOS })
+	localGOOS = "linux"
+
+	instance := &cwconfig.LocalInstance{
+		Name:        "repo",
+		RuntimeName: "cw-repo",
+		RepoPath:    "/tmp/repo",
+		CPU:         1500,
+		Memory:      4096,
+		Disk:        20,
+		Ports: []cwconfig.PortConfig{
+			{Port: 3000, Label: "web"},
+			{Port: 8080, Label: "api"},
+		},
+	}
+
+	got := limaCreateCommandArgs(instance)
+	want := []string{
+		"start",
+		"--tty=false",
+		"--name", "cw-repo",
+		"--vm-type", "qemu",
+		"--mount-type", "9p",
+		"--mount-none",
+		"--set", `.mounts=[{"location":"/tmp/repo","mountPoint":"/workspace","writable":true}]`,
+		"--cpus", "2",
+		"--memory", "4",
+		"--disk", "20",
+		"--port-forward", "3000:3000,static=true",
+		"--port-forward", "8080:8080,static=true",
+		"template://default",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("lima args = %#v, want %#v", got, want)
+	}
+}
+
+func TestCreateLocalLimaInstanceInvokesExpectedCommands(t *testing.T) {
+	origLookPath := localLookPath
+	origRunCommand := localRunCommand
+	origGOOS := localGOOS
+	t.Cleanup(func() {
+		localLookPath = origLookPath
+		localRunCommand = origRunCommand
+		localGOOS = origGOOS
+	})
+
+	localGOOS = "linux"
+	localLookPath = func(file string) (string, error) {
+		if file != "limactl" {
+			t.Fatalf("LookPath(%q) unexpected", file)
+		}
+		return "/usr/bin/limactl", nil
+	}
+
+	var calls [][]string
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string{name}, args...))
+		return nil, nil
+	}
+
+	instance := &cwconfig.LocalInstance{
+		Name:        "repo",
+		Backend:     "lima",
+		RuntimeName: "cw-repo",
+		RepoPath:    "/tmp/repo",
+		CPU:         1500,
+		Memory:      4096,
+		Disk:        20,
+		Ports: []cwconfig.PortConfig{
+			{Port: 3000, Label: "web"},
+		},
+	}
+	if err := createLocalLimaInstance(instance); err != nil {
+		t.Fatalf("createLocalLimaInstance() error = %v", err)
+	}
+
+	want := [][]string{append([]string{"limactl"}, limaCreateCommandArgs(instance)...)}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("lima calls = %#v, want %#v", calls, want)
+	}
+	if instance.LimaInstanceName != "cw-repo" {
+		t.Fatalf("LimaInstanceName = %q, want %q", instance.LimaInstanceName, "cw-repo")
+	}
+	if instance.LimaVMType != "qemu" {
+		t.Fatalf("LimaVMType = %q, want qemu", instance.LimaVMType)
+	}
+	if instance.LimaMountType != "9p" {
+		t.Fatalf("LimaMountType = %q, want 9p", instance.LimaMountType)
+	}
+}
+
+func TestLimaLifecycleCommands(t *testing.T) {
+	origLookPath := localLookPath
+	origRunCommand := localRunCommand
+	t.Cleanup(func() {
+		localLookPath = origLookPath
+		localRunCommand = origRunCommand
+	})
+
+	localLookPath = func(file string) (string, error) {
+		if file != "limactl" {
+			t.Fatalf("LookPath(%q) unexpected", file)
+		}
+		return "/usr/bin/limactl", nil
+	}
+
+	var calls [][]string
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string{name}, args...))
+		return nil, nil
+	}
+
+	instance := &cwconfig.LocalInstance{
+		Name:             "repo",
+		Backend:          "lima",
+		LimaInstanceName: "cw-repo",
+	}
+	if err := startLocalLimaInstance(instance); err != nil {
+		t.Fatalf("startLocalLimaInstance() error = %v", err)
+	}
+	if err := stopLocalLimaInstance(instance); err != nil {
+		t.Fatalf("stopLocalLimaInstance() error = %v", err)
+	}
+	if err := deleteLocalLimaInstance(instance); err != nil {
+		t.Fatalf("deleteLocalLimaInstance() error = %v", err)
+	}
+
+	want := [][]string{
+		{"limactl", "start", "--tty=false", "cw-repo"},
+		{"limactl", "stop", "cw-repo"},
+		{"limactl", "delete", "--force", "cw-repo"},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("lima calls = %#v, want %#v", calls, want)
+	}
+}
+
+func TestLimaInstanceStatusParsesListOutput(t *testing.T) {
+	origLookPath := localLookPath
+	origRunCommand := localRunCommand
+	t.Cleanup(func() {
+		localLookPath = origLookPath
+		localRunCommand = origRunCommand
+	})
+
+	localLookPath = func(file string) (string, error) {
+		if file != "limactl" {
+			t.Fatalf("LookPath(%q) unexpected", file)
+		}
+		return "/usr/bin/limactl", nil
+	}
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		return []byte(`[{"name":"cw-repo","status":"Running"}]`), nil
+	}
+
+	got, err := limaInstanceStatus(&cwconfig.LocalInstance{LimaInstanceName: "cw-repo"})
+	if err != nil {
+		t.Fatalf("limaInstanceStatus() error = %v", err)
+	}
+	if got != "running" {
+		t.Fatalf("status = %q, want %q", got, "running")
+	}
+}
+
+func TestLocalPortSummaryFormatsLimaPorts(t *testing.T) {
+	got := localPortSummary(&cwconfig.LocalInstance{
+		Backend: "lima",
+		Ports: []cwconfig.PortConfig{
+			{Port: 3000, Label: "web"},
+			{Port: 8080, Label: "api"},
+		},
+	})
+	want := "3000 -> 3000 (web), 8080 -> 8080 (api)"
+	if got != want {
+		t.Fatalf("localPortSummary() = %q, want %q", got, want)
+	}
+}
+
+func TestLocalInfoCmdPrintsLimaPortSummary(t *testing.T) {
+	origLoadLocal := loadLocalInstancesForCLI
+	origLookPath := localLookPath
+	origRunCommand := localRunCommand
+	t.Cleanup(func() {
+		loadLocalInstancesForCLI = origLoadLocal
+		localLookPath = origLookPath
+		localRunCommand = origRunCommand
+	})
+
+	loadLocalInstancesForCLI = func() (*cwconfig.LocalInstancesConfig, error) {
+		return &cwconfig.LocalInstancesConfig{
+			Instances: map[string]cwconfig.LocalInstance{
+				"repo": {
+					Name:             "repo",
+					Backend:          "lima",
+					RuntimeName:      "cw-repo",
+					RepoPath:         "/tmp/repo",
+					Workdir:          "/workspace",
+					Image:            "ghcr.io/codewiresh/full:latest",
+					LimaInstanceName: "cw-repo",
+					LimaVMType:       "qemu",
+					LimaMountType:    "9p",
+					Ports: []cwconfig.PortConfig{
+						{Port: 3000, Label: "web"},
+					},
+				},
+			},
+		}, nil
+	}
+	localLookPath = func(file string) (string, error) {
+		if file != "limactl" {
+			t.Fatalf("LookPath(%q) unexpected", file)
+		}
+		return "/usr/bin/limactl", nil
+	}
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		return []byte(`[{"name":"cw-repo","status":"Running"}]`), nil
+	}
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = oldStdout }()
+
+	cmd := localInfoCmd()
+	cmd.SetArgs([]string{"repo"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("local info command failed: %v", err)
+	}
+
+	_ = w.Close()
+	output, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	got := string(output)
+	if !strings.Contains(got, "Ports:") {
+		t.Fatalf("expected Ports line, got %q", got)
+	}
+	if !strings.Contains(got, "3000 -> 3000 (web)") {
+		t.Fatalf("expected lima port mapping, got %q", got)
+	}
+}
+
+func TestLocalListCmdPrintsPortColumn(t *testing.T) {
+	origLoadLocal := loadLocalInstancesForCLI
+	origLookPath := localLookPath
+	origRunCommand := localRunCommand
+	t.Cleanup(func() {
+		loadLocalInstancesForCLI = origLoadLocal
+		localLookPath = origLookPath
+		localRunCommand = origRunCommand
+	})
+
+	loadLocalInstancesForCLI = func() (*cwconfig.LocalInstancesConfig, error) {
+		return &cwconfig.LocalInstancesConfig{
+			Instances: map[string]cwconfig.LocalInstance{
+				"repo": {
+					Name:             "repo",
+					Backend:          "lima",
+					RuntimeName:      "cw-repo",
+					RepoPath:         "/tmp/repo",
+					Image:            "ghcr.io/codewiresh/full:latest",
+					LimaInstanceName: "cw-repo",
+					Ports: []cwconfig.PortConfig{
+						{Port: 3000, Label: "web"},
+					},
+				},
+			},
+		}, nil
+	}
+	localLookPath = func(file string) (string, error) {
+		if file != "limactl" {
+			t.Fatalf("LookPath(%q) unexpected", file)
+		}
+		return "/usr/bin/limactl", nil
+	}
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		return []byte(`[{"name":"cw-repo","status":"Running"}]`), nil
+	}
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = oldStdout }()
+
+	cmd := localListCmd()
+	cmd.SetArgs(nil)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("local list command failed: %v", err)
+	}
+
+	_ = w.Close()
+	output, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	got := string(output)
+	if !strings.Contains(got, "PORTS") {
+		t.Fatalf("expected PORTS header, got %q", got)
+	}
+	if !strings.Contains(got, "3000 -> 3000 (web)") {
+		t.Fatalf("expected lima port mapping, got %q", got)
 	}
 }
 

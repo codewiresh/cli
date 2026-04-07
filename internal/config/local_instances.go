@@ -39,8 +39,14 @@ type LocalInstance struct {
 	FirecrackerSocket string `toml:"firecracker_socket,omitempty"`
 	KernelPath        string `toml:"kernel_path,omitempty"`
 	RootfsPath        string `toml:"rootfs_path,omitempty"`
-	CreatedAt          string            `toml:"created_at"`
-	LastUsedAt         string            `toml:"last_used_at,omitempty"`
+
+	// Lima-specific fields (only populated when Backend == "lima")
+	LimaInstanceName string `toml:"lima_instance_name,omitempty"`
+	LimaMountType    string `toml:"lima_mount_type,omitempty"`
+	LimaVMType       string `toml:"lima_vm_type,omitempty"`
+
+	CreatedAt  string `toml:"created_at"`
+	LastUsedAt string `toml:"last_used_at,omitempty"`
 }
 
 func defaultLocalInstancesConfig() *LocalInstancesConfig {

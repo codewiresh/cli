@@ -69,6 +69,18 @@ var execInLocalRuntimeTarget = func(instance *cwconfig.LocalInstance, workDir st
 		args = append(args, instance.RuntimeName, "--")
 		args = append(args, command...)
 		cmd = osExec.Command("incus", args...)
+	case "lima":
+		args := []string{"shell"}
+		wd := workDir
+		if wd == "" {
+			wd = instance.Workdir
+		}
+		if strings.TrimSpace(wd) != "" {
+			args = append(args, "--workdir", wd)
+		}
+		args = append(args, limaInstanceName(instance))
+		args = append(args, command...)
+		cmd = osExec.Command("limactl", args...)
 	case "firecracker":
 		vsockPath := instance.FirecrackerSocket + ".vsock"
 		agent, err := guestagent.DialVsockUDS(vsockPath)

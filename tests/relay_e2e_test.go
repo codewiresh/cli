@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"net"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -29,8 +28,7 @@ func TestRelayE2E(t *testing.T) {
 
 	// HTTP server (node connect + back endpoints).
 	httpMux := localrelay.BuildRelayMux(hub, sessions, st)
-	httpSrv := httptest.NewServer(httpMux)
-	defer httpSrv.Close()
+	httpSrv := newIPv4TestServer(t, httpMux)
 
 	// SSH server.
 	sshSrv, err := localrelay.NewSSHServer(t.TempDir(), st, hub, sessions)

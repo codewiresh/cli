@@ -82,7 +82,8 @@ cw preset init --image full --install "pnpm install" --startup "pnpm dev"
 # Launch a cloud environment from the preset
 cw env create --file codewire.yaml
 
-# Or create a local container from the same preset
+# Or create a local runtime from the same preset
+cw local create --backend lima
 cw local create --backend docker
 ```
 
@@ -97,8 +98,12 @@ cw use local
 ```
 
 Notes:
-- `cw exec` works across the current target, including remote envs and local Docker/Incus runtimes.
+- `cw exec` works across the current target, including remote envs and local Docker/Incus/Lima runtimes.
 - `cw ssh` remains for remote environments; local runtimes use backend-native exec.
+- Lima is the preferred VM-style local backend for Linux and macOS because it provides real VM isolation with repo mounts.
+- For Lima, ports declared in `codewire.yaml` are forwarded automatically using the same host and guest port.
+- Firecracker remains experimental and is not recommended as the default local VM backend.
+- `cw run --on <named-local-runtime>` launches a host-managed session that executes inside the selected runtime through `cw exec`.
 - Incus with OCI registry images like `docker.io/...` and `ghcr.io/...` requires `skopeo` on the host.
 
 ## Commands
@@ -113,6 +118,7 @@ cw preset create <slug> --image full ...    # Save a reusable server preset
 cw env create --file codewire.yaml          # Create a cloud environment from a preset
 cw env create --preset full                 # Create from a saved server preset
 
+cw local create --backend lima              # Create a local Lima VM runtime
 cw local create --backend docker            # Create a local Docker runtime
 cw local create --backend incus             # Create a local Incus runtime
 cw local list                               # List local runtimes

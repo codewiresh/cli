@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +28,7 @@ func TestResolveEnvRelayEnrollmentExplicitNetwork(t *testing.T) {
 	}
 
 	wantNetwork := "project-beta"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/invites" {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
@@ -50,7 +49,6 @@ func TestResolveEnvRelayEnrollmentExplicitNetwork(t *testing.T) {
 			"expires_at":     time.Now().UTC().Add(24 * time.Hour),
 		})
 	}))
-	defer srv.Close()
 
 	createRelayInvite = func(dataDir string, opts cwclient.RelayAuthOptions, uses int, ttl string) (*cwclient.RelayInvite, error) {
 		reqBody, _ := json.Marshal(map[string]any{
@@ -110,7 +108,7 @@ func TestResolveEnvRelayEnrollmentPersistsConsent(t *testing.T) {
 	autoJoin := (*bool)(nil)
 	relayURL := ""
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"token":          "CW-INV-PRIVATE",
@@ -118,7 +116,6 @@ func TestResolveEnvRelayEnrollmentPersistsConsent(t *testing.T) {
 			"expires_at":     time.Now().UTC().Add(24 * time.Hour),
 		})
 	}))
-	defer srv.Close()
 	relayURL = srv.URL
 
 	createRelayInvite = func(dataDir string, opts cwclient.RelayAuthOptions, uses int, ttl string) (*cwclient.RelayInvite, error) {

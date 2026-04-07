@@ -5,7 +5,6 @@ package tests
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -26,8 +25,7 @@ func TestAgentConnectsToHub(t *testing.T) {
 	mux := http.NewServeMux()
 	localrelay.RegisterNodeConnectHandler(mux, hub, st)
 	localrelay.RegisterBackHandler(mux, sessions, st)
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
+	srv := newIPv4TestServer(t, mux)
 
 	// Start node agent.
 	go localrelay.RunAgent(ctx, localrelay.AgentConfig{

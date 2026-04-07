@@ -5,7 +5,6 @@ package tests
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -25,8 +24,7 @@ func TestNodeConnect(t *testing.T) {
 	mux := http.NewServeMux()
 	relay.RegisterNodeConnectHandler(mux, hub, st)
 
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
+	srv := newIPv4TestServer(t, mux)
 
 	wsURL := "ws" + srv.URL[4:] + "/node/connect"
 	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
@@ -63,8 +61,7 @@ func TestBackConnect(t *testing.T) {
 	mux := http.NewServeMux()
 	relay.RegisterBackHandler(mux, sessions, st)
 
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
+	srv := newIPv4TestServer(t, mux)
 
 	// Pre-register a pending session channel.
 	ch := sessions.Expect("sess1")

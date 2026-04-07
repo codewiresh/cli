@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codewiresh/codewire/internal/client"
 	cwconfig "github.com/codewiresh/codewire/internal/config"
 	"github.com/codewiresh/codewire/internal/platform"
 )
@@ -151,6 +152,108 @@ func TestRunCmdRejectsPromptFileForEnvironmentTarget(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--prompt-file is not supported for environment targets yet") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestWrapLocalRuntimeRunCommand(t *testing.T) {
+	origExe := currentExecutablePath
+	defer func() { currentExecutablePath = origExe }()
+
+	currentExecutablePath = func() (string, error) {
+		return "/usr/local/bin/cw", nil
+	}
+
+	command, hostWorkDir, err := wrapLocalRuntimeRunCommand(&cwconfig.LocalInstance{
+		Name:     "repo",
+		RepoPath: "/tmp/repo",
+		Workdir:  "/workspace",
+	}, "", []string{"claude", "--version"})
+	if err != nil {
+		t.Fatalf("wrapLocalRuntimeRunCommand() error = %v", err)
+	}
+	if hostWorkDir != "/tmp/repo" {
+		t.Fatalf("hostWorkDir = %q, want /tmp/repo", hostWorkDir)
+	}
+	want := []string{"/usr/local/bin/cw", "exec", "--on", "repo", "--workdir", "/workspace", "--", "claude", "--version"}
+	if strings.Join(command, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("command = %#v, want %#v", command, want)
+	}
+}
+
+func TestRunCmdUsesNamedLocalRuntimeTarget(t *testing.T) {
+	origLoad := loadCLIConfigForTarget
+	origRun := runOnTarget
+	origServerFlag := serverFlag
+	origEnsureNode := ensureNodeForRun
+	origResolveTarget := resolveTargetForRun
+	origExe := currentExecutablePath
+	defer func() {
+		loadCLIConfigForTarget = origLoad
+		runOnTarget = origRun
+		serverFlag = origServerFlag
+		ensureNodeForRun = origEnsureNode
+		resolveTargetForRun = origResolveTarget
+		currentExecutablePath = origExe
+	}()
+
+	serverFlag = ""
+	loadCLIConfigForTarget = func() (*cwconfig.Config, error) {
+		return &cwconfig.Config{
+			CurrentTarget: &cwconfig.CurrentTargetConfig{
+				Kind: "local",
+				Ref:  "repo",
+				Name: "repo",
+			},
+		}, nil
+	}
+	ensureNodeForRun = func() error { return nil }
+	resolveTargetForRun = func() (*client.Target, error) {
+		return &client.Target{Local: "/tmp/data"}, nil
+	}
+	currentExecutablePath = func() (string, error) {
+		return "/usr/local/bin/cw", nil
+	}
+
+	var gotTarget *client.Target
+	var gotCommand []string
+	var gotWorkDir string
+	runOnTarget = func(target *client.Target, command []string, workingDir string, name string, env []string, stdinData []byte, tags ...string) error {
+		gotTarget = target
+		gotCommand = append([]string(nil), command...)
+		gotWorkDir = workingDir
+		return nil
+	}
+	origLoadLocal := loadLocalInstancesForCLI
+	defer func() {
+		loadLocalInstancesForCLI = origLoadLocal
+	}()
+	loadLocalInstancesForCLI = func() (*cwconfig.LocalInstancesConfig, error) {
+		return &cwconfig.LocalInstancesConfig{
+			Instances: map[string]cwconfig.LocalInstance{
+				"repo": {
+					Name:     "repo",
+					Backend:  "lima",
+					RepoPath: "/tmp/repo",
+					Workdir:  "/workspace",
+				},
+			},
+		}, nil
+	}
+
+	cmd := runCmd()
+	cmd.SetArgs([]string{"--", "claude"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("run command failed: %v", err)
+	}
+	if gotTarget == nil || gotTarget.Local != "/tmp/data" {
+		t.Fatalf("target = %#v", gotTarget)
+	}
+	wantCommand := []string{"/usr/local/bin/cw", "exec", "--on", "repo", "--workdir", "/workspace", "--", "claude"}
+	if strings.Join(gotCommand, "\x00") != strings.Join(wantCommand, "\x00") {
+		t.Fatalf("command = %#v, want %#v", gotCommand, wantCommand)
+	}
+	if gotWorkDir != "/tmp/repo" {
+		t.Fatalf("workDir = %q, want /tmp/repo", gotWorkDir)
 	}
 }
 

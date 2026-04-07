@@ -32,6 +32,11 @@ var (
 
 	serverFlag string
 	tokenFlag  string
+
+	runOnTarget           = client.Run
+	ensureNodeForRun      = ensureNode
+	resolveTargetForRun   = resolveTarget
+	currentExecutablePath = os.Executable
 )
 
 func main() {
@@ -148,6 +153,33 @@ func main() {
 	if err != nil {
 		os.Exit(1)
 	}
+}
+
+func wrapLocalRuntimeRunCommand(instance *config.LocalInstance, workDir string, command []string) ([]string, string, error) {
+	if instance == nil {
+		return nil, "", fmt.Errorf("local instance is required")
+	}
+	exe, err := currentExecutablePath()
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve current executable: %w", err)
+	}
+
+	guestWorkDir := strings.TrimSpace(workDir)
+	if guestWorkDir == "" {
+		guestWorkDir = instance.Workdir
+	}
+	if guestWorkDir == "" {
+		guestWorkDir = localWorkspacePath
+	}
+
+	hostWorkDir := strings.TrimSpace(instance.RepoPath)
+	if hostWorkDir == "" {
+		hostWorkDir = "."
+	}
+
+	args := []string{exe, "exec", "--on", instance.Name, "--workdir", guestWorkDir, "--"}
+	args = append(args, command...)
+	return args, hostWorkDir, nil
 }
 
 // isUpdateCommand returns true when the user invoked "cw update".
@@ -355,22 +387,34 @@ Examples:
 			}
 			switch execTarget.Kind {
 			case "local":
-				target, err := resolveTarget()
+				target, err := resolveTargetForRun()
 				if err != nil {
 					return err
 				}
-				if err := ensureNode(); err != nil {
+				if err := ensureNodeForRun(); err != nil {
 					return err
+				}
+				runCommand := command
+				runWorkDir := workDir
+				if execTarget.Ref != "" && execTarget.Ref != "local" {
+					instance := lookupLocalInstanceForTarget(execTarget)
+					if instance == nil {
+						return fmt.Errorf("local instance not found: %s", execTarget.Ref)
+					}
+					runCommand, runWorkDir, err = wrapLocalRuntimeRunCommand(instance, workDir, command)
+					if err != nil {
+						return err
+					}
 				}
 				if group != "" {
 					if err := validateLocalGroupedRun(group); err != nil {
 						return err
 					}
 				}
-				if workDir == "" {
-					workDir, _ = os.Getwd()
+				if strings.TrimSpace(runWorkDir) == "" {
+					runWorkDir, _ = os.Getwd()
 				}
-				if err := client.Run(target, command, workDir, name, envVars, stdinData, tags...); err != nil {
+				if err := runOnTarget(target, runCommand, runWorkDir, name, envVars, stdinData, tags...); err != nil {
 					return err
 				}
 				return nil

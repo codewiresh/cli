@@ -47,6 +47,7 @@ cw preset init --image full --install "pnpm install" --startup "pnpm dev"
 cw env create --file codewire.yaml
 
 # Or create a local runtime from the same preset
+cw local create --backend lima
 cw local create --backend docker
 cw local create --backend incus
 ```
@@ -60,10 +61,11 @@ cw env create --preset go-dev
 
 ---
 
-## Local Containers
+## Local Runtimes
 
 Local runtimes are first-class `cw` targets. Create them once from `codewire.yaml`, then
-start, stop, inspect, and exec into them by name.
+start, stop, inspect, and exec into them by name. Use Lima when you want a real VM-backed
+local runtime on Linux or macOS.
 
 ```bash
 # Create from the repo preset
@@ -85,7 +87,11 @@ cw current -v
 Notes:
 - Docker works out of the box when the Docker daemon is available.
 - Incus with OCI images like `docker.io/...` or `ghcr.io/...` requires `skopeo` on the host.
+- Lima is the recommended VM-style backend for Linux and macOS.
+- For Lima, ports declared in `codewire.yaml` are forwarded automatically on the same host port.
+- Firecracker remains experimental and should not be the default choice for local VM workflows.
 - `cw ssh` is for remote environments; for local runtimes, use `cw exec`.
+- `cw run --on <named-local-runtime>` creates a normal host-managed session whose command executes inside the selected runtime.
 
 ---
 
@@ -117,6 +123,7 @@ cw preset create <slug> ...     # Save a reusable server preset
 
 cw env create --file codewire.yaml  # Create a cloud environment from a preset
 
+cw local create --backend lima      # Create a local Lima VM runtime
 cw local create --backend docker    # Create a local Docker runtime
 cw local create --backend incus     # Create a local Incus runtime
 cw local list                       # List local runtimes
@@ -156,6 +163,24 @@ cw run --name agent-3 --group mesh -- claude
 cw group members mesh
 cw group policy mesh
 ```
+
+### Cross-Node Messaging
+
+Nodes on the same network can message each other directly over a WireGuard tunnel
+(via DERP relay). No hub forwarding -- the connection is peer-to-peer.
+
+```bash
+# From inside environment A, message a session on environment B:
+cw msg --from my-session "node-B:target-session" "hello from A"
+
+# Check the inbox on B:
+cw inbox target-session
+```
+
+Both nodes must have `cw node` running and be on the same relay network.
+The `--from` flag identifies the sender session for authentication.
+
+### Groups and Access
 
 Default group policy is `messages=internal-only` and `debug=observe-only`.
 That means:
