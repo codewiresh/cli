@@ -17,6 +17,8 @@ type StatusBar struct {
 	Rows      uint16
 	Cols      uint16
 	Enabled   bool
+	suspended bool
+	active    bool
 }
 
 func New(sessionID uint32, cols, rows uint16) *StatusBar {
@@ -33,7 +35,7 @@ func New(sessionID uint32, cols, rows uint16) *StatusBar {
 // PtySize returns the PTY size to report to the node.
 // One row shorter when the status bar is enabled.
 func (s *StatusBar) PtySize() (cols, rows uint16) {
-	if s.Enabled {
+	if s.Enabled && !s.suspended {
 		return s.Cols, s.Rows - 1
 	}
 	return s.Cols, s.Rows
@@ -41,53 +43,65 @@ func (s *StatusBar) PtySize() (cols, rows uint16) {
 
 // Setup sets the scroll region and draws the initial status bar.
 func (s *StatusBar) Setup() []byte {
-	if !s.Enabled {
+	return s.Draw()
+}
+
+func (s *StatusBar) canRender() bool {
+	return s.Enabled && !s.suspended
+}
+
+func (s *StatusBar) activate() []byte {
+	if !s.canRender() || s.active {
 		return nil
 	}
-	var out []byte
+	s.active = true
 	// Set scroll region to rows 1..(Rows-1), protecting the last row for the bar.
-	out = append(out, fmt.Sprintf("\x1b[1;%dr", s.Rows-1)...)
-	// Move cursor to top-left of scroll region.
-	out = append(out, "\x1b[H"...)
-	out = append(out, s.Draw()...)
+	return []byte(fmt.Sprintf("\x1b[1;%dr", s.Rows-1))
+}
+
+// Suspend disables the bar until Resume is called.
+func (s *StatusBar) Suspend() []byte {
+	if s.suspended {
+		return nil
+	}
+	s.suspended = true
+	if !s.active {
+		return nil
+	}
+	s.active = false
+	var out []byte
+	// Restore scrolling to the full terminal and clear the bar row.
+	out = append(out, "\x1b[r"...)
+	out = append(out, "\x1b7"...)
+	out = append(out, fmt.Sprintf("\x1b[%d;1H", s.Rows)...)
+	out = append(out, "\x1b[2K"...)
+	out = append(out, "\x1b8"...)
 	return out
 }
 
-// Teardown cleans up terminal state. Mode resets are ALWAYS emitted
-// even when bar is disabled (child process can hide cursor etc).
-func (s *StatusBar) Teardown() []byte {
-	var out []byte
-	// Exit alternate screen
-	out = append(out, "\x1b[?1049l"...)
-	// Show cursor
-	out = append(out, "\x1b[?25h"...)
-	// Pop Kitty keyboard mode
-	out = append(out, "\x1b[<u"...)
-	// Disable focus event reporting
-	out = append(out, "\x1b[?1004l"...)
-	// Disable mouse tracking
-	out = append(out, "\x1b[?1000l"...)
-	// Disable SGR mouse encoding
-	out = append(out, "\x1b[?1006l"...)
+// Resume re-enables the bar after Suspend.
+func (s *StatusBar) Resume() {
+	s.suspended = false
+}
 
-	// Bar-specific cleanup
-	if s.Enabled {
-		// Reset scroll region to full terminal.
-		out = append(out, "\x1b[r"...)
-		// Save cursor
-		out = append(out, "\x1b7"...)
-		// Move to status bar row and clear it
-		out = append(out, fmt.Sprintf("\x1b[%d;1H", s.Rows)...)
-		out = append(out, "\x1b[2K"...)
-		// Restore cursor
-		out = append(out, "\x1b8"...)
+// Teardown removes only the terminal state owned by the status bar.
+func (s *StatusBar) Teardown() []byte {
+	if !s.active {
+		return nil
 	}
+	s.active = false
+	var out []byte
+	out = append(out, "\x1b[r"...)
+	out = append(out, "\x1b7"...)
+	out = append(out, fmt.Sprintf("\x1b[%d;1H", s.Rows)...)
+	out = append(out, "\x1b[2K"...)
+	out = append(out, "\x1b8"...)
 	return out
 }
 
 // Draw renders the status bar (save cursor, render, restore cursor).
 func (s *StatusBar) Draw() []byte {
-	if !s.Enabled {
+	if !s.canRender() {
 		return nil
 	}
 	elapsed := time.Since(s.Started)
@@ -106,6 +120,7 @@ func (s *StatusBar) Draw() []byte {
 	}
 
 	var out []byte
+	out = append(out, s.activate()...)
 	// Save cursor
 	out = append(out, "\x1b7"...)
 	// Move to status bar row (last row)
@@ -123,13 +138,14 @@ func (s *StatusBar) Resize(cols, rows uint16) []byte {
 	s.Rows = rows
 	s.Enabled = rows >= 5
 	if !s.Enabled {
+		s.active = false
 		return nil
 	}
-	var out []byte
-	// Update scroll region for new dimensions.
-	out = append(out, fmt.Sprintf("\x1b[1;%dr", s.Rows-1)...)
-	out = append(out, s.Draw()...)
-	return out
+	if s.suspended {
+		return nil
+	}
+	s.active = false
+	return s.Draw()
 }
 
 func formatDuration(secs uint64) string {

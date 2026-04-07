@@ -457,13 +457,13 @@ func resolveEnvRelayEnrollment(dir string, assumeYes bool, requestedNetwork stri
 
 	networkID := requestedNetwork
 	if networkID == "" {
-		if cfg.RelayNetwork == nil || strings.TrimSpace(*cfg.RelayNetwork) == "" {
+		if cfg.RelaySelectedNetwork == nil || strings.TrimSpace(*cfg.RelaySelectedNetwork) == "" {
 			return nil, nil
 		}
 		if cfg.RelayAutoJoinPrivate == nil {
 			approved := assumeYes
 			if !assumeYes {
-				approved, err = promptConfirm(fmt.Sprintf("New environments will auto-join your private network %q for remote access. Continue", *cfg.RelayNetwork))
+				approved, err = promptConfirm(fmt.Sprintf("New environments will auto-join your private network %q for remote access. Continue", *cfg.RelaySelectedNetwork))
 				if err != nil {
 					return nil, err
 				}
@@ -476,13 +476,13 @@ func resolveEnvRelayEnrollment(dir string, assumeYes bool, requestedNetwork stri
 		if !*cfg.RelayAutoJoinPrivate {
 			return nil, nil
 		}
-		networkID = *cfg.RelayNetwork
+		networkID = *cfg.RelaySelectedNetwork
 	}
 
 	relayURL, authToken, _, err := cwclient.LoadRelayAuth(dir, cwclient.RelayAuthOptions{})
 	if err != nil {
 		if requestedNetwork != "" {
-			return nil, fmt.Errorf("relay auth is not configured locally (run 'cw login')")
+			return nil, fmt.Errorf("relay user auth is not configured locally (run 'cw login' for hosted Codewire, or set CODEWIRE_RELAY_AUTH_TOKEN for a standalone relay)")
 		}
 		return nil, nil
 	}

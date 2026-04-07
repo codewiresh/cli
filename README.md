@@ -349,7 +349,7 @@ cw network use project-alpha
 
 ### `cw node qr`
 
-Show a QR code for SSH access to this node, routed through the current network when one is selected.
+Show a QR code for SSH access to this node, using the machine's enrolled relay network.
 
 ```bash
 cw node qr
@@ -357,7 +357,7 @@ cw node qr
 
 ### `cw network join <invite>`
 
-Join a network from an invite token and enroll this machine for relay access.
+Join a network from an invite token and select it for user-scoped relay commands. Start `cw node` afterwards to enroll this machine.
 
 ```bash
 cw network join --relay-url https://relay.codewire.sh CW-INV-...
@@ -472,6 +472,9 @@ name = "my-node"                          # CODEWIRE_NODE_NAME
 listen = "0.0.0.0:9100"                   # CODEWIRE_LISTEN — direct WebSocket (optional)
 external_url = "wss://host/ws"            # CODEWIRE_EXTERNAL_URL
 relay_url = "https://relay.codewire.sh"  # CODEWIRE_RELAY_URL — opt-in remote access
+relay_selected_network = "project-alpha" # current user network for relay commands
+relay_node_network = "project-alpha"     # network this machine is enrolled into
+relay_node_token = "cw_node_..."         # machine credential used by cw node
 ```
 
 When no config file exists, codewire runs in standalone mode (Unix socket only, no relay-backed networking).
@@ -504,6 +507,20 @@ cw node
 ```
 
 `cw login` provides user auth for relay-backed network commands. `cw node` auto-enrolls the machine into the selected network and maintains the persistent relay connection.
+
+Auth model:
+
+- Hosted Codewire user auth comes from `cw login` or `CODEWIRE_API_KEY`.
+- Standalone relay user auth should be passed explicitly with `--token` or `CODEWIRE_RELAY_AUTH_TOKEN`.
+- `cw network use` sets the selected network for those user-scoped commands.
+- `cw node` enrolls this machine into a network and stores a separate `relay_node_token` plus `relay_node_network` for the node agent.
+- User auth and node auth are intentionally separate. A node enrollment token is not reused as a user session token.
+
+Security model:
+
+- The relay is the authorization boundary. The platform only authenticates hosted users to the relay.
+- `relay_node_token` is a machine credential for the local node agent. Treat it like a service credential.
+- `CODEWIRE_API_KEY` is only used for the hosted relay path. It is not forwarded to arbitrary relay URLs.
 
 ### Networks, Groups, and Access
 

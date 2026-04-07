@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -14,6 +13,11 @@ import (
 )
 
 func TestAcceptAndResolveAccessGrant(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CODEWIRE_API_KEY", "")
+	t.Setenv("CODEWIRE_RELAY_AUTH_TOKEN", "")
+	t.Setenv("CODEWIRE_RELAY_URL", "")
+
 	state, err := networkauth.NewIssuerState("project-alpha")
 	if err != nil {
 		t.Fatalf("NewIssuerState: %v", err)
@@ -44,7 +48,8 @@ func TestAcceptAndResolveAccessGrant(t *testing.T) {
 
 func TestPruneAcceptedAccessGrantsRemovesRevokedAndMissing(t *testing.T) {
 	t.Setenv("CODEWIRE_RELAY_URL", "http://relay.test")
-	t.Setenv("CODEWIRE_API_KEY", "dev-secret")
+	t.Setenv("CODEWIRE_API_KEY", "")
+	t.Setenv("CODEWIRE_RELAY_AUTH_TOKEN", "dev-secret")
 
 	state, err := networkauth.NewIssuerState("project-alpha")
 	if err != nil {
@@ -70,7 +75,7 @@ func TestPruneAcceptedAccessGrantsRemovesRevokedAndMissing(t *testing.T) {
 
 	origClient := relayHTTPClient
 	defer func() { relayHTTPClient = origClient }()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer dev-secret" {
 			t.Fatalf("Authorization = %q", got)
 		}
@@ -95,7 +100,6 @@ func TestPruneAcceptedAccessGrantsRemovesRevokedAndMissing(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
-	defer srv.Close()
 	relayHTTPClient = srv.Client()
 	t.Setenv("CODEWIRE_RELAY_URL", srv.URL)
 
@@ -117,7 +121,8 @@ func TestPruneAcceptedAccessGrantsRemovesRevokedAndMissing(t *testing.T) {
 }
 
 func TestResolveAcceptedAccessGrantRemovesMissingGrant(t *testing.T) {
-	t.Setenv("CODEWIRE_API_KEY", "dev-secret")
+	t.Setenv("CODEWIRE_API_KEY", "")
+	t.Setenv("CODEWIRE_RELAY_AUTH_TOKEN", "dev-secret")
 
 	state, err := networkauth.NewIssuerState("project-alpha")
 	if err != nil {
@@ -136,10 +141,9 @@ func TestResolveAcceptedAccessGrantRemovesMissingGrant(t *testing.T) {
 
 	origClient := relayHTTPClient
 	defer func() { relayHTTPClient = origClient }()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "access grant not found", http.StatusNotFound)
 	}))
-	defer srv.Close()
 	relayHTTPClient = srv.Client()
 	t.Setenv("CODEWIRE_RELAY_URL", srv.URL)
 
@@ -256,7 +260,8 @@ func TestGetAcceptedAccessGrant(t *testing.T) {
 
 func TestWatchAcceptedAccessGrantsRemovesRevokedGrantAndPersistsCursor(t *testing.T) {
 	t.Setenv("CODEWIRE_RELAY_URL", "http://relay.test")
-	t.Setenv("CODEWIRE_API_KEY", "dev-secret")
+	t.Setenv("CODEWIRE_API_KEY", "")
+	t.Setenv("CODEWIRE_RELAY_AUTH_TOKEN", "dev-secret")
 	t.Setenv("CODEWIRE_RELAY_NETWORK", "project-alpha")
 
 	state, err := networkauth.NewIssuerState("project-alpha")
@@ -278,7 +283,7 @@ func TestWatchAcceptedAccessGrantsRemovesRevokedGrantAndPersistsCursor(t *testin
 	streamClosed := make(chan struct{})
 	origClient := relayHTTPClient
 	defer func() { relayHTTPClient = origClient }()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer dev-secret" {
 			t.Fatalf("Authorization = %q", got)
 		}
@@ -305,7 +310,6 @@ func TestWatchAcceptedAccessGrantsRemovesRevokedGrantAndPersistsCursor(t *testin
 		<-r.Context().Done()
 		close(streamClosed)
 	}))
-	defer srv.Close()
 	relayHTTPClient = srv.Client()
 	t.Setenv("CODEWIRE_RELAY_URL", srv.URL)
 

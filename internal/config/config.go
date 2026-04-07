@@ -16,8 +16,9 @@ import (
 type Config struct {
 	Node                 NodeConfig           `toml:"node"`
 	RelayURL             *string              `toml:"relay_url,omitempty"`
-	RelayNetwork         *string              `toml:"relay_network,omitempty"`
-	RelayToken           *string              `toml:"relay_token,omitempty"`             // node auth token for relay agent
+	RelaySelectedNetwork *string              `toml:"relay_selected_network,omitempty"`
+	RelayNodeToken       *string              `toml:"relay_node_token,omitempty"`        // node auth token for relay agent
+	RelayNodeNetwork     *string              `toml:"relay_node_network,omitempty"`      // enrolled network for relay agent
 	RelayInviteToken     *string              `toml:"relay_invite_token,omitempty"`      // one-time invite token for bootstrap
 	RelayAutoJoinPrivate *bool                `toml:"relay_auto_join_private,omitempty"` // consent for auto-joining the selected private network
 	CurrentTarget        *CurrentTargetConfig `toml:"current_target,omitempty"`
@@ -128,10 +129,15 @@ func LoadConfig(dataDir string) (*Config, error) {
 			cfg.RelayURL = &relayURL
 		}
 	}
-	// Relay token from env var.
-	if cfg.RelayToken == nil {
-		if t := os.Getenv("CODEWIRE_RELAY_TOKEN"); t != "" {
-			cfg.RelayToken = &t
+	// Relay node token from env var.
+	if cfg.RelayNodeToken == nil {
+		if t := os.Getenv("CODEWIRE_RELAY_NODE_TOKEN"); t != "" {
+			cfg.RelayNodeToken = &t
+		}
+	}
+	if cfg.RelayNodeNetwork == nil {
+		if network := os.Getenv("CODEWIRE_RELAY_NODE_NETWORK"); network != "" {
+			cfg.RelayNodeNetwork = &network
 		}
 	}
 	if cfg.RelayInviteToken == nil {
@@ -139,9 +145,9 @@ func LoadConfig(dataDir string) (*Config, error) {
 			cfg.RelayInviteToken = &invite
 		}
 	}
-	if cfg.RelayNetwork == nil {
+	if cfg.RelaySelectedNetwork == nil {
 		if network := os.Getenv("CODEWIRE_RELAY_NETWORK"); network != "" {
-			cfg.RelayNetwork = &network
+			cfg.RelaySelectedNetwork = &network
 		}
 	}
 	if cfg.RelayURL == nil {
@@ -181,6 +187,54 @@ func deriveHostedRelayURL() string {
 		scheme = "https"
 	}
 	return scheme + "://" + host
+}
+
+func HostedRelayURL() string {
+	return deriveHostedRelayURL()
+}
+
+func ResolveRelayUserAuthToken(relayURL string) string {
+	if token := strings.TrimSpace(os.Getenv("CODEWIRE_RELAY_AUTH_TOKEN")); token != "" {
+		return token
+	}
+
+	hostedRelayURL := deriveHostedRelayURL()
+	if hostedRelayURL == "" || !sameRelayURL(relayURL, hostedRelayURL) {
+		return ""
+	}
+
+	if token := strings.TrimSpace(os.Getenv("CODEWIRE_API_KEY")); token != "" {
+		return token
+	}
+
+	platformCfg, err := platform.LoadConfig()
+	if err != nil {
+		return ""
+	}
+	platformToken := strings.TrimSpace(platformCfg.SessionToken)
+	if platformToken == "" {
+		return ""
+	}
+	return platformToken
+}
+
+func sameRelayURL(a, b string) bool {
+	normalize := func(raw string) string {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return ""
+		}
+		u, err := url.Parse(raw)
+		if err != nil {
+			return strings.TrimRight(raw, "/")
+		}
+		u.Path = strings.TrimRight(u.Path, "/")
+		u.RawQuery = ""
+		u.Fragment = ""
+		return u.String()
+	}
+
+	return normalize(a) != "" && normalize(a) == normalize(b)
 }
 
 // SaveConfig writes config.toml inside dataDir, creating the directory if needed.

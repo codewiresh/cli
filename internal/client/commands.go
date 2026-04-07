@@ -20,13 +20,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/BurntSushi/toml"
 	"github.com/charmbracelet/lipgloss"
 	qrcode "github.com/skip2/go-qrcode"
 
 	"github.com/codewiresh/codewire/internal/config"
 	"github.com/codewiresh/codewire/internal/connection"
-	"github.com/codewiresh/codewire/internal/platform"
 	"github.com/codewiresh/codewire/internal/protocol"
 	"github.com/codewiresh/codewire/internal/relay"
 	"github.com/codewiresh/codewire/internal/statusbar"
@@ -1140,7 +1138,7 @@ func ClearNetwork(dataDir string) error {
 	if err != nil {
 		cfg = &config.Config{}
 	}
-	cfg.RelayNetwork = nil
+	cfg.RelaySelectedNetwork = nil
 	if err := config.SaveConfig(dataDir, cfg); err != nil {
 		return fmt.Errorf("saving relay config: %w", err)
 	}
@@ -1287,9 +1285,9 @@ func EnrollNode(dataDir string, opts RelayAuthOptions, enrollmentToken, nodeName
 		cfg = &config.Config{}
 	}
 	cfg.RelayURL = &relayURL
-	cfg.RelayToken = &redeemed.NodeToken
+	cfg.RelayNodeToken = &redeemed.NodeToken
 	if strings.TrimSpace(redeemed.NetworkID) != "" {
-		cfg.RelayNetwork = &redeemed.NetworkID
+		cfg.RelayNodeNetwork = &redeemed.NetworkID
 	}
 	if strings.TrimSpace(redeemed.NodeName) != "" {
 		cfg.Node.Name = strings.TrimSpace(redeemed.NodeName)
@@ -1309,7 +1307,7 @@ func saveRelayNetwork(dataDir, networkID string) error {
 	if err != nil {
 		cfg = &config.Config{}
 	}
-	cfg.RelayNetwork = &networkID
+	cfg.RelaySelectedNetwork = &networkID
 	if err := config.SaveConfig(dataDir, cfg); err != nil {
 		return fmt.Errorf("saving relay config: %w", err)
 	}
@@ -1935,16 +1933,16 @@ func SSHQRCode(dataDir string, sshPort int) error {
 	if cfg.RelayURL == nil || *cfg.RelayURL == "" {
 		return fmt.Errorf("relay not configured (run 'cw login' and select a network)")
 	}
-	if cfg.RelayToken == nil || *cfg.RelayToken == "" {
+	if cfg.RelayNodeToken == nil || *cfg.RelayNodeToken == "" {
 		return fmt.Errorf("this machine is not enrolled in the relay network yet (start 'cw node' once)")
 	}
 
 	nodeName := cfg.Node.Name
 	networkID := ""
-	if cfg.RelayNetwork != nil {
-		networkID = *cfg.RelayNetwork
+	if cfg.RelayNodeNetwork != nil {
+		networkID = *cfg.RelayNodeNetwork
 	}
-	uri := relay.SSHURI(*cfg.RelayURL, networkID, nodeName, *cfg.RelayToken, sshPort)
+	uri := relay.SSHURI(*cfg.RelayURL, networkID, nodeName, *cfg.RelayNodeToken, sshPort)
 
 	fmt.Fprintf(os.Stderr, "SSH URI: %s\n", uri)
 	PrintQR(uri)
@@ -1968,8 +1966,7 @@ func JoinNetwork(dataDir, relayURL, inviteToken string) error {
 	}
 
 	cfg.RelayURL = &relayURL
-	cfg.RelayNetwork = &result.NetworkID
-	cfg.RelayToken = nil
+	cfg.RelaySelectedNetwork = &result.NetworkID
 	cfg.RelayInviteToken = nil
 	if err := config.SaveConfig(dataDir, cfg); err != nil {
 		return fmt.Errorf("saving config: %w", err)
@@ -2016,30 +2013,30 @@ func Revoke(dataDir string, nodeName string, opts RelayAuthOptions) error {
 	return nil
 }
 
-// LoadRelayAuth loads the relay URL, auth token, and network from local config,
-// environment overrides, and the normal platform login state.
+// LoadRelayAuth loads the relay URL, user auth token, and selected network
+// from local config, relay-specific overrides, and the hosted platform login state.
 func LoadRelayAuth(dataDir string, opts RelayAuthOptions) (relayURL, authToken, networkID string, err error) {
 	cfg, err := loadConfigFromDir(dataDir)
 	if err != nil {
 		return "", "", "", err
 	}
 	relayURL = cfg.relayURL
-	authToken = cfg.authToken
-	networkID = cfg.relayNetwork
+	networkID = cfg.selectedNetwork
 	if opts.RelayURL != "" {
 		relayURL = opts.RelayURL
 	}
-	if opts.AuthToken != "" {
-		authToken = opts.AuthToken
-	}
 	if opts.NetworkID != "" {
 		networkID = opts.NetworkID
+	}
+	authToken = strings.TrimSpace(opts.AuthToken)
+	if authToken == "" {
+		authToken = config.ResolveRelayUserAuthToken(relayURL)
 	}
 	if relayURL == "" {
 		return "", "", "", fmt.Errorf("relay not configured (set CODEWIRE_RELAY_URL or log in to hosted Codewire)")
 	}
 	if authToken == "" {
-		return "", "", "", fmt.Errorf("relay authentication not configured (run 'cw login' or pass --token)")
+		return "", "", "", fmt.Errorf("relay user authentication not configured (pass --token, set CODEWIRE_RELAY_AUTH_TOKEN, or use 'cw login'/CODEWIRE_API_KEY for hosted Codewire)")
 	}
 	return relayURL, authToken, networkID, nil
 }
@@ -2049,85 +2046,46 @@ func loadRelayAuth(dataDir string, opts RelayAuthOptions) (relayURL, authToken, 
 }
 
 type relayAuthConfig struct {
-	relayURL     string
-	authToken    string
-	relayNetwork string
+	relayURL        string
+	selectedNetwork string
 }
 
 func loadConfigFromDir(dataDir string) (*relayAuthConfig, error) {
-	// Read config.toml for relay_url and relay_network, then fall back to the
-	// normal hosted platform login for auth and default relay URL.
-	configPath := dataDir + "/config.toml"
-	data, err := os.ReadFile(configPath)
-	if err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("reading config: %w", err)
+	cfg, err := config.LoadConfig(dataDir)
+	if err != nil {
+		return nil, err
 	}
-
-	// Simple extraction — parse the TOML manually for the fields we need.
-	var cfg struct {
-		RelayURL     *string `toml:"relay_url"`
-		RelayNetwork *string `toml:"relay_network"`
-		RelayToken   *string `toml:"relay_token"`
-	}
-
-	if len(data) > 0 {
-		if _, err := toml.Decode(string(data), &cfg); err != nil {
-			return nil, fmt.Errorf("parsing config: %w", err)
-		}
-	}
-
 	result := &relayAuthConfig{}
 	if cfg.RelayURL != nil {
-		result.relayURL = *cfg.RelayURL
+		result.relayURL = strings.TrimSpace(*cfg.RelayURL)
 	}
-	if cfg.RelayNetwork != nil {
-		result.relayNetwork = *cfg.RelayNetwork
+	if cfg.RelaySelectedNetwork != nil {
+		result.selectedNetwork = strings.TrimSpace(*cfg.RelaySelectedNetwork)
 	}
-	if cfg.RelayToken != nil && *cfg.RelayToken != "" {
-		result.authToken = *cfg.RelayToken
-	}
-	if relayURL := os.Getenv("CODEWIRE_RELAY_URL"); relayURL != "" {
-		result.relayURL = relayURL
-	}
-	if relayNetwork := os.Getenv("CODEWIRE_RELAY_NETWORK"); relayNetwork != "" {
-		result.relayNetwork = relayNetwork
-	}
-	if authToken := os.Getenv("CODEWIRE_API_KEY"); authToken != "" {
-		result.authToken = authToken
-	}
-	if platformCfg, err := platform.LoadConfig(); err == nil {
-		if result.relayURL == "" {
-			if derived, derr := defaultRelayURLForPlatformServer(platformCfg.ServerURL); derr == nil {
-				result.relayURL = derived
-			}
-		}
-		// Prefer the platform session token over a cached relay_token.
-		// Relay tokens can go stale (e.g. DB wipe), but the platform token
-		// is always validated live by the relay's OIDC fallback.
-		if platformToken := strings.TrimSpace(platformCfg.SessionToken); platformToken != "" {
-			result.authToken = platformToken
-		}
-	}
-
 	return result, nil
 }
 
-func defaultRelayURLForPlatformServer(serverURL string) (string, error) {
-	parsed, err := urlpkg.Parse(strings.TrimSpace(serverURL))
+func LoadRelayNodeAuth(dataDir string) (relayURL, nodeToken, networkID string, err error) {
+	cfg, err := config.LoadConfig(dataDir)
 	if err != nil {
-		return "", fmt.Errorf("parsing platform server URL: %w", err)
+		return "", "", "", fmt.Errorf("loading config: %w", err)
 	}
-
-	switch parsed.Hostname() {
-	case "codewire.sh", "www.codewire.sh", "app.codewire.sh", "api.codewire.sh":
-		scheme := parsed.Scheme
-		if scheme == "" {
-			scheme = "https"
-		}
-		return scheme + "://relay.codewire.sh", nil
-	default:
-		return "", fmt.Errorf("no default relay URL for platform server %q", serverURL)
+	if cfg.RelayURL != nil {
+		relayURL = strings.TrimSpace(*cfg.RelayURL)
 	}
+	if cfg.RelayNodeToken != nil {
+		nodeToken = strings.TrimSpace(*cfg.RelayNodeToken)
+	}
+	if cfg.RelayNodeNetwork != nil {
+		networkID = strings.TrimSpace(*cfg.RelayNodeNetwork)
+	}
+	if relayURL == "" {
+		return "", "", "", fmt.Errorf("relay not configured")
+	}
+	if nodeToken == "" {
+		return "", "", "", fmt.Errorf("relay node authentication not configured")
+	}
+	return relayURL, nodeToken, networkID, nil
 }
 
 // ---------------------------------------------------------------------------

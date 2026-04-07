@@ -3,7 +3,6 @@ package client
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,6 +15,7 @@ func TestLoadRelayAuthUsesOverridesWithoutConfig(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CODEWIRE_RELAY_URL", "")
 	t.Setenv("CODEWIRE_API_KEY", "")
+	t.Setenv("CODEWIRE_RELAY_AUTH_TOKEN", "")
 	t.Setenv("CODEWIRE_RELAY_NETWORK", "")
 
 	dir := t.TempDir()
@@ -41,7 +41,8 @@ func TestLoadRelayAuthUsesOverridesWithoutConfig(t *testing.T) {
 func TestLoadRelayAuthUsesEnvFallback(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CODEWIRE_RELAY_URL", "http://127.0.0.1:8080")
-	t.Setenv("CODEWIRE_API_KEY", "env-token")
+	t.Setenv("CODEWIRE_API_KEY", "")
+	t.Setenv("CODEWIRE_RELAY_AUTH_TOKEN", "env-token")
 	t.Setenv("CODEWIRE_RELAY_NETWORK", "env-network")
 
 	dir := t.TempDir()
@@ -64,11 +65,12 @@ func TestLoadRelayAuthOverridesConfig(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CODEWIRE_RELAY_URL", "")
 	t.Setenv("CODEWIRE_API_KEY", "")
+	t.Setenv("CODEWIRE_RELAY_AUTH_TOKEN", "")
 	t.Setenv("CODEWIRE_RELAY_NETWORK", "")
 
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
-	content := []byte("relay_url = \"https://relay.example.com\"\nrelay_network = \"default\"\n")
+	content := []byte("relay_url = \"https://relay.example.com\"\nrelay_selected_network = \"default\"\n")
 	if err := os.WriteFile(configPath, content, 0o644); err != nil {
 		t.Fatalf("WriteFile(config.toml): %v", err)
 	}
@@ -127,8 +129,8 @@ func TestClearNetworkRemovesSelection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if cfg.RelayNetwork != nil {
-		t.Fatalf("RelayNetwork = %v, want nil", *cfg.RelayNetwork)
+	if cfg.RelaySelectedNetwork != nil {
+		t.Fatalf("RelaySelectedNetwork = %v, want nil", *cfg.RelaySelectedNetwork)
 	}
 
 	_, _, networkID, err := loadRelayAuth(dir, RelayAuthOptions{
@@ -148,6 +150,7 @@ func TestLoadRelayAuthFallsBackToPlatformLogin(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("CODEWIRE_RELAY_URL", "")
 	t.Setenv("CODEWIRE_API_KEY", "")
+	t.Setenv("CODEWIRE_RELAY_AUTH_TOKEN", "")
 	t.Setenv("CODEWIRE_RELAY_NETWORK", "")
 
 	if err := platform.SaveConfig(&platform.PlatformConfig{
@@ -173,6 +176,54 @@ func TestLoadRelayAuthFallsBackToPlatformLogin(t *testing.T) {
 	}
 }
 
+func TestLoadRelayAuthUsesHostedAPIKeyForHostedRelay(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEWIRE_RELAY_URL", "https://relay.codewire.sh")
+	t.Setenv("CODEWIRE_API_KEY", "hosted-api-key")
+	t.Setenv("CODEWIRE_RELAY_AUTH_TOKEN", "")
+	t.Setenv("CODEWIRE_RELAY_NETWORK", "")
+
+	if err := platform.SaveConfig(&platform.PlatformConfig{
+		ServerURL:    "https://codewire.sh",
+		SessionToken: "platform-session",
+	}); err != nil {
+		t.Fatalf("SaveConfig(platform): %v", err)
+	}
+
+	dir := t.TempDir()
+	relayURL, authToken, networkID, err := loadRelayAuth(dir, RelayAuthOptions{})
+	if err != nil {
+		t.Fatalf("loadRelayAuth returned error: %v", err)
+	}
+	if relayURL != "https://relay.codewire.sh" {
+		t.Fatalf("relayURL = %q, want hosted relay URL", relayURL)
+	}
+	if authToken != "hosted-api-key" {
+		t.Fatalf("authToken = %q, want hosted API key", authToken)
+	}
+	if networkID != "" {
+		t.Fatalf("networkID = %q, want empty", networkID)
+	}
+}
+
+func TestLoadRelayAuthDoesNotUseHostedAPIKeyForStandaloneRelay(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CODEWIRE_RELAY_URL", "http://127.0.0.1:8080")
+	t.Setenv("CODEWIRE_API_KEY", "hosted-api-key")
+	t.Setenv("CODEWIRE_RELAY_AUTH_TOKEN", "")
+	t.Setenv("CODEWIRE_RELAY_NETWORK", "")
+
+	dir := t.TempDir()
+	_, _, _, err := loadRelayAuth(dir, RelayAuthOptions{})
+	if err == nil {
+		t.Fatal("expected standalone relay auth lookup to fail without a relay-specific token")
+	}
+	if got := err.Error(); got != "relay user authentication not configured (pass --token, set CODEWIRE_RELAY_AUTH_TOKEN, or use 'cw login'/CODEWIRE_API_KEY for hosted Codewire)" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestCreateNetworkCreatesAndSelectsNetwork(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	origClient := relayHTTPClient
@@ -181,7 +232,7 @@ func TestCreateNetworkCreatesAndSelectsNetwork(t *testing.T) {
 	dir := t.TempDir()
 
 	sawCreate := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/networks" {
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
@@ -205,7 +256,6 @@ func TestCreateNetworkCreatesAndSelectsNetwork(t *testing.T) {
 			"network_id": "project-beta",
 		})
 	}))
-	defer srv.Close()
 	relayHTTPClient = srv.Client()
 
 	if err := CreateNetwork(dir, "project-beta", RelayAuthOptions{
@@ -232,24 +282,20 @@ func TestCreateNetworkCreatesAndSelectsNetwork(t *testing.T) {
 
 func TestJoinNetworkPersistsEnrollment(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	if err := platform.SaveConfig(&platform.PlatformConfig{
-		ServerURL:    "https://codewire.sh",
-		SessionToken: "platform-token",
-	}); err != nil {
-		t.Fatalf("SaveConfig(platform): %v", err)
-	}
+	t.Setenv("CODEWIRE_API_KEY", "")
+	t.Setenv("CODEWIRE_RELAY_AUTH_TOKEN", "standalone-token")
 
 	dir := t.TempDir()
 	if err := JoinNetwork(dir, "https://relay.example.com", "CW-INV-TEST"); err == nil {
 		t.Fatal("expected error without a relay test server")
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/networks/join" {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer platform-token" {
+		if got := r.Header.Get("Authorization"); got != "Bearer standalone-token" {
 			t.Fatalf("Authorization = %q", got)
 		}
 		var body map[string]string
@@ -264,7 +310,6 @@ func TestJoinNetworkPersistsEnrollment(t *testing.T) {
 			"network_id": "project-alpha",
 		})
 	}))
-	defer srv.Close()
 
 	if err := JoinNetwork(dir, srv.URL, "CW-INV-TEST"); err != nil {
 		t.Fatalf("JoinNetwork: %v", err)
@@ -277,10 +322,10 @@ func TestJoinNetworkPersistsEnrollment(t *testing.T) {
 	if cfg.RelayURL == nil || *cfg.RelayURL != srv.URL {
 		t.Fatalf("RelayURL = %#v", cfg.RelayURL)
 	}
-	if cfg.RelayNetwork == nil || *cfg.RelayNetwork != "project-alpha" {
-		t.Fatalf("RelayNetwork = %#v", cfg.RelayNetwork)
+	if cfg.RelaySelectedNetwork == nil || *cfg.RelaySelectedNetwork != "project-alpha" {
+		t.Fatalf("RelaySelectedNetwork = %#v", cfg.RelaySelectedNetwork)
 	}
-	if cfg.RelayToken != nil {
-		t.Fatalf("RelayToken = %#v, want nil", cfg.RelayToken)
+	if cfg.RelayNodeToken != nil {
+		t.Fatalf("RelayNodeToken = %#v, want nil", cfg.RelayNodeToken)
 	}
 }

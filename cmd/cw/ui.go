@@ -40,7 +40,7 @@ func stateColor(state string) string {
 		return green(state)
 	case "error", "failed", "unhealthy":
 		return red(state)
-	case "creating", "pending", "provisioning", "starting", "stopping":
+	case "creating", "pending", "provisioning", "starting", "stopping", "deleting":
 		return yellow(state)
 	case "stopped", "destroyed":
 		return dim(state)

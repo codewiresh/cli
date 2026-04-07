@@ -122,7 +122,7 @@ func TestCurrentCmdPrintsSelectedNetwork(t *testing.T) {
 	loadCLIConfigForTarget = func() (*cwconfig.Config, error) {
 		network := "project-alpha"
 		return &cwconfig.Config{
-			RelayNetwork: &network,
+			RelaySelectedNetwork: &network,
 		}, nil
 	}
 
@@ -157,7 +157,7 @@ func TestCurrentCmdVerbosePrintsFullDetails(t *testing.T) {
 	loadCLIConfigForTarget = func() (*cwconfig.Config, error) {
 		network := "project-alpha"
 		return &cwconfig.Config{
-			RelayNetwork: &network,
+			RelaySelectedNetwork: &network,
 		}, nil
 	}
 

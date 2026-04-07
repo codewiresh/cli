@@ -202,6 +202,55 @@ func TestPrintEnvListEntriesUsesUnifiedBlockLayout(t *testing.T) {
 	}
 }
 
+func TestPrintEnvListEntriesShowsDeletingStateAndDeadline(t *testing.T) {
+	alpha := "alpha"
+	deletingAt := time.Now().UTC().Add(5 * time.Minute).Format(time.RFC3339)
+	envs := []platform.Environment{
+		{
+			ID:                 "12345678-1234-1234-1234-123456789abc",
+			Name:               &alpha,
+			State:              "running",
+			Type:               "sandbox",
+			CPUMillicores:      2000,
+			MemoryMB:           4096,
+			CreatedAt:          time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339),
+			DeletionGraceUntil: &deletingAt,
+		},
+	}
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = oldStdout }()
+
+	printEnvListEntries(envs)
+
+	_ = w.Close()
+	output, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+
+	got := string(output)
+	if !strings.Contains(got, "alpha [12345678]  deleting") {
+		t.Fatalf("expected deleting header, got %q", got)
+	}
+	if !strings.Contains(got, "deleting at: "+deletingAt) {
+		t.Fatalf("expected deleting deadline, got %q", got)
+	}
+}
+
+func TestEnvironmentStateLabelShowsDeletingDuringGracePeriod(t *testing.T) {
+	deletingAt := time.Now().UTC().Add(5 * time.Minute).Format(time.RFC3339)
+	env := platform.Environment{State: "running", DeletionGraceUntil: &deletingAt}
+	if got := environmentStateLabel(env); !strings.Contains(got, "deleting") {
+		t.Fatalf("expected deleting state label, got %q", got)
+	}
+}
+
 func TestEnvSSHRefUsesShortIDForRunningSandboxes(t *testing.T) {
 	env := platform.Environment{
 		ID:    "12345678-1234-1234-1234-123456789abc",

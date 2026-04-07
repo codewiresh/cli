@@ -906,11 +906,11 @@ func currentNetworkCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if cfg.RelayNetwork == nil || strings.TrimSpace(*cfg.RelayNetwork) == "" {
+			if cfg.RelaySelectedNetwork == nil || strings.TrimSpace(*cfg.RelaySelectedNetwork) == "" {
 				fmt.Println("none")
 				return nil
 			}
-			fmt.Println(strings.TrimSpace(*cfg.RelayNetwork))
+			fmt.Println(strings.TrimSpace(*cfg.RelaySelectedNetwork))
 			return nil
 		},
 	}

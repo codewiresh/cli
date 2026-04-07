@@ -3,7 +3,6 @@ package client
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -19,7 +18,7 @@ func TestAccessGrantClientLifecycle(t *testing.T) {
 		sawList   bool
 		sawRevoke bool
 	)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer dev-secret" {
 			t.Fatalf("Authorization = %q", got)
 		}
@@ -95,7 +94,6 @@ func TestAccessGrantClientLifecycle(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
-	defer srv.Close()
 	relayHTTPClient = srv.Client()
 
 	issued, err := CreateAccessGrant(t.TempDir(), RelayAuthOptions{

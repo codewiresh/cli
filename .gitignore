@@ -1,5 +1,6 @@
 /target
 /cw
+/cw-static
 /demo-broker
 demo/cw
 demo/broker/broker

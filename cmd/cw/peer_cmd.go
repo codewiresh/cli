@@ -115,19 +115,43 @@ func dialPeerClientForNode(ctx context.Context, nodeName string) (*peerclient.Cl
 }
 
 func issueRuntimeCredentialForPeer(ctx context.Context) (string, error) {
-	relayURL, authToken, networkID, err := client.LoadRelayAuth(dataDir(), client.RelayAuthOptions{})
+	cfg, err := config.LoadConfig(dataDir())
 	if err != nil {
+		return "", fmt.Errorf("loading config: %w", err)
+	}
+	if cfg.RelayURL == nil || strings.TrimSpace(*cfg.RelayURL) == "" {
+		return "", fmt.Errorf("relay not configured (set CODEWIRE_RELAY_URL or log in to hosted Codewire)")
+	}
+	relayURL := strings.TrimSpace(*cfg.RelayURL)
+
+	var clientErr error
+	if authToken := config.ResolveRelayUserAuthToken(relayURL); authToken != "" {
+		networkID := ""
+		if cfg.RelaySelectedNetwork != nil {
+			networkID = strings.TrimSpace(*cfg.RelaySelectedNetwork)
+		}
+		// Try client credential (session token / API key) first.
+		issued, err := networkauth.IssueClientRuntimeCredential(ctx, http.DefaultClient, relayURL, authToken, networkID)
+		if err == nil {
+			return issued.Credential, nil
+		}
+		clientErr = err
+	}
+
+	// Fall back to node credential from local node enrollment.
+	_, nodeToken, _, err := client.LoadRelayNodeAuth(dataDir())
+	if err != nil {
+		if clientErr != nil {
+			return "", fmt.Errorf("runtime credential: client auth failed: %v; node auth unavailable: %w", clientErr, err)
+		}
 		return "", err
 	}
-	// Try client credential (session token / API key) first.
-	issued, err := networkauth.IssueClientRuntimeCredential(ctx, http.DefaultClient, relayURL, authToken, networkID)
-	if err == nil {
-		return issued.Credential, nil
-	}
-	// Fall back to node credential (relay_token from config.toml).
-	issued, err = networkauth.IssueNodeRuntimeCredential(ctx, http.DefaultClient, relayURL, authToken)
+	issued, err := networkauth.IssueNodeRuntimeCredential(ctx, http.DefaultClient, relayURL, nodeToken)
 	if err != nil {
-		return "", fmt.Errorf("runtime credential: client and node auth both failed: %w", err)
+		if clientErr != nil {
+			return "", fmt.Errorf("runtime credential: client and node auth both failed: client=%v node=%w", clientErr, err)
+		}
+		return "", fmt.Errorf("runtime credential: node auth failed: %w", err)
 	}
 	return issued.Credential, nil
 }

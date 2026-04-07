@@ -315,13 +315,14 @@ func mustDERPMap(t *testing.T, relayNetwork, host string) *tailcfg.DERPMap {
 
 func saveRelayConfig(t *testing.T, relayURL, relaySession, relayNetwork string) {
 	t.Helper()
-	t.Setenv("CODEWIRE_API_KEY", relaySession)
+	t.Setenv("CODEWIRE_API_KEY", "")
+	t.Setenv("CODEWIRE_RELAY_AUTH_TOKEN", relaySession)
 
 	cfg := &cwconfig.Config{
 		RelayURL: &relayURL,
 	}
 	if relayNetwork != "" {
-		cfg.RelayNetwork = &relayNetwork
+		cfg.RelaySelectedNetwork = &relayNetwork
 	}
 	if err := cwconfig.SaveConfig(dataDir(), cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
@@ -400,10 +401,11 @@ func TestMsgCmdRoutesRemoteLocatorViaRelayRuntimeCredential(t *testing.T) {
 	relayURL := relaySrv.URL
 	relaySession := "relay-session"
 	relayNetwork := "project-alpha"
-	t.Setenv("CODEWIRE_API_KEY", relaySession)
+	t.Setenv("CODEWIRE_API_KEY", "")
+	t.Setenv("CODEWIRE_RELAY_AUTH_TOKEN", relaySession)
 	if err := cwconfig.SaveConfig(dataDir(), &cwconfig.Config{
-		RelayURL:     &relayURL,
-		RelayNetwork: &relayNetwork,
+		RelayURL:             &relayURL,
+		RelaySelectedNetwork: &relayNetwork,
 	}); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}

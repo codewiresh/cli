@@ -103,10 +103,10 @@ func targetSummaryLine(target *cwconfig.CurrentTargetConfig, env *platform.Envir
 }
 
 func configuredNetwork(cfg *cwconfig.Config) string {
-	if cfg == nil || cfg.RelayNetwork == nil {
+	if cfg == nil || cfg.RelaySelectedNetwork == nil {
 		return ""
 	}
-	return strings.TrimSpace(*cfg.RelayNetwork)
+	return strings.TrimSpace(*cfg.RelaySelectedNetwork)
 }
 
 func lookupEnvironmentForTarget(target *cwconfig.CurrentTargetConfig) *platform.Environment {

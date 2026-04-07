@@ -78,9 +78,9 @@ func setupPeerRuntimeNode(t *testing.T, networkID string) (*Node, string, string
 	t.Cleanup(relaySrv.Close)
 	relayURL := relaySrv.URL
 	n.config.RelayURL = &relayURL
-	n.config.RelayNetwork = &networkID
+	n.config.RelayNodeNetwork = &networkID
 	relayNodeToken := "relay-node-token"
-	n.config.RelayToken = &relayNodeToken
+	n.config.RelayNodeToken = &relayNodeToken
 
 	oldListen := n.config.Node.Listen
 	t.Cleanup(func() { n.config.Node.Listen = oldListen })
@@ -445,7 +445,7 @@ func TestNodeSyncsGroupMembershipOnNameChangeAndExit(t *testing.T) {
 	relayURL := relaySrv.URL
 	relayToken := "relay-node-token"
 	n.config.RelayURL = &relayURL
-	n.config.RelayToken = &relayToken
+	n.config.RelayNodeToken = &relayToken
 	n.config.Node.Name = "node-a"
 
 	sessionID, err := n.Manager.Launch([]string{"sleep", "30"}, "/tmp", nil, nil, "", "group:mesh")

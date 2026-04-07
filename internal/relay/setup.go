@@ -133,8 +133,8 @@ func JoinNetworkWithInvite(ctx context.Context, relayURL, authToken, inviteToken
 	return &result, nil
 }
 
-// RegisterWithInvite exchanges an invite token for a node token.
-func RegisterWithInvite(ctx context.Context, relayURL, nodeName, inviteToken string) (string, error) {
+// RegisterWithInvite exchanges an invite token for a node enrollment result.
+func RegisterWithInvite(ctx context.Context, relayURL, nodeName, inviteToken string) (*NodeRedeemResult, error) {
 	body, _ := json.Marshal(map[string]string{
 		"node_name":    nodeName,
 		"invite_token": inviteToken,
@@ -144,22 +144,20 @@ func RegisterWithInvite(ctx context.Context, relayURL, nodeName, inviteToken str
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("contacting relay: %w", err)
+		return nil, fmt.Errorf("contacting relay: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return "", fmt.Errorf("invite rejected (%d): %s", resp.StatusCode, b)
+		return nil, fmt.Errorf("invite rejected (%d): %s", resp.StatusCode, b)
 	}
 
-	var result struct {
-		NodeToken string `json:"node_token"`
-	}
+	var result NodeRedeemResult
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("parsing join response: %w", err)
+		return nil, fmt.Errorf("parsing join response: %w", err)
 	}
-	return result.NodeToken, nil
+	return &result, nil
 }
 
 // SSHURI builds an ssh:// URI for the given relay and node credentials.

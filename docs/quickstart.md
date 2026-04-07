@@ -164,6 +164,20 @@ cw group members mesh
 cw group policy mesh
 ```
 
+Relay auth model:
+
+- Hosted Codewire user auth comes from `cw login` or `CODEWIRE_API_KEY`.
+- Standalone relay user auth should be passed with `--token` or `CODEWIRE_RELAY_AUTH_TOKEN`.
+- `cw network use` selects the default relay network for those user commands.
+- `cw node` enrolls the current machine separately and stores a node credential for the relay agent.
+- The selected user network and the node's enrolled network are tracked separately on purpose.
+
+Security model:
+
+- The relay is the authorization boundary for networks, groups, access grants, and node enrollment.
+- The platform only authenticates hosted users to that relay.
+- `relay_node_token` is the machine credential for `cw node`; keep it separate from user auth.
+
 ### Cross-Node Messaging
 
 Nodes on the same network can message each other directly over a WireGuard tunnel

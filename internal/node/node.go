@@ -18,7 +18,6 @@ import (
 	"github.com/codewiresh/codewire/internal/connection"
 	"github.com/codewiresh/codewire/internal/networkauth"
 	"github.com/codewiresh/codewire/internal/peer"
-	"github.com/codewiresh/codewire/internal/platform"
 	"github.com/codewiresh/codewire/internal/relay"
 	"github.com/codewiresh/codewire/internal/session"
 	"github.com/codewiresh/codewire/internal/store"
@@ -51,11 +50,9 @@ func NewNode(dataDir string) (*Node, error) {
 		return nil, fmt.Errorf("creating session manager: %w", err)
 	}
 
-	token, err := auth.LoadOrGenerateToken(dataDir)
-	if err != nil {
+	if _, err := auth.LoadOrGenerateToken(dataDir); err != nil {
 		return nil, fmt.Errorf("loading auth token: %w", err)
 	}
-	slog.Info("auth token ready", "token", token)
 
 	node := &Node{
 		Manager:     mgr,
@@ -134,25 +131,29 @@ func (n *Node) Run(ctx context.Context) error {
 
 	// Start relay agent if relay URL and token are configured.
 	if n.config.RelayURL != nil {
-		if (n.config.RelayToken == nil || *n.config.RelayToken == "") && n.config.RelayInviteToken != nil && *n.config.RelayInviteToken != "" {
-			nodeToken, err := relay.RegisterWithInvite(ctx, *n.config.RelayURL, n.config.Node.Name, *n.config.RelayInviteToken)
+		if (n.config.RelayNodeToken == nil || *n.config.RelayNodeToken == "") && n.config.RelayInviteToken != nil && *n.config.RelayInviteToken != "" {
+			redeemed, err := relay.RegisterWithInvite(ctx, *n.config.RelayURL, n.config.Node.Name, *n.config.RelayInviteToken)
 			if err != nil {
 				slog.Error("relay invite bootstrap failed", "err", err)
 			} else {
-				n.config.RelayToken = &nodeToken
+				n.config.RelayNodeToken = &redeemed.NodeToken
+				if strings.TrimSpace(redeemed.NetworkID) != "" {
+					n.config.RelayNodeNetwork = &redeemed.NetworkID
+				}
 				n.config.RelayInviteToken = nil
 				if err := config.SaveConfig(n.dataDir, n.config); err != nil {
 					slog.Error("saving relay bootstrap config failed", "err", err)
 				}
 			}
 		}
-		if (n.config.RelayToken == nil || *n.config.RelayToken == "") && n.config.RelayNetwork != nil && strings.TrimSpace(*n.config.RelayNetwork) != "" {
-			if userToken := resolveUserRelayAuthToken(); userToken != "" {
-				nodeToken, err := relay.RegisterWithAuthToken(ctx, *n.config.RelayURL, *n.config.RelayNetwork, n.config.Node.Name, userToken)
+		if (n.config.RelayNodeToken == nil || *n.config.RelayNodeToken == "") && n.config.RelaySelectedNetwork != nil && strings.TrimSpace(*n.config.RelaySelectedNetwork) != "" {
+			if userToken := resolveUserRelayAuthToken(*n.config.RelayURL); userToken != "" {
+				nodeToken, err := relay.RegisterWithAuthToken(ctx, *n.config.RelayURL, *n.config.RelaySelectedNetwork, n.config.Node.Name, userToken)
 				if err != nil {
 					slog.Error("relay auto-enrollment failed", "err", err)
 				} else {
-					n.config.RelayToken = &nodeToken
+					n.config.RelayNodeToken = &nodeToken
+					n.config.RelayNodeNetwork = n.config.RelaySelectedNetwork
 					if err := config.SaveConfig(n.dataDir, n.config); err != nil {
 						slog.Error("saving relay auto-enrollment config failed", "err", err)
 					}
@@ -160,11 +161,11 @@ func (n *Node) Run(ctx context.Context) error {
 			}
 		}
 
-		if n.config.RelayToken != nil && *n.config.RelayToken != "" {
+		if n.config.RelayNodeToken != nil && *n.config.RelayNodeToken != "" {
 			go relay.RunAgent(ctx, relay.AgentConfig{
 				RelayURL:  *n.config.RelayURL,
 				NodeName:  n.config.Node.Name,
-				NodeToken: *n.config.RelayToken,
+				NodeToken: *n.config.RelayNodeToken,
 				PeerURL:   stringPtrValue(n.config.Node.ExternalURL),
 			})
 			go n.runTailnetPeerServer(ctx, peerServer)
@@ -218,31 +219,27 @@ func (n *Node) Run(ctx context.Context) error {
 	}
 }
 
-func resolveUserRelayAuthToken() string {
-	if token := strings.TrimSpace(os.Getenv("CODEWIRE_API_KEY")); token != "" {
-		return token
-	}
-	cfg, err := platform.LoadConfig()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(cfg.SessionToken)
+func resolveUserRelayAuthToken(relayURL string) string {
+	return config.ResolveRelayUserAuthToken(relayURL)
 }
 
 func (n *Node) relayVerifierAuthToken() string {
-	if n != nil && n.config != nil && n.config.RelayToken != nil {
-		if token := strings.TrimSpace(*n.config.RelayToken); token != "" {
+	if n != nil && n.config != nil && n.config.RelayNodeToken != nil {
+		if token := strings.TrimSpace(*n.config.RelayNodeToken); token != "" {
 			return token
 		}
 	}
-	return resolveUserRelayAuthToken()
+	if n != nil && n.config != nil && n.config.RelayURL != nil {
+		return resolveUserRelayAuthToken(*n.config.RelayURL)
+	}
+	return ""
 }
 
 func (n *Node) relayNodeToken() string {
-	if n == nil || n.config == nil || n.config.RelayToken == nil {
+	if n == nil || n.config == nil || n.config.RelayNodeToken == nil {
 		return ""
 	}
-	return strings.TrimSpace(*n.config.RelayToken)
+	return strings.TrimSpace(*n.config.RelayNodeToken)
 }
 
 // Cleanup removes the Unix socket and PID files.
@@ -308,18 +305,18 @@ func (n *Node) runWSServer(ctx context.Context, addr string, peerServer *peer.Se
 }
 
 func (n *Node) runTailnetPeerServer(ctx context.Context, peerServer *peer.Server) {
-	if n == nil || n.config == nil || n.config.RelayURL == nil || n.config.RelayToken == nil {
+	if n == nil || n.config == nil || n.config.RelayURL == nil || n.config.RelayNodeToken == nil {
 		slog.Warn("tailnet peer server skipped: missing config",
 			"nil_node", n == nil,
 			"nil_config", n != nil && n.config == nil,
 			"nil_relay_url", n != nil && n.config != nil && n.config.RelayURL == nil,
-			"nil_relay_token", n != nil && n.config != nil && n.config.RelayToken == nil)
+			"nil_relay_node_token", n != nil && n.config != nil && n.config.RelayNodeToken == nil)
 		return
 	}
 
 	slog.Info("tailnet peer server starting", "relay", *n.config.RelayURL)
 
-	issued, err := networkauth.IssueNodeRuntimeCredential(ctx, http.DefaultClient, *n.config.RelayURL, *n.config.RelayToken)
+	issued, err := networkauth.IssueNodeRuntimeCredential(ctx, http.DefaultClient, *n.config.RelayURL, *n.config.RelayNodeToken)
 	if err != nil {
 		slog.Error("tailnet runtime credential failed", "err", err)
 		return
@@ -373,10 +370,10 @@ func (n *Node) authorizePeerRuntime(ctx context.Context, token string) (*peer.Au
 }
 
 func (n *Node) relayNetworkID() string {
-	if n == nil || n.config == nil || n.config.RelayNetwork == nil {
+	if n == nil || n.config == nil || n.config.RelayNodeNetwork == nil {
 		return ""
 	}
-	return networkauth.ResolveNetworkID(*n.config.RelayNetwork)
+	return networkauth.ResolveNetworkID(*n.config.RelayNodeNetwork)
 }
 
 func (n *Node) syncRelayGroupMemberships(_ uint32, oldName, newName string, tags []string) error {
@@ -474,7 +471,7 @@ func (n *Node) issueSenderDelegation(ctx context.Context, sessionID uint32, verb
 	if n.config.RelayURL == nil || strings.TrimSpace(*n.config.RelayURL) == "" {
 		return nil, fmt.Errorf("relay is not configured")
 	}
-	if n.config.RelayToken == nil || strings.TrimSpace(*n.config.RelayToken) == "" {
+	if n.config.RelayNodeToken == nil || strings.TrimSpace(*n.config.RelayNodeToken) == "" {
 		return nil, fmt.Errorf("relay node token is not configured")
 	}
 	sessionName := n.Manager.GetName(sessionID)
@@ -482,7 +479,7 @@ func (n *Node) issueSenderDelegation(ctx context.Context, sessionID uint32, verb
 		ctx,
 		http.DefaultClient,
 		*n.config.RelayURL,
-		*n.config.RelayToken,
+		*n.config.RelayNodeToken,
 		n.config.Node.Name,
 		&sessionID,
 		sessionName,
@@ -682,10 +679,10 @@ func (n *Node) fetchGroupBindings(ctx context.Context, sessionName string) ([]st
 	if n.config.RelayURL == nil || strings.TrimSpace(*n.config.RelayURL) == "" {
 		return n.localGroupBindings(sessionName), nil
 	}
-	if n.config.RelayToken == nil || strings.TrimSpace(*n.config.RelayToken) == "" {
+	if n.config.RelayNodeToken == nil || strings.TrimSpace(*n.config.RelayNodeToken) == "" {
 		return n.localGroupBindings(sessionName), nil
 	}
-	bindings, err := networkauth.FetchNodeGroupBindings(ctx, http.DefaultClient, *n.config.RelayURL, *n.config.RelayToken, n.config.Node.Name, sessionName)
+	bindings, err := networkauth.FetchNodeGroupBindings(ctx, http.DefaultClient, *n.config.RelayURL, *n.config.RelayNodeToken, n.config.Node.Name, sessionName)
 	if err != nil {
 		return n.localGroupBindings(sessionName), nil
 	}

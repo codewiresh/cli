@@ -128,7 +128,7 @@ func TestCurrentNetworkCmdPrintsSelectedNetwork(t *testing.T) {
 	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
 	network := "project-alpha"
-	if err := cwconfig.SaveConfig(dataDir(), &cwconfig.Config{RelayNetwork: &network}); err != nil {
+	if err := cwconfig.SaveConfig(dataDir(), &cwconfig.Config{RelaySelectedNetwork: &network}); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
 
