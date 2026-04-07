@@ -196,6 +196,12 @@ func coordinateTailnet(ctx context.Context, relayURL, runtimeCredential string, 
 	if err != nil {
 		return nil, err
 	}
+	if strings.TrimSpace(targetNode) != "" {
+		// Dialer connections use ?role=dial so the relay assigns a random
+		// peer UUID instead of the stable node UUID (which is reserved for
+		// the persistent listener).
+		wsURL += "?role=dial"
+	}
 
 	wsConn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		HTTPHeader: map[string][]string{
@@ -297,9 +303,9 @@ func tailnetCoordinateURL(relayURL string) (string, error) {
 	return u.String(), nil
 }
 
-func tailnetIDForDial(claims *networkauth.RuntimeClaims) uuid.UUID {
-	if claims != nil && claims.SubjectKind == networkauth.SubjectKindNode {
-		return StablePrincipalUUID(claims.NetworkID, claims.SubjectKind, claims.SubjectID)
-	}
+func tailnetIDForDial(_ *networkauth.RuntimeClaims) uuid.UUID {
+	// Always use a random UUID for dial operations. The stable UUID is
+	// reserved for the persistent node listener — using it here would
+	// collide with the listener's coordinator registration.
 	return uuid.New()
 }

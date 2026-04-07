@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -72,11 +73,15 @@ func tailnetCoordinateHandler(cfg RelayConfig, st store.Store, coord *tailnetlib
 		defer wsConn.CloseNow()
 
 		peerID := peer.StablePrincipalUUID(claims.NetworkID, claims.SubjectKind, claims.SubjectID)
-		if claims.SubjectKind == networkauth.SubjectKindClient {
+		if claims.SubjectKind == networkauth.SubjectKindClient || r.URL.Query().Get("role") == "dial" {
 			peerID = uuid.New()
 		}
+		slog.Info("tailnet coordinate connected", "peer_id", peerID, "kind", claims.SubjectKind, "subject", claims.SubjectID)
 		respCh := coord.Register(peerID, claims.SubjectKind+":"+claims.SubjectID)
-		defer coord.Deregister(peerID)
+		defer func() {
+			slog.Info("tailnet coordinate disconnected", "peer_id", peerID, "kind", claims.SubjectKind, "subject", claims.SubjectID)
+			coord.Deregister(peerID)
+		}()
 
 		if err := writeTailnetResponse(r.Context(), wsConn, peer.TailnetCoordinateResponse{
 			Type:    "derp_map",
@@ -127,6 +132,7 @@ func tailnetCoordinateHandler(cfg RelayConfig, st store.Store, coord *tailnetlib
 					})
 					continue
 				}
+				slog.Info("tailnet node update", "peer_id", peerID, "subject", claims.SubjectID)
 				coord.UpdateNode(peerID, req.Node)
 			case "subscribe":
 				target := strings.TrimSpace(req.TargetNode)
@@ -137,7 +143,9 @@ func tailnetCoordinateHandler(cfg RelayConfig, st store.Store, coord *tailnetlib
 					})
 					continue
 				}
-				coord.AddTunnel(peerID, peer.StablePrincipalUUID(claims.NetworkID, networkauth.SubjectKindNode, target))
+				targetUUID := peer.StablePrincipalUUID(claims.NetworkID, networkauth.SubjectKindNode, target)
+				delivered := coord.AddTunnel(peerID, targetUUID)
+				slog.Info("tailnet subscribe", "peer_id", peerID, "target", target, "target_uuid", targetUUID, "delivered", delivered)
 			default:
 				_ = writeTailnetResponse(ctx, wsConn, peer.TailnetCoordinateResponse{
 					Type:  "error",
