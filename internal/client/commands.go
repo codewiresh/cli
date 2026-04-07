@@ -35,6 +35,12 @@ import (
 
 var relayHTTPClient = http.DefaultClient
 
+const (
+	attachBarRefreshInterval = 10 * time.Second
+	attachBarIdleThreshold   = 750 * time.Millisecond
+	attachBarPollInterval    = 250 * time.Millisecond
+)
+
 // ResolveSessionArg resolves a session argument that can be either a numeric ID
 // or a session name (optionally prefixed with @). It queries the node to
 // resolve names to IDs.
@@ -309,15 +315,18 @@ func Attach(target *Target, id *uint32, noHistory bool) error {
 		os.Stdout.Write(setup)
 	}
 
-	// Tell the node the PTY size (accounting for status bar).
-	ptyCols, ptyRows := bar.PtySize()
-	resizeReq := &protocol.Request{
-		Type: "Resize",
-		ID:   &sessionID,
-		Cols: &ptyCols,
-		Rows: &ptyRows,
+	sendResize := func() error {
+		ptyCols, ptyRows := bar.PtySize()
+		resizeReq := &protocol.Request{
+			Type: "Resize",
+			ID:   &sessionID,
+			Cols: &ptyCols,
+			Rows: &ptyRows,
+		}
+		return writer.SendRequest(resizeReq)
 	}
-	if err := writer.SendRequest(resizeReq); err != nil {
+
+	if err := sendResize(); err != nil {
 		guard.Restore()
 		return fmt.Errorf("sending initial resize: %w", err)
 	}
@@ -329,10 +338,15 @@ func Attach(target *Target, id *uint32, noHistory bool) error {
 	defer winchCleanup()
 
 	// ---------------------------------------------------------------
-	// Step 6: set up 10s ticker for status bar redraw
+	// Step 6: set up redraw poller for idle-only status bar updates
 	// ---------------------------------------------------------------
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(attachBarPollInterval)
 	defer ticker.Stop()
+
+	outputState := terminal.NewOutputState()
+	lastOutputAt := time.Time{}
+	lastBarDrawAt := time.Now()
+	pendingBarDraw := false
 
 	// ---------------------------------------------------------------
 	// Step 7: stdin reader goroutine
@@ -390,6 +404,23 @@ func Attach(target *Target, id *uint32, noHistory bool) error {
 			switch fe.frame.Type {
 			case protocol.FrameData:
 				os.Stdout.Write(fe.frame.Payload)
+				wasAltScreen := outputState.AltScreen()
+				outputState.Feed(fe.frame.Payload)
+				lastOutputAt = time.Now()
+				isAltScreen := outputState.AltScreen()
+				switch {
+				case !wasAltScreen && isAltScreen:
+					if suspend := bar.Suspend(); suspend != nil {
+						os.Stdout.Write(suspend)
+					}
+					_ = sendResize()
+					pendingBarDraw = false
+				case wasAltScreen && !isAltScreen:
+					bar.Resume()
+					_ = sendResize()
+					pendingBarDraw = true
+					lastOutputAt = time.Now()
+				}
 			case protocol.FrameControl:
 				var ctrlResp protocol.Response
 				if err := json.Unmarshal(fe.frame.Payload, &ctrlResp); err != nil {
@@ -441,18 +472,30 @@ func Attach(target *Target, id *uint32, noHistory bool) error {
 			if resize := bar.Resize(newCols, newRows); resize != nil {
 				os.Stdout.Write(resize)
 			}
-			ptyCols, ptyRows := bar.PtySize()
-			resizeReq := &protocol.Request{
-				Type: "Resize",
-				ID:   &sessionID,
-				Cols: &ptyCols,
-				Rows: &ptyRows,
-			}
-			_ = writer.SendRequest(resizeReq)
+			_ = sendResize()
+			pendingBarDraw = false
 
 		case <-ticker.C:
+			if outputState.AltScreen() || !outputState.SafeToInject() {
+				continue
+			}
+			if !lastOutputAt.IsZero() && time.Since(lastOutputAt) < attachBarIdleThreshold {
+				continue
+			}
+			if pendingBarDraw {
+				if draw := bar.Draw(); draw != nil {
+					os.Stdout.Write(draw)
+				}
+				pendingBarDraw = false
+				lastBarDrawAt = time.Now()
+				continue
+			}
+			if time.Since(lastBarDrawAt) < attachBarRefreshInterval {
+				continue
+			}
 			if draw := bar.Draw(); draw != nil {
 				os.Stdout.Write(draw)
+				lastBarDrawAt = time.Now()
 			}
 		}
 	}
@@ -2058,8 +2101,11 @@ func loadConfigFromDir(dataDir string) (*relayAuthConfig, error) {
 				result.relayURL = derived
 			}
 		}
-		if result.authToken == "" {
-			result.authToken = strings.TrimSpace(platformCfg.SessionToken)
+		// Prefer the platform session token over a cached relay_token.
+		// Relay tokens can go stale (e.g. DB wipe), but the platform token
+		// is always validated live by the relay's OIDC fallback.
+		if platformToken := strings.TrimSpace(platformCfg.SessionToken); platformToken != "" {
+			result.authToken = platformToken
 		}
 	}
 
