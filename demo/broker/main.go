@@ -28,7 +28,7 @@ func configFromEnv() Config {
 		PoolSize:      envInt("DEMO_POOL_SIZE", 3),
 		PodMaxAge:     envInt("DEMO_POD_MAX_AGE", 300),
 		ListenAddr:    envOr("DEMO_LISTEN", ":8080"),
-		AllowedOrigin: envOr("DEMO_ALLOWED_ORIGIN", "https://codewire.sh"),
+		AllowedOrigin: envOr("DEMO_ALLOWED_ORIGIN", "https://demo.codewire.sh"),
 	}
 }
 

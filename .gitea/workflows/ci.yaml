@@ -8,9 +8,9 @@ on:
 
 env:
   REGISTRY: git.noel.sh
-  DOCS_IMAGE_NAME: codewire/codewire.sh
+  DEMO_SITE_IMAGE_NAME: codewire/codewire-demo-site
   DEPLOY_CONTEXT: app
-  DOCS_NAMESPACE: codewire-prod
+  DEMO_SITE_NAMESPACE: codewire-prod
 
 jobs:
   test:
@@ -40,7 +40,7 @@ jobs:
           go-version-file: go.mod
       - run: go vet ./...
 
-  build-docs:
+  build-demo-site:
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ steps.meta.outputs.tag }}
@@ -78,18 +78,18 @@ jobs:
         with:
           driver: docker
 
-      - name: Build and push docs image
+      - name: Build and push demo site image
         if: gitea.event_name != 'pull_request'
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25
         with:
-          context: docs/
-          file: docs/Dockerfile
+          context: demo/site/
+          file: demo/site/Dockerfile
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.DOCS_IMAGE_NAME }}:${{ steps.meta.outputs.tag }},${{ env.REGISTRY }}/${{ env.DOCS_IMAGE_NAME }}:latest
+          tags: ${{ env.REGISTRY }}/${{ env.DEMO_SITE_IMAGE_NAME }}:${{ steps.meta.outputs.tag }},${{ env.REGISTRY }}/${{ env.DEMO_SITE_IMAGE_NAME }}:latest
 
-  deploy-docs:
+  deploy-demo-site:
     runs-on: ubuntu-latest
-    needs: [build-docs, test]
+    needs: [build-demo-site, test]
     if: gitea.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -104,18 +104,18 @@ jobs:
 
       - name: Update manifests with image tag
         run: |
-          sed -i "s|IMAGE_TAG|${{ needs.build-docs.outputs.image_tag }}|g" k8s/docs/*.yaml
-          sed -i "s|REGISTRY_URL|$REGISTRY|g" k8s/docs/*.yaml
-          sed -i "s|IMAGE_NAME|$DOCS_IMAGE_NAME|g" k8s/docs/*.yaml
+          sed -i "s|IMAGE_TAG|${{ needs.build-demo-site.outputs.image_tag }}|g" k8s/demo-site/*.yaml
+          sed -i "s|REGISTRY_URL|$REGISTRY|g" k8s/demo-site/*.yaml
+          sed -i "s|IMAGE_NAME|$DEMO_SITE_IMAGE_NAME|g" k8s/demo-site/*.yaml
 
-      - name: Deploy docs to cluster
+      - name: Deploy demo site to cluster
         run: |
-          kubectl --context=$DEPLOY_CONTEXT apply -f k8s/docs/ -n $DOCS_NAMESPACE
-          kubectl --context=$DEPLOY_CONTEXT rollout status deployment/codewire-docs -n $DOCS_NAMESPACE --timeout=300s
+          kubectl --context=$DEPLOY_CONTEXT apply -f k8s/demo-site/ -n $DEMO_SITE_NAMESPACE
+          kubectl --context=$DEPLOY_CONTEXT rollout status deployment/codewire-demo-site -n $DEMO_SITE_NAMESPACE --timeout=300s
 
       - name: Show deployment status
         run: |
           echo "=== Pods ==="
-          kubectl --context=$DEPLOY_CONTEXT get pods -n $DOCS_NAMESPACE
+          kubectl --context=$DEPLOY_CONTEXT get pods -n $DEMO_SITE_NAMESPACE
           echo "=== Ingress ==="
-          kubectl --context=$DEPLOY_CONTEXT get ingress -n $DOCS_NAMESPACE
+          kubectl --context=$DEPLOY_CONTEXT get ingress -n $DEMO_SITE_NAMESPACE

@@ -1,23 +1,23 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: codewire-docs
+  name: codewire-demo-site
   labels:
-    app: codewire-docs
+    app: codewire-demo-site
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: codewire-docs
+      app: codewire-demo-site
   template:
     metadata:
       labels:
-        app: codewire-docs
+        app: codewire-demo-site
     spec:
       imagePullSecrets:
         - name: gitea-registry
       containers:
-        - name: docs
+        - name: demo-site
           image: REGISTRY_URL/IMAGE_NAME:IMAGE_TAG
           ports:
             - containerPort: 80
