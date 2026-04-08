@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -23,7 +22,7 @@ func TestNetworkAuthClientRuntimeCredential(t *testing.T) {
 		AuthMode:  "token",
 		AuthToken: "relay-admin",
 	}, nil, networkauth.NewReplayCache(), nil)
-	srv := httptest.NewServer(handler)
+	srv := newIPv4TestServer(t, handler)
 	defer srv.Close()
 
 	issued, err := networkauth.IssueClientRuntimeCredential(context.Background(), srv.Client(), srv.URL, "relay-admin", "project-alpha")
@@ -86,7 +85,7 @@ func TestNetworkAuthNodeRuntimeCredential(t *testing.T) {
 	}
 
 	handler := buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{}, nil, networkauth.NewReplayCache(), nil)
-	srv := httptest.NewServer(handler)
+	srv := newIPv4TestServer(t, handler)
 	defer srv.Close()
 
 	issued, err := networkauth.IssueNodeRuntimeCredential(context.Background(), srv.Client(), srv.URL, "node-token")
@@ -149,7 +148,7 @@ func TestNetworkAuthNodeSenderDelegation(t *testing.T) {
 	}
 
 	handler := buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{}, nil, networkauth.NewReplayCache(), nil)
-	srv := httptest.NewServer(handler)
+	srv := newIPv4TestServer(t, handler)
 	defer srv.Close()
 
 	sessionID := uint32(42)
@@ -200,7 +199,7 @@ func TestVerifierBundleStableAcrossRequests(t *testing.T) {
 	}
 
 	handler := buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{}, nil, networkauth.NewReplayCache(), nil)
-	srv := httptest.NewServer(handler)
+	srv := newIPv4TestServer(t, handler)
 	defer srv.Close()
 
 	if _, err := networkauth.IssueNodeRuntimeCredential(context.Background(), srv.Client(), srv.URL, "node-token"); err != nil {
@@ -248,7 +247,7 @@ func TestVerifierBundleRequiresAuthorizedCaller(t *testing.T) {
 	}
 
 	handler := buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{}, nil, networkauth.NewReplayCache(), nil)
-	srv := httptest.NewServer(handler)
+	srv := newIPv4TestServer(t, handler)
 	defer srv.Close()
 
 	if _, err := networkauth.IssueClientRuntimeCredential(context.Background(), srv.Client(), srv.URL, memberToken, "project-alpha"); err != nil {

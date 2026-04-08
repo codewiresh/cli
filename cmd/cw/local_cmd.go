@@ -28,9 +28,17 @@ var (
 	localRunCommand = func(name string, args ...string) ([]byte, error) {
 		return exec.Command(name, args...).CombinedOutput()
 	}
-	localLookPath = exec.LookPath
-	localNow      = func() time.Time { return time.Now().UTC() }
-	localGetwd    = os.Getwd
+	// localRunCommandStream runs a command with stdout/stderr streamed to os.Stderr.
+	localRunCommandStream = func(name string, args ...string) error {
+		cmd := exec.Command(name, args...)
+		cmd.Stdout = os.Stderr
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+	localLookPath      = exec.LookPath
+	localPromptConfirm = promptConfirm
+	localNow           = func() time.Time { return time.Now().UTC() }
+	localGetwd         = os.Getwd
 )
 
 type localCreateOptions struct {

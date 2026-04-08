@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/netip"
 	neturl "net/url"
 	"strings"
@@ -141,10 +142,11 @@ func DialNetworkPeerTCP(ctx context.Context, relayURL, runtimeCredential, target
 	return tcpConn, conn, nil
 }
 
-// StartNodeTailnetListener starts a persistent tailnet listener for peer RPC.
-func StartNodeTailnetListener(ctx context.Context, relayURL, runtimeCredential string, srv *Server) (*tailnetlib.Conn, error) {
-	if srv == nil {
-		return nil, fmt.Errorf("peer server is nil")
+// StartNodeTailnetListener starts a persistent tailnet listener serving HTTP.
+// The handler should include both the /ws (frame protocol) and /peer (RPC) endpoints.
+func StartNodeTailnetListener(ctx context.Context, relayURL, runtimeCredential string, handler http.Handler) (*tailnetlib.Conn, error) {
+	if handler == nil {
+		return nil, fmt.Errorf("handler is nil")
 	}
 
 	claims, err := networkauth.ParseRuntimeCredential(runtimeCredential)
@@ -177,9 +179,17 @@ func StartNodeTailnetListener(ctx context.Context, relayURL, runtimeCredential s
 		conn.Close()
 		return nil, fmt.Errorf("tailnet listen: %w", err)
 	}
+
+	srv := &http.Server{Handler: handler}
 	go func() {
-		if err := srv.Serve(ctx, ln); err != nil && ctx.Err() == nil {
-			slog.Error("tailnet peer server error", "err", err)
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+	go func() {
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+			slog.Error("tailnet HTTP server error", "err", err)
 		}
 	}()
 

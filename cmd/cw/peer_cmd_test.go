@@ -285,7 +285,16 @@ func startRuntimeTailnetRelayNode(t *testing.T, relayNetwork, relaySession, node
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	tailnetConn, err := peer.StartNodeTailnetListener(ctx, relaySrv.URL, nodeToken, peerServer)
+	peerMux := http.NewServeMux()
+	peerMux.HandleFunc("/peer", func(w http.ResponseWriter, r *http.Request) {
+		wsConn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("websocket.Accept: %v", err)
+			return
+		}
+		peerServer.ServeWebSocket(r.Context(), wsConn)
+	})
+	tailnetConn, err := peer.StartNodeTailnetListener(ctx, relaySrv.URL, nodeToken, peerMux)
 	if err != nil {
 		t.Fatalf("StartNodeTailnetListener: %v", err)
 	}

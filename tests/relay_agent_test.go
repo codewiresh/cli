@@ -22,7 +22,7 @@ func TestNodeConnect(t *testing.T) {
 
 	hub := relay.NewNodeHub()
 	mux := http.NewServeMux()
-	relay.RegisterNodeConnectHandler(mux, hub, st)
+	relay.RegisterNodeConnectHandler(mux, hub, st, nil)
 
 	srv := newIPv4TestServer(t, mux)
 

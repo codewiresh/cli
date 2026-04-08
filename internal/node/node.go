@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -19,6 +20,7 @@ import (
 	"github.com/codewiresh/codewire/internal/networkauth"
 	"github.com/codewiresh/codewire/internal/peer"
 	"github.com/codewiresh/codewire/internal/relay"
+	"github.com/codewiresh/codewire/internal/relayapi"
 	"github.com/codewiresh/codewire/internal/session"
 	"github.com/codewiresh/codewire/internal/store"
 )
@@ -132,7 +134,7 @@ func (n *Node) Run(ctx context.Context) error {
 	// Start relay agent if relay URL and token are configured.
 	if n.config.RelayURL != nil {
 		if (n.config.RelayNodeToken == nil || *n.config.RelayNodeToken == "") && n.config.RelayInviteToken != nil && *n.config.RelayInviteToken != "" {
-			redeemed, err := relay.RegisterWithInvite(ctx, *n.config.RelayURL, n.config.Node.Name, *n.config.RelayInviteToken)
+			redeemed, err := relayapi.RegisterWithInvite(ctx, *n.config.RelayURL, n.config.Node.Name, *n.config.RelayInviteToken)
 			if err != nil {
 				slog.Error("relay invite bootstrap failed", "err", err)
 			} else {
@@ -148,7 +150,7 @@ func (n *Node) Run(ctx context.Context) error {
 		}
 		if (n.config.RelayNodeToken == nil || *n.config.RelayNodeToken == "") && n.config.RelaySelectedNetwork != nil && strings.TrimSpace(*n.config.RelaySelectedNetwork) != "" {
 			if userToken := resolveUserRelayAuthToken(*n.config.RelayURL); userToken != "" {
-				nodeToken, err := relay.RegisterWithAuthToken(ctx, *n.config.RelayURL, *n.config.RelaySelectedNetwork, n.config.Node.Name, userToken)
+				nodeToken, err := relayapi.RegisterWithAuthToken(ctx, *n.config.RelayURL, *n.config.RelaySelectedNetwork, n.config.Node.Name, userToken)
 				if err != nil {
 					slog.Error("relay auto-enrollment failed", "err", err)
 				} else {
@@ -162,11 +164,33 @@ func (n *Node) Run(ctx context.Context) error {
 		}
 
 		if n.config.RelayNodeToken != nil && *n.config.RelayNodeToken != "" {
+			taskReportCh := make(chan []byte, 64)
+			n.Manager.SetTaskReportForward(func(sessionID uint32, sessionName, eventID, summary, state string, ts time.Time) {
+				data, err := json.Marshal(relay.TaskReportMessage{
+					Type:        "TaskReport",
+					EventID:     eventID,
+					SessionID:   sessionID,
+					SessionName: sessionName,
+					Summary:     summary,
+					State:       state,
+					Timestamp:   ts.UTC().Format(time.RFC3339Nano),
+				})
+				if err != nil {
+					slog.Warn("failed to marshal task report message", "session_id", sessionID, "err", err)
+					return
+				}
+				select {
+				case taskReportCh <- data:
+				default:
+					slog.Warn("task report relay channel full, dropping event", "session_id", sessionID)
+				}
+			})
 			go relay.RunAgent(ctx, relay.AgentConfig{
 				RelayURL:  *n.config.RelayURL,
 				NodeName:  n.config.Node.Name,
 				NodeToken: *n.config.RelayNodeToken,
 				PeerURL:   stringPtrValue(n.config.Node.ExternalURL),
+				Outbound:  taskReportCh,
 			})
 			go n.runTailnetPeerServer(ctx, peerServer)
 		}
@@ -323,7 +347,40 @@ func (n *Node) runTailnetPeerServer(ctx context.Context, peerServer *peer.Server
 	}
 	slog.Info("tailnet runtime credential issued")
 
-	conn, err := peer.StartNodeTailnetListener(ctx, *n.config.RelayURL, issued.Credential, peerServer)
+	// Build HTTP mux serving both /ws (frame protocol) and /peer (RPC) on tailnet.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		// Authenticate with runtime credential instead of local token.
+		token := ""
+		if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+			token = strings.TrimPrefix(authHeader, "Bearer ")
+		}
+		if _, authErr := n.authorizePeerRuntime(r.Context(), token); authErr != nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		wsConn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			slog.Error("tailnet ws accept error", "err", err)
+			return
+		}
+
+		wsCtx := r.Context()
+		reader := connection.NewWSReader(wsCtx, wsConn)
+		writer := connection.NewWSWriter(wsCtx, wsConn)
+		handleClient(reader, writer, n.Manager, n.KVStore, n.authorizeLocalDelivery, n.issueSenderDelegation)
+	})
+	mux.HandleFunc("/peer", func(w http.ResponseWriter, r *http.Request) {
+		wsConn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			slog.Error("tailnet peer ws accept error", "err", err)
+			return
+		}
+		peerServer.ServeWebSocket(r.Context(), wsConn)
+	})
+
+	conn, err := peer.StartNodeTailnetListener(ctx, *n.config.RelayURL, issued.Credential, mux)
 	if err != nil {
 		slog.Error("tailnet peer listener failed", "err", err)
 		return

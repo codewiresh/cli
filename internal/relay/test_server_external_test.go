@@ -1,4 +1,4 @@
-package client
+package relay_test
 
 import (
 	"net"

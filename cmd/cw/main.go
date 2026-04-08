@@ -115,6 +115,7 @@ func main() {
 		grouped(sendCmd(), "session"),
 		grouped(watchCmd(), "session"),
 		grouped(statusCmd(), "session"),
+		grouped(tasksCmd(), "session"),
 		grouped(subscribeCmd(), "session"),
 		grouped(waitSessionCmd(), "session"),
 		// Messaging
@@ -177,7 +178,7 @@ func wrapLocalRuntimeRunCommand(instance *config.LocalInstance, workDir string, 
 		hostWorkDir = "."
 	}
 
-	args := []string{exe, "exec", "--on", instance.Name, "--workdir", guestWorkDir, "--"}
+	args := []string{exe, "exec", "-it", "--on", instance.Name, "--workdir", guestWorkDir, "--"}
 	args = append(args, command...)
 	return args, hostWorkDir, nil
 }
@@ -507,6 +508,17 @@ The session continues running after you detach.
 
 Warning: Ctrl+C sends SIGINT to the session process — use Ctrl+B d to detach safely.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Check for node:session syntax (remote attach over tailnet).
+			if len(args) > 0 {
+				loc, err := parseSessionLocator(args[0])
+				if err != nil {
+					return err
+				}
+				if loc.isRemote() {
+					return attachRemoteSession(cmd.Context(), loc, noHistory)
+				}
+			}
+
 			target, err := resolveTarget()
 			if err != nil {
 				return err
@@ -1231,6 +1243,11 @@ func relayServeCmd() *cobra.Command {
 		oidcClientSecret   string
 		oidcAllowedGroups  []string
 		databaseURL        string
+		natsURL            string
+		natsCredsFile      string
+		natsSubjectRoot    string
+		taskEventsStream   string
+		taskLatestBucket   string
 	)
 
 	cmd := &cobra.Command{
@@ -1275,6 +1292,11 @@ func relayServeCmd() *cobra.Command {
 				OIDCClientSecret:   oidcClientSecret,
 				OIDCAllowedGroups:  oidcAllowedGroups,
 				DatabaseURL:        databaseURL,
+				NATSURL:            natsURL,
+				NATSCredsFile:      natsCredsFile,
+				NATSSubjectRoot:    natsSubjectRoot,
+				TaskEventsStream:   taskEventsStream,
+				TaskLatestBucket:   taskLatestBucket,
 			})
 		},
 	}
@@ -1296,6 +1318,11 @@ func relayServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&oidcClientSecret, "oidc-client-secret", "", "OIDC client secret")
 	cmd.Flags().StringVar(&databaseURL, "database-url", os.Getenv("DATABASE_URL"), "PostgreSQL connection URL (uses SQLite if empty)")
 	cmd.Flags().StringSliceVar(&oidcAllowedGroups, "oidc-allowed-groups", nil, "OIDC groups required for access (empty = any authenticated user)")
+	cmd.Flags().StringVar(&natsURL, "nats-url", os.Getenv("NATS_URL"), "NATS server URL for JetStream-backed relay task events")
+	cmd.Flags().StringVar(&natsCredsFile, "nats-creds", os.Getenv("NATS_CREDS"), "NATS user credentials file")
+	cmd.Flags().StringVar(&natsSubjectRoot, "nats-subject-root", "tasks", "NATS subject prefix for task events")
+	cmd.Flags().StringVar(&taskEventsStream, "task-events-stream", "TASK_EVENTS", "JetStream stream name for task events")
+	cmd.Flags().StringVar(&taskLatestBucket, "task-latest-bucket", "TASK_LATEST", "JetStream KV bucket for latest task state")
 
 	return cmd
 }

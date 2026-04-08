@@ -55,6 +55,16 @@ type RelayConfig struct {
 	// DatabaseURL is a PostgreSQL connection string. If set, uses Postgres
 	// instead of SQLite. Empty means use SQLite in DataDir.
 	DatabaseURL string
+	// NATSURL enables JetStream-backed task event storage when set.
+	NATSURL string
+	// NATSCredsFile is an optional NATS user credentials file.
+	NATSCredsFile string
+	// NATSSubjectRoot is the subject prefix for task events.
+	NATSSubjectRoot string
+	// TaskEventsStream is the JetStream stream name for task events.
+	TaskEventsStream string
+	// TaskLatestBucket is the JetStream KV bucket for latest task state.
+	TaskLatestBucket string
 }
 
 // RunRelay starts the relay server. It blocks until ctx is cancelled.
@@ -86,6 +96,16 @@ func RunRelay(ctx context.Context, cfg RelayConfig) error {
 
 	hub := NewNodeHub()
 	sessions := NewPendingSessions()
+	var tasks TaskStore
+	if strings.TrimSpace(cfg.NATSURL) != "" {
+		taskStore, err := NewNATSTaskStore(ctx, cfg)
+		if err != nil {
+			return fmt.Errorf("creating task store: %w", err)
+		}
+		defer taskStore.Close()
+		tasks = taskStore
+		fmt.Fprintf(os.Stderr, "[relay] task store enabled via JetStream (%s)\n", cfg.NATSURL)
+	}
 	tailnetCoord := tailnetlib.NewCoordinator(slog.Default())
 	runtimeReplay := networkauth.NewReplayCache()
 	defer tailnetCoord.Close()
@@ -110,7 +130,7 @@ func RunRelay(ctx context.Context, cfg RelayConfig) error {
 	fmt.Fprintf(os.Stderr, "[relay] SSH listening on %s\n", cfg.SSHListenAddr)
 
 	// Build HTTP mux.
-	mux := buildMux(hub, sessions, st, cfg, tailnetCoord, runtimeReplay, derpHandler)
+	mux := buildMuxWithTaskStore(hub, sessions, st, cfg, tailnetCoord, runtimeReplay, derpHandler, tasks)
 
 	httpSrv := &http.Server{Addr: cfg.ListenAddr, Handler: mux}
 	errCh := make(chan error, 1)
@@ -137,13 +157,16 @@ func RunRelay(ctx context.Context, cfg RelayConfig) error {
 // Used in tests; RunRelay calls the full buildMux.
 func BuildRelayMux(hub *NodeHub, sessions *PendingSessions, st store.Store) http.Handler {
 	mux := http.NewServeMux()
-	RegisterNodeConnectHandler(mux, hub, st)
+	RegisterNodeConnectHandler(mux, hub, st, nil)
 	RegisterBackHandler(mux, sessions, st)
 	return mux
 }
 
-
 func buildMux(hub *NodeHub, sessions *PendingSessions, st store.Store, cfg RelayConfig, tailnetCoord *tailnetlib.Coordinator, runtimeReplay *networkauth.ReplayCache, derpHandler http.Handler) *http.ServeMux {
+	return buildMuxWithTaskStore(hub, sessions, st, cfg, tailnetCoord, runtimeReplay, derpHandler, nil)
+}
+
+func buildMuxWithTaskStore(hub *NodeHub, sessions *PendingSessions, st store.Store, cfg RelayConfig, tailnetCoord *tailnetlib.Coordinator, runtimeReplay *networkauth.ReplayCache, derpHandler http.Handler, tasks TaskStore) *http.ServeMux {
 	var fallbackAuth oauth.ExternalTokenValidator
 	if cfg.AuthMode == "oidc" {
 		fallbackAuth = platformSessionAuthValidator(cfg.OIDCIssuer)
@@ -164,7 +187,7 @@ func buildMux(hub *NodeHub, sessions *PendingSessions, st store.Store, cfg Relay
 	mux := http.NewServeMux()
 
 	// Node agent WebSocket endpoints.
-	RegisterNodeConnectHandler(mux, hub, st)
+	RegisterNodeConnectHandler(mux, hub, st, tasks)
 	RegisterBackHandler(mux, sessions, st)
 	if derpHandler != nil {
 		mux.Handle("/derp", derpHandler)
@@ -220,6 +243,8 @@ func buildMux(hub *NodeHub, sessions *PendingSessions, st store.Store, cfg Relay
 
 	// Auth config discovery (unauthenticated, used by cw setup).
 	mux.HandleFunc("GET /api/v1/auth/config", authConfigHandler(cfg.AuthMode))
+	mux.Handle("GET /api/v1/tasks", authMiddleware(http.HandlerFunc(taskListHandler(st, tasks))))
+	mux.Handle("GET /api/v1/tasks/events", authMiddleware(http.HandlerFunc(taskEventsHandler(st, tasks))))
 	mux.Handle("GET /api/v1/auth/validate", authMiddleware(http.HandlerFunc(authValidateHandler())))
 	mux.HandleFunc("GET /api/v1/network-auth/bundle", verifierBundleHandler(st, cfg.AuthToken, fallbackAuth))
 	mux.Handle("POST /api/v1/network-auth/runtime/client", authMiddleware(http.HandlerFunc(clientRuntimeCredentialHandler(st))))

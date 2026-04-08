@@ -371,6 +371,46 @@ Run a relay server. The relay provides SSH gateway access, node discovery, and s
 cw relay serve --base-url https://relay.example.com --data-dir /data/relay
 ```
 
+To enable durable task reporting and `cw tasks`, point the relay at NATS JetStream:
+
+```bash
+cw relay serve \
+  --base-url https://relay.example.com \
+  --data-dir /data/relay \
+  --auth-mode token \
+  --auth-token dev-secret \
+  --nats-url nats://127.0.0.1:4222
+```
+
+Relevant flags:
+
+- `--nats-url` enables JetStream-backed task events
+- `--nats-creds` uses a NATS user credentials file
+- `--nats-subject-root` defaults to `tasks`
+- `--task-events-stream` defaults to `TASK_EVENTS`
+- `--task-latest-bucket` defaults to `TASK_LATEST`
+
+Nodes still talk only to the relay. NATS credentials stay private to the relay tier.
+
+### `cw tasks`
+
+List or watch the latest task reports aggregated at the relay.
+
+```bash
+# Latest task per (node, session)
+cw tasks
+
+# Stream live task events
+cw tasks --watch
+
+# Speak new task events when a local TTS backend is available
+cw tasks --watch --speak
+
+# Filter by node / session / state
+cw tasks --node builder --state working
+cw tasks --session 7
+```
+
 ### `cw mcp-server`
 
 Start an MCP (Model Context Protocol) server for programmatic access.
@@ -856,7 +896,7 @@ claude mcp add --scope user codewire -- cw mcp-server
 claude mcp add codewire -- cw mcp-server
 ```
 
-This exposes 26 tools across sessions, environments, messaging, and shared state:
+This exposes tools across sessions, environments, messaging, network state, and task reporting:
 
 **Sessions**
 
@@ -871,6 +911,7 @@ This exposes 26 tools across sessions, environments, messaging, and shared state
 | `codewire_kill_session` | Terminate session (by ID or tags) |
 | `codewire_subscribe` | Subscribe to session events |
 | `codewire_wait_for` | Block until sessions complete |
+| `codewire_report_task` | Report current task status for a session |
 
 **Messaging**
 
@@ -907,6 +948,33 @@ This exposes 26 tools across sessions, environments, messaging, and shared state
 | `codewire_kv_get` | Get value by key |
 | `codewire_kv_list` | List keys by prefix |
 | `codewire_kv_delete` | Delete key |
+
+### Task Reporting Via MCP
+
+Agents can report what they are doing with:
+
+```json
+{
+  "session_id": 7,
+  "summary": "implement relay task SSE replay",
+  "state": "working"
+}
+```
+
+The MCP tool is `codewire_report_task`. It requires:
+
+- `session_id`: the local Codewire session ID
+- `summary`: a short, current description of the work
+- `state`: one of `working`, `complete`, `blocked`, or `failed`
+
+Recommended agent behavior:
+
+- emit `working` when starting a meaningful new chunk of work
+- emit a fresh `working` update when the focus changes materially
+- emit `blocked` when waiting on a missing dependency or decision
+- emit `complete` or `failed` when the task finishes
+
+These reports stay local in the session event log and, when the node is connected to a JetStream-enabled relay, are also visible through `cw tasks` and `cw tasks --watch`.
 
 ## Contributing
 

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 )
@@ -152,4 +153,25 @@ func TestSubscriptionManager_EventTypeFilter(t *testing.T) {
 	}
 
 	sm.Unsubscribe(sub.ID)
+}
+
+func TestNewTaskReportEvent(t *testing.T) {
+	event := NewTaskReportEvent("task_123", "indexing tests", "working")
+	if event.Type != EventTaskReport {
+		t.Fatalf("expected %s, got %s", EventTaskReport, event.Type)
+	}
+
+	var data TaskReportData
+	if err := json.Unmarshal(event.Data, &data); err != nil {
+		t.Fatalf("unmarshal task report data: %v", err)
+	}
+	if data.EventID != "task_123" {
+		t.Fatalf("EventID = %q, want %q", data.EventID, "task_123")
+	}
+	if data.Summary != "indexing tests" {
+		t.Fatalf("Summary = %q", data.Summary)
+	}
+	if data.State != "working" {
+		t.Fatalf("State = %q", data.State)
+	}
 }

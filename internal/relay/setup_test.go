@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 )
 
@@ -14,7 +13,7 @@ func TestRegisterWithAuthToken(t *testing.T) {
 	sawNode := ""
 	sawRedeemNode := ""
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/node-enrollments":
 			if r.Method != http.MethodPost {
@@ -79,7 +78,7 @@ func TestRegisterWithAuthToken(t *testing.T) {
 }
 
 func TestCreateNodeEnrollment(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/node-enrollments" {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
@@ -108,7 +107,7 @@ func TestCreateNodeEnrollment(t *testing.T) {
 }
 
 func TestRedeemNodeEnrollment(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/node-enrollments/redeem" {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
@@ -139,7 +138,7 @@ func TestRedeemNodeEnrollment(t *testing.T) {
 
 func TestJoinNetworkWithInvite(t *testing.T) {
 	sawAuth := ""
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/networks/join" {
 			http.Error(w, "not found", http.StatusNotFound)
 			return

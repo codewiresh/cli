@@ -2,7 +2,9 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io"
+	"strconv"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -391,6 +393,15 @@ func TestLimaCreateCommandArgs(t *testing.T) {
 	}
 
 	got := limaCreateCommandArgs(instance)
+
+	// The gh config mount uses the real home dir, so match dynamically
+	homeDir, _ := os.UserHomeDir()
+	ghConfigDir := filepath.Join(homeDir, ".config", "gh")
+	wantMountSet := fmt.Sprintf(
+		`.mounts=[{"location":"/tmp/repo","mountPoint":"/workspace","writable":true},{"location":%s,"mountPoint":"/home/{{.User}}.guest/.config/gh","writable":false}]`,
+		strconv.Quote(ghConfigDir),
+	)
+
 	want := []string{
 		"start",
 		"--tty=false",
@@ -398,13 +409,13 @@ func TestLimaCreateCommandArgs(t *testing.T) {
 		"--vm-type", "qemu",
 		"--mount-type", "9p",
 		"--mount-none",
-		"--set", `.mounts=[{"location":"/tmp/repo","mountPoint":"/workspace","writable":true}]`,
+		"--set", wantMountSet,
 		"--cpus", "2",
 		"--memory", "4",
 		"--disk", "20",
 		"--port-forward", "3000:3000,static=true",
 		"--port-forward", "8080:8080,static=true",
-		"template://default",
+		"template:docker",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("lima args = %#v, want %#v", got, want)
@@ -413,25 +424,37 @@ func TestLimaCreateCommandArgs(t *testing.T) {
 
 func TestCreateLocalLimaInstanceInvokesExpectedCommands(t *testing.T) {
 	origLookPath := localLookPath
+	origRunStream := localRunCommandStream
 	origRunCommand := localRunCommand
 	origGOOS := localGOOS
 	t.Cleanup(func() {
 		localLookPath = origLookPath
+		localRunCommandStream = origRunStream
 		localRunCommand = origRunCommand
 		localGOOS = origGOOS
 	})
 
 	localGOOS = "linux"
 	localLookPath = func(file string) (string, error) {
-		if file != "limactl" {
-			t.Fatalf("LookPath(%q) unexpected", file)
+		if file == "limactl" {
+			return "/usr/bin/limactl", nil
 		}
-		return "/usr/bin/limactl", nil
+		if file == "gh" {
+			return "/usr/bin/gh", nil
+		}
+		return "", errors.New("not found")
 	}
 
-	var calls [][]string
+	var streamCalls [][]string
+	localRunCommandStream = func(name string, args ...string) error {
+		streamCalls = append(streamCalls, append([]string{name}, args...))
+		return nil
+	}
 	localRunCommand = func(name string, args ...string) ([]byte, error) {
-		calls = append(calls, append([]string{name}, args...))
+		// gh auth token -> return fake token; docker login -> succeed
+		if name == "/usr/bin/gh" {
+			return []byte("fake-token\n"), nil
+		}
 		return nil, nil
 	}
 
@@ -440,6 +463,7 @@ func TestCreateLocalLimaInstanceInvokesExpectedCommands(t *testing.T) {
 		Backend:     "lima",
 		RuntimeName: "cw-repo",
 		RepoPath:    "/tmp/repo",
+		Image:       "ghcr.io/codewiresh/full:latest",
 		CPU:         1500,
 		Memory:      4096,
 		Disk:        20,
@@ -451,9 +475,23 @@ func TestCreateLocalLimaInstanceInvokesExpectedCommands(t *testing.T) {
 		t.Fatalf("createLocalLimaInstance() error = %v", err)
 	}
 
-	want := [][]string{append([]string{"limactl"}, limaCreateCommandArgs(instance)...)}
-	if !reflect.DeepEqual(calls, want) {
-		t.Fatalf("lima calls = %#v, want %#v", calls, want)
+	want := [][]string{
+		// 1. Boot VM
+		append([]string{"limactl"}, limaCreateCommandArgs(instance)...),
+		// 2. Wait for Docker
+		{"limactl", "shell", "--workdir", "/", "cw-repo", "docker", "info"},
+		// 3. Pull image
+		{"limactl", "shell", "--workdir", "/", "cw-repo", "docker", "pull", "ghcr.io/codewiresh/full:latest"},
+		// 4. Run container
+		{"limactl", "shell", "--workdir", "/", "cw-repo", "docker", "run", "-d",
+			"--name", "cw-workspace",
+			"-v", "/workspace:/workspace",
+			"--workdir", "/workspace",
+			"ghcr.io/codewiresh/full:latest",
+			"sleep", "infinity"},
+	}
+	if !reflect.DeepEqual(streamCalls, want) {
+		t.Fatalf("lima stream calls:\n  got:  %#v\n  want: %#v", streamCalls, want)
 	}
 	if instance.LimaInstanceName != "cw-repo" {
 		t.Fatalf("LimaInstanceName = %q, want %q", instance.LimaInstanceName, "cw-repo")
@@ -469,9 +507,11 @@ func TestCreateLocalLimaInstanceInvokesExpectedCommands(t *testing.T) {
 func TestLimaLifecycleCommands(t *testing.T) {
 	origLookPath := localLookPath
 	origRunCommand := localRunCommand
+	origRunStream := localRunCommandStream
 	t.Cleanup(func() {
 		localLookPath = origLookPath
 		localRunCommand = origRunCommand
+		localRunCommandStream = origRunStream
 	})
 
 	localLookPath = func(file string) (string, error) {
@@ -485,6 +525,10 @@ func TestLimaLifecycleCommands(t *testing.T) {
 	localRunCommand = func(name string, args ...string) ([]byte, error) {
 		calls = append(calls, append([]string{name}, args...))
 		return nil, nil
+	}
+	localRunCommandStream = func(name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		return nil
 	}
 
 	instance := &cwconfig.LocalInstance{
@@ -503,12 +547,17 @@ func TestLimaLifecycleCommands(t *testing.T) {
 	}
 
 	want := [][]string{
+		// start: boot VM then start container
 		{"limactl", "start", "--tty=false", "cw-repo"},
+		{"limactl", "shell", "--workdir", "/", "cw-repo", "docker", "start", "cw-workspace"},
+		// stop: stop container then stop VM
+		{"limactl", "shell", "--workdir", "/", "cw-repo", "docker", "stop", "cw-workspace"},
 		{"limactl", "stop", "cw-repo"},
+		// delete: just delete the VM (container goes with it)
 		{"limactl", "delete", "--force", "cw-repo"},
 	}
 	if !reflect.DeepEqual(calls, want) {
-		t.Fatalf("lima calls = %#v, want %#v", calls, want)
+		t.Fatalf("lima calls:\n  got:  %#v\n  want: %#v", calls, want)
 	}
 }
 
@@ -717,5 +766,456 @@ func TestDockerContainerStatusMissingOnNotFound(t *testing.T) {
 	}
 	if got != "missing" {
 		t.Fatalf("status = %q, want %q", got, "missing")
+	}
+}
+
+func TestOfferLimaInstallDeclined(t *testing.T) {
+	origPrompt := localPromptConfirm
+	t.Cleanup(func() { localPromptConfirm = origPrompt })
+
+	localPromptConfirm = func(label string) (bool, error) {
+		return false, nil
+	}
+
+	err := offerLimaInstall()
+	if err == nil {
+		t.Fatal("expected error when user declines install")
+	}
+	if !strings.Contains(err.Error(), "limactl not found in PATH") {
+		t.Fatalf("error = %q, want limactl not found message", err.Error())
+	}
+}
+
+func TestOfferLimaInstallPromptError(t *testing.T) {
+	origPrompt := localPromptConfirm
+	t.Cleanup(func() { localPromptConfirm = origPrompt })
+
+	localPromptConfirm = func(label string) (bool, error) {
+		return false, errors.New("not a terminal")
+	}
+
+	err := offerLimaInstall()
+	if err == nil {
+		t.Fatal("expected error when prompt fails")
+	}
+	if !strings.Contains(err.Error(), "limactl not found in PATH") {
+		t.Fatalf("error = %q, want limactl not found message", err.Error())
+	}
+}
+
+func TestOfferLimaInstallBrewOnDarwin(t *testing.T) {
+	origPrompt := localPromptConfirm
+	origLookPath := localLookPath
+	origRunCommand := localRunCommand
+	origGOOS := localGOOS
+	t.Cleanup(func() {
+		localPromptConfirm = origPrompt
+		localLookPath = origLookPath
+		localRunCommand = origRunCommand
+		localGOOS = origGOOS
+	})
+
+	localGOOS = "darwin"
+	localPromptConfirm = func(label string) (bool, error) {
+		return true, nil
+	}
+
+	localLookPath = func(file string) (string, error) {
+		if file == "brew" {
+			return "/opt/homebrew/bin/brew", nil
+		}
+		if file == "limactl" {
+			return "/opt/homebrew/bin/limactl", nil
+		}
+		return "", errors.New("not found")
+	}
+
+	var ranBrew bool
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		if name == "brew" && len(args) == 2 && args[0] == "install" && args[1] == "lima" {
+			ranBrew = true
+			return nil, nil
+		}
+		return nil, errors.New("unexpected command: " + name)
+	}
+
+	err := offerLimaInstall()
+	if err != nil {
+		t.Fatalf("offerLimaInstall() error = %v", err)
+	}
+	if !ranBrew {
+		t.Fatal("expected brew install lima to be called")
+	}
+}
+
+func TestOfferLimaInstallGitHubReleaseOnLinux(t *testing.T) {
+	origPrompt := localPromptConfirm
+	origLookPath := localLookPath
+	origRunCommand := localRunCommand
+	origGOOS := localGOOS
+	t.Cleanup(func() {
+		localPromptConfirm = origPrompt
+		localLookPath = origLookPath
+		localRunCommand = origRunCommand
+		localGOOS = origGOOS
+	})
+
+	localGOOS = "linux"
+	localPromptConfirm = func(label string) (bool, error) {
+		return true, nil
+	}
+
+	// Create a temp dir with the expected binary layout
+	tmpDir := t.TempDir()
+	binDir := filepath.Join(tmpDir, "bin")
+	os.MkdirAll(binDir, 0o755)
+	os.WriteFile(filepath.Join(binDir, "limactl"), []byte("#!/bin/sh\n"), 0o755)
+
+	lookPathCalls := 0
+	localLookPath = func(file string) (string, error) {
+		lookPathCalls++
+		if file == "limactl" && lookPathCalls > 1 {
+			// After install, limactl is found
+			return "/usr/local/bin/limactl", nil
+		}
+		return "", errors.New("not found")
+	}
+
+	var commands []string
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		cmd := name + " " + strings.Join(args, " ")
+		commands = append(commands, cmd)
+		if name == "curl" {
+			return []byte("{\n  \"tag_name\": \"v1.0.0\"\n}"), nil
+		}
+		if name == "sh" {
+			// Simulate tarball extraction by creating expected file
+			return nil, nil
+		}
+		if name == "sudo" {
+			return nil, nil
+		}
+		return nil, errors.New("unexpected: " + cmd)
+	}
+
+	// We need os.Stat to find the binary -- use a real temp dir.
+	// The function creates its own tmpDir, so we need to pre-create the binary there.
+	// Instead, just test that it calls the right commands in sequence.
+	// The os.Stat check will fail because the real curl/tar didn't run,
+	// so we verify the error message mentions the expected path.
+	err := offerLimaInstall()
+
+	// Verify curl was called to fetch the release
+	if len(commands) == 0 {
+		t.Fatal("expected commands to be run")
+	}
+	if !strings.Contains(commands[0], "api.github.com/repos/lima-vm/lima") {
+		t.Fatalf("first command should fetch lima release, got: %s", commands[0])
+	}
+	// The tar extraction won't actually create the file, so we expect
+	// an error about the binary not being found at the expected path
+	if err != nil && !strings.Contains(err.Error(), "limactl not found at expected path") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLimaCreateFailureReturnsError(t *testing.T) {
+	origLookPath := localLookPath
+	origRunStream := localRunCommandStream
+	origGOOS := localGOOS
+	t.Cleanup(func() {
+		localLookPath = origLookPath
+		localRunCommandStream = origRunStream
+		localGOOS = origGOOS
+	})
+
+	localGOOS = "linux"
+	localLookPath = func(file string) (string, error) {
+		return "/usr/bin/" + file, nil
+	}
+	localRunCommandStream = func(name string, args ...string) error {
+		return errors.New("exit status 1")
+	}
+
+	instance := &cwconfig.LocalInstance{
+		Name: "repo", Backend: "lima", RuntimeName: "cw-repo", RepoPath: "/tmp/repo",
+	}
+	err := createLocalLimaInstance(instance)
+	if err == nil {
+		t.Fatal("expected error when limactl start fails")
+	}
+	if !strings.Contains(err.Error(), "limactl") {
+		t.Fatalf("error should mention limactl, got: %v", err)
+	}
+}
+
+func TestLimaStartFailureReturnsError(t *testing.T) {
+	origLookPath := localLookPath
+	origRunStream := localRunCommandStream
+	t.Cleanup(func() {
+		localLookPath = origLookPath
+		localRunCommandStream = origRunStream
+	})
+
+	localLookPath = func(file string) (string, error) {
+		return "/usr/bin/" + file, nil
+	}
+	localRunCommandStream = func(name string, args ...string) error {
+		return errors.New("exit status 1")
+	}
+
+	instance := &cwconfig.LocalInstance{LimaInstanceName: "cw-repo"}
+	err := startLocalLimaInstance(instance)
+	if err == nil {
+		t.Fatal("expected error when limactl start fails")
+	}
+	if !strings.Contains(err.Error(), "cw-repo") {
+		t.Fatalf("error should mention instance name, got: %v", err)
+	}
+}
+
+func TestLimaStopFailureReturnsError(t *testing.T) {
+	origLookPath := localLookPath
+	origRunCommand := localRunCommand
+	t.Cleanup(func() {
+		localLookPath = origLookPath
+		localRunCommand = origRunCommand
+	})
+
+	localLookPath = func(file string) (string, error) {
+		return "/usr/bin/" + file, nil
+	}
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		return []byte("stop failed"), errors.New("exit status 1")
+	}
+
+	instance := &cwconfig.LocalInstance{LimaInstanceName: "cw-repo"}
+	err := stopLocalLimaInstance(instance)
+	if err == nil {
+		t.Fatal("expected error when limactl stop fails")
+	}
+	if !strings.Contains(err.Error(), "cw-repo") {
+		t.Fatalf("error should mention instance name, got: %v", err)
+	}
+}
+
+func TestLimaDeleteNotFoundReturnsNil(t *testing.T) {
+	origLookPath := localLookPath
+	origRunCommand := localRunCommand
+	t.Cleanup(func() {
+		localLookPath = origLookPath
+		localRunCommand = origRunCommand
+	})
+
+	localLookPath = func(file string) (string, error) {
+		return "/usr/bin/" + file, nil
+	}
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		return []byte("instance not found"), errors.New("exit status 1")
+	}
+
+	instance := &cwconfig.LocalInstance{LimaInstanceName: "cw-repo"}
+	err := deleteLocalLimaInstance(instance)
+	if err != nil {
+		t.Fatalf("expected nil error for not-found delete, got: %v", err)
+	}
+}
+
+func TestLimaDeleteFailureReturnsError(t *testing.T) {
+	origLookPath := localLookPath
+	origRunCommand := localRunCommand
+	t.Cleanup(func() {
+		localLookPath = origLookPath
+		localRunCommand = origRunCommand
+	})
+
+	localLookPath = func(file string) (string, error) {
+		return "/usr/bin/" + file, nil
+	}
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		return []byte("permission denied"), errors.New("exit status 1")
+	}
+
+	instance := &cwconfig.LocalInstance{LimaInstanceName: "cw-repo"}
+	err := deleteLocalLimaInstance(instance)
+	if err == nil {
+		t.Fatal("expected error for non-not-found delete failure")
+	}
+}
+
+func TestLimaInstanceStatusMissingOnNotFound(t *testing.T) {
+	origLookPath := localLookPath
+	origRunCommand := localRunCommand
+	t.Cleanup(func() {
+		localLookPath = origLookPath
+		localRunCommand = origRunCommand
+	})
+
+	localLookPath = func(file string) (string, error) {
+		return "/usr/bin/" + file, nil
+	}
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		return []byte("instance not found"), errors.New("exit status 1")
+	}
+
+	instance := &cwconfig.LocalInstance{LimaInstanceName: "cw-repo"}
+	status, err := limaInstanceStatus(instance)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != "missing" {
+		t.Fatalf("status = %q, want %q", status, "missing")
+	}
+}
+
+func TestLimaInstanceStatusEmptyOutput(t *testing.T) {
+	origLookPath := localLookPath
+	origRunCommand := localRunCommand
+	t.Cleanup(func() {
+		localLookPath = origLookPath
+		localRunCommand = origRunCommand
+	})
+
+	localLookPath = func(file string) (string, error) {
+		return "/usr/bin/" + file, nil
+	}
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		return []byte(""), nil
+	}
+
+	instance := &cwconfig.LocalInstance{LimaInstanceName: "cw-repo"}
+	status, err := limaInstanceStatus(instance)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != "missing" {
+		t.Fatalf("status = %q, want %q", status, "missing")
+	}
+}
+
+func TestLimaInstanceStatusSingleObject(t *testing.T) {
+	origLookPath := localLookPath
+	origRunCommand := localRunCommand
+	t.Cleanup(func() {
+		localLookPath = origLookPath
+		localRunCommand = origRunCommand
+	})
+
+	localLookPath = func(file string) (string, error) {
+		return "/usr/bin/" + file, nil
+	}
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		return []byte(`{"name":"cw-repo","status":"Stopped"}`), nil
+	}
+
+	instance := &cwconfig.LocalInstance{LimaInstanceName: "cw-repo"}
+	status, err := limaInstanceStatus(instance)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != "stopped" {
+		t.Fatalf("status = %q, want %q", status, "stopped")
+	}
+}
+
+func TestLimaInstanceStatusNameMismatch(t *testing.T) {
+	origLookPath := localLookPath
+	origRunCommand := localRunCommand
+	t.Cleanup(func() {
+		localLookPath = origLookPath
+		localRunCommand = origRunCommand
+	})
+
+	localLookPath = func(file string) (string, error) {
+		return "/usr/bin/" + file, nil
+	}
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		return []byte(`[{"name":"other-instance","status":"Running"}]`), nil
+	}
+
+	instance := &cwconfig.LocalInstance{LimaInstanceName: "cw-repo"}
+	status, err := limaInstanceStatus(instance)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != "missing" {
+		t.Fatalf("status = %q, want %q", status, "missing")
+	}
+}
+
+func TestLimaInstanceNamePriority(t *testing.T) {
+	// LimaInstanceName takes priority
+	inst := &cwconfig.LocalInstance{LimaInstanceName: "custom", RuntimeName: "rt", Name: "n"}
+	if got := limaInstanceName(inst); got != "custom" {
+		t.Fatalf("got %q, want %q", got, "custom")
+	}
+	// Falls back to RuntimeName
+	inst = &cwconfig.LocalInstance{RuntimeName: "rt", Name: "n"}
+	if got := limaInstanceName(inst); got != "rt" {
+		t.Fatalf("got %q, want %q", got, "rt")
+	}
+	// Falls back to Name
+	inst = &cwconfig.LocalInstance{Name: "n"}
+	if got := limaInstanceName(inst); got != "n" {
+		t.Fatalf("got %q, want %q", got, "n")
+	}
+	// Nil returns empty
+	if got := limaInstanceName(nil); got != "" {
+		t.Fatalf("got %q, want empty", got)
+	}
+}
+
+func TestDefaultLimaVMAndMountType(t *testing.T) {
+	origGOOS := localGOOS
+	t.Cleanup(func() { localGOOS = origGOOS })
+
+	localGOOS = "darwin"
+	if got := defaultLimaVMType(); got != "vz" {
+		t.Fatalf("darwin VM type = %q, want vz", got)
+	}
+	if got := defaultLimaMountType("vz"); got != "virtiofs" {
+		t.Fatalf("vz mount type = %q, want virtiofs", got)
+	}
+
+	localGOOS = "linux"
+	if got := defaultLimaVMType(); got != "qemu" {
+		t.Fatalf("linux VM type = %q, want qemu", got)
+	}
+	if got := defaultLimaMountType("qemu"); got != "9p" {
+		t.Fatalf("qemu mount type = %q, want 9p", got)
+	}
+}
+
+func TestOfferLimaInstallCalledWhenLimactlMissing(t *testing.T) {
+	origLookPath := localLookPath
+	origPrompt := localPromptConfirm
+	t.Cleanup(func() {
+		localLookPath = origLookPath
+		localPromptConfirm = origPrompt
+	})
+
+	localLookPath = func(file string) (string, error) {
+		return "", errors.New("not found")
+	}
+
+	var installOffered bool
+	localPromptConfirm = func(label string) (bool, error) {
+		installOffered = true
+		return false, nil // decline
+	}
+
+	instance := &cwconfig.LocalInstance{
+		Name:        "repo",
+		Backend:     "lima",
+		RuntimeName: "cw-repo",
+		RepoPath:    "/tmp/repo",
+	}
+
+	err := createLocalLimaInstance(instance)
+	if err == nil {
+		t.Fatal("expected error when limactl is missing and install declined")
+	}
+	if !installOffered {
+		t.Fatal("expected install prompt to be offered")
 	}
 }

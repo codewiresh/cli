@@ -23,7 +23,7 @@ func TestAgentConnectsToHub(t *testing.T) {
 	sessions := localrelay.NewPendingSessions()
 
 	mux := http.NewServeMux()
-	localrelay.RegisterNodeConnectHandler(mux, hub, st)
+	localrelay.RegisterNodeConnectHandler(mux, hub, st, nil)
 	localrelay.RegisterBackHandler(mux, sessions, st)
 	srv := newIPv4TestServer(t, mux)
 

@@ -21,6 +21,7 @@ const (
 	EventInput          EventType = "session.input"
 	EventAttached       EventType = "session.attached"
 	EventDetached       EventType = "session.detached"
+	EventTaskReport     EventType = "task.report"
 	EventDirectMessage  EventType = "direct.message"
 	EventRequest        EventType = "message.request"
 	EventReply          EventType = "message.reply"
@@ -62,6 +63,12 @@ type InputData struct {
 
 type AttachDetachData struct {
 	ClientID string `json:"client_id"`
+}
+
+type TaskReportData struct {
+	EventID string `json:"event_id"`
+	Summary string `json:"summary"`
+	State   string `json:"state"`
 }
 
 // --- Messaging Data Types ---
@@ -122,6 +129,11 @@ func NewAttachedEvent(clientID string) Event {
 func NewDetachedEvent(clientID string) Event {
 	data, _ := json.Marshal(AttachDetachData{ClientID: clientID})
 	return Event{Timestamp: time.Now().UTC(), Type: EventDetached, Data: data}
+}
+
+func NewTaskReportEvent(eventID, summary, state string) Event {
+	data, _ := json.Marshal(TaskReportData{EventID: eventID, Summary: summary, State: state})
+	return Event{Timestamp: time.Now().UTC(), Type: EventTaskReport, Data: data}
 }
 
 func NewDirectMessageEvent(msg DirectMessageData) Event {

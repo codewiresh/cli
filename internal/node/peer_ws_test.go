@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -44,7 +43,7 @@ func setupPeerRuntimeNode(t *testing.T, networkID string) (*Node, string, string
 		t.Fatalf("SignRuntimeCredential: %v", err)
 	}
 
-	relaySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	relaySrv := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/network-auth/bundle":
 			if got := r.Header.Get("Authorization"); got != "Bearer relay-node-token" {
@@ -420,7 +419,7 @@ func TestNodeSyncsGroupMembershipOnNameChangeAndExit(t *testing.T) {
 	}
 
 	var requests []string
-	relaySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	relaySrv := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
 		if got := r.Header.Get("Authorization"); got != "Bearer relay-node-token" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)

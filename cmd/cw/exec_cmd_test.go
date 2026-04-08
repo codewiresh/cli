@@ -153,7 +153,7 @@ func TestExecCmdUsesCurrentLocalInstanceTarget(t *testing.T) {
 	var gotInstance *cwconfig.LocalInstance
 	var gotWorkDir string
 	var gotCommand []string
-	execInLocalRuntimeTarget = func(instance *cwconfig.LocalInstance, workDir string, command []string) error {
+	execInLocalRuntimeTarget = func(instance *cwconfig.LocalInstance, workDir string, command []string, allocTTY ...bool) error {
 		gotInstance = instance
 		gotWorkDir = workDir
 		gotCommand = append([]string(nil), command...)

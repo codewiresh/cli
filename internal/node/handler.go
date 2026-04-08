@@ -355,6 +355,21 @@ func handleClient(reader connection.FrameReader, writer connection.FrameWriter, 
 			SenderCap: issued.Delegation,
 		})
 
+	case "ReportTask":
+		sessionID, resolveErr := resolveMessageSession(manager, req.ID, req.Name)
+		if resolveErr != nil {
+			_ = writer.SendResponse(&protocol.Response{Type: "Error", Message: resolveErr.Error()})
+			return
+		}
+		if err := manager.ReportTask(sessionID, req.Summary, req.State); err != nil {
+			_ = writer.SendResponse(&protocol.Response{Type: "Error", Message: err.Error()})
+			return
+		}
+		_ = writer.SendResponse(&protocol.Response{
+			Type: "TaskReported",
+			ID:   &sessionID,
+		})
+
 	default:
 		_ = writer.SendResponse(&protocol.Response{
 			Type:    "Error",

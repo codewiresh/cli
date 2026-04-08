@@ -26,7 +26,7 @@ import (
 	"github.com/codewiresh/codewire/internal/config"
 	"github.com/codewiresh/codewire/internal/connection"
 	"github.com/codewiresh/codewire/internal/protocol"
-	"github.com/codewiresh/codewire/internal/relay"
+	"github.com/codewiresh/codewire/internal/relayapi"
 	"github.com/codewiresh/codewire/internal/statusbar"
 	"github.com/codewiresh/codewire/internal/terminal"
 )
@@ -54,6 +54,41 @@ func ResolveSessionArg(target *Target, arg string) (uint32, error) {
 	// Resolve by name — list sessions and find by name.
 	resp, err := requestResponse(target, &protocol.Request{Type: "ListSessions"})
 	if err != nil {
+		return 0, err
+	}
+	if resp.Type == "Error" {
+		return 0, fmt.Errorf("%s", formatError(resp.Message))
+	}
+	if resp.Sessions == nil {
+		return 0, fmt.Errorf("no sessions found")
+	}
+	for _, s := range *resp.Sessions {
+		if s.Name == name {
+			return s.ID, nil
+		}
+	}
+	return 0, fmt.Errorf("no session named %q", name)
+}
+
+// ResolveSessionArgConn resolves a session name to an ID over an existing connection.
+func ResolveSessionArgConn(reader connection.FrameReader, writer connection.FrameWriter, arg string) (uint32, error) {
+	name := strings.TrimPrefix(arg, "@")
+	if parsed, err := strconv.ParseUint(name, 10, 32); err == nil {
+		return uint32(parsed), nil
+	}
+
+	if err := writer.SendRequest(&protocol.Request{Type: "ListSessions"}); err != nil {
+		return 0, err
+	}
+	frame, err := reader.ReadFrame()
+	if err != nil {
+		return 0, err
+	}
+	if frame == nil {
+		return 0, fmt.Errorf("connection closed")
+	}
+	var resp protocol.Response
+	if err := json.Unmarshal(frame.Payload, &resp); err != nil {
 		return 0, err
 	}
 	if resp.Type == "Error" {
@@ -254,6 +289,13 @@ func Attach(target *Target, id *uint32, noHistory bool) error {
 	defer reader.Close()
 	defer writer.Close()
 
+	return AttachConn(reader, writer, *id, noHistory)
+}
+
+// AttachConn attaches to a session over an already-established connection.
+func AttachConn(reader connection.FrameReader, writer connection.FrameWriter, sessionID uint32, noHistory bool) error {
+	id := &sessionID
+
 	includeHistory := !noHistory
 	req := &protocol.Request{
 		Type:           "Attach",
@@ -287,7 +329,6 @@ func Attach(target *Target, id *uint32, noHistory bool) error {
 		return fmt.Errorf("unexpected response: %s", resp.Type)
 	}
 
-	sessionID := *id
 	fmt.Fprintf(os.Stderr, "[cw] attached to session %d\n", sessionID)
 
 	// ---------------------------------------------------------------
@@ -1275,7 +1316,7 @@ func EnrollNode(dataDir string, opts RelayAuthOptions, enrollmentToken, nodeName
 	if relayURL == "" {
 		return fmt.Errorf("relay not configured (set CODEWIRE_RELAY_URL or pass --relay-url)")
 	}
-	redeemed, err := relay.RedeemNodeEnrollment(context.Background(), relayURL, enrollmentToken, nodeName)
+	redeemed, err := relayapi.RedeemNodeEnrollment(context.Background(), relayURL, enrollmentToken, nodeName)
 	if err != nil {
 		return err
 	}
@@ -1942,7 +1983,7 @@ func SSHQRCode(dataDir string, sshPort int) error {
 	if cfg.RelayNodeNetwork != nil {
 		networkID = *cfg.RelayNodeNetwork
 	}
-	uri := relay.SSHURI(*cfg.RelayURL, networkID, nodeName, *cfg.RelayNodeToken, sshPort)
+	uri := relayapi.SSHURI(*cfg.RelayURL, networkID, nodeName, *cfg.RelayNodeToken, sshPort)
 
 	fmt.Fprintf(os.Stderr, "SSH URI: %s\n", uri)
 	PrintQR(uri)
@@ -1960,7 +2001,7 @@ func JoinNetwork(dataDir, relayURL, inviteToken string) error {
 		return err
 	}
 
-	result, err := relay.JoinNetworkWithInvite(context.Background(), relayURL, authToken, inviteToken)
+	result, err := relayapi.JoinNetworkWithInvite(context.Background(), relayURL, authToken, inviteToken)
 	if err != nil {
 		return err
 	}

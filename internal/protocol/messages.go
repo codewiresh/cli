@@ -77,6 +77,8 @@ type Request struct {
 	Verb         string  `json:"verb,omitempty"`
 	AudienceNode string  `json:"audience_node,omitempty"`
 	SenderCap    string  `json:"sender_cap,omitempty"`
+	Summary      string  `json:"summary,omitempty"`
+	State        string  `json:"state,omitempty"`
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for Request.

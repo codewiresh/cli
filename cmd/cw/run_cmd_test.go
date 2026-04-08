@@ -174,7 +174,7 @@ func TestWrapLocalRuntimeRunCommand(t *testing.T) {
 	if hostWorkDir != "/tmp/repo" {
 		t.Fatalf("hostWorkDir = %q, want /tmp/repo", hostWorkDir)
 	}
-	want := []string{"/usr/local/bin/cw", "exec", "--on", "repo", "--workdir", "/workspace", "--", "claude", "--version"}
+	want := []string{"/usr/local/bin/cw", "exec", "-it", "--on", "repo", "--workdir", "/workspace", "--", "claude", "--version"}
 	if strings.Join(command, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("command = %#v, want %#v", command, want)
 	}
@@ -248,7 +248,7 @@ func TestRunCmdUsesNamedLocalRuntimeTarget(t *testing.T) {
 	if gotTarget == nil || gotTarget.Local != "/tmp/data" {
 		t.Fatalf("target = %#v", gotTarget)
 	}
-	wantCommand := []string{"/usr/local/bin/cw", "exec", "--on", "repo", "--workdir", "/workspace", "--", "claude"}
+	wantCommand := []string{"/usr/local/bin/cw", "exec", "-it", "--on", "repo", "--workdir", "/workspace", "--", "claude"}
 	if strings.Join(gotCommand, "\x00") != strings.Join(wantCommand, "\x00") {
 		t.Fatalf("command = %#v, want %#v", gotCommand, wantCommand)
 	}

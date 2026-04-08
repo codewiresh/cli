@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,52 @@ import (
 	"github.com/codewiresh/codewire/internal/store"
 	"nhooyr.io/websocket"
 )
+
+type recordingTaskStore struct {
+	mu    sync.Mutex
+	node  *store.NodeRecord
+	msg   *TaskReportMessage
+	calls int
+	ch    chan struct{}
+}
+
+func (r *recordingTaskStore) PublishNodeTaskReport(_ context.Context, node store.NodeRecord, msg TaskReportMessage) (*LatestTaskValue, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	nodeCopy := node
+	msgCopy := msg
+	r.node = &nodeCopy
+	r.msg = &msgCopy
+	if r.ch != nil {
+		select {
+		case r.ch <- struct{}{}:
+		default:
+		}
+	}
+	return &LatestTaskValue{
+		EventID:     msg.EventID,
+		NetworkID:   node.NetworkID,
+		NodeName:    node.Name,
+		SessionID:   msg.SessionID,
+		SessionName: msg.SessionName,
+		Summary:     msg.Summary,
+		State:       msg.State,
+		Timestamp:   msg.Timestamp,
+	}, nil
+}
+
+func (r *recordingTaskStore) ListLatestTasks(context.Context, TaskFilter) ([]LatestTaskValue, error) {
+	return nil, nil
+}
+
+func (r *recordingTaskStore) WatchTasks(context.Context, TaskFilter, uint64) (TaskWatcher, error) {
+	return closedTaskWatcher{}, nil
+}
+
+func (r *recordingTaskStore) EarliestSeq(context.Context, string) (uint64, error) {
+	return 0, nil
+}
 
 func createGitHubSession(t *testing.T, st store.Store, githubID int64, username string) string {
 	t.Helper()
@@ -58,7 +105,7 @@ func TestNodesListRequiresMembershipAndScopesByNetwork(t *testing.T) {
 
 	hub := NewNodeHub()
 	sessions := NewPendingSessions()
-	srv := httptest.NewServer(buildMux(hub, sessions, st, RelayConfig{
+	srv := newIPv4TestServer(t, buildMux(hub, sessions, st, RelayConfig{
 		BaseURL:   "http://relay.test",
 		AuthMode:  "token",
 		AuthToken: "admin-token",
@@ -161,7 +208,7 @@ func TestDirectNodeRegistrationDeprecated(t *testing.T) {
 		t.Fatalf("NetworkMemberUpsert: %v", err)
 	}
 
-	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+	srv := newIPv4TestServer(t, buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		BaseURL:   "http://relay.test",
 		AuthMode:  "token",
 		AuthToken: "admin-token",
@@ -203,7 +250,7 @@ func TestNodeEnrollmentCreateAndRedeem(t *testing.T) {
 		t.Fatalf("NetworkMemberUpsert: %v", err)
 	}
 
-	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+	srv := newIPv4TestServer(t, buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		BaseURL:   "http://relay.test",
 		AuthMode:  "token",
 		AuthToken: "admin-token",
@@ -278,7 +325,7 @@ func TestNodeEnrollmentCreateAndRedeem(t *testing.T) {
 
 func TestOIDCAuthAcceptsPlatformSessionBearer(t *testing.T) {
 	var upstream *httptest.Server
-	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream = newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
 			w.Header().Set("Content-Type", "application/json")
@@ -314,7 +361,7 @@ func TestOIDCAuthAcceptsPlatformSessionBearer(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+	srv := newIPv4TestServer(t, buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		BaseURL:          "http://relay.test",
 		AuthMode:         "oidc",
 		OIDCIssuer:       upstream.URL,
@@ -345,7 +392,7 @@ func TestOIDCAuthAcceptsPlatformSessionBearer(t *testing.T) {
 
 func TestOIDCAuthPlatformSessionMapsToRelayMembership(t *testing.T) {
 	var upstream *httptest.Server
-	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream = newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
 			w.Header().Set("Content-Type", "application/json")
@@ -394,7 +441,7 @@ func TestOIDCAuthPlatformSessionMapsToRelayMembership(t *testing.T) {
 		t.Fatalf("NetworkMemberUpsert: %v", err)
 	}
 
-	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+	srv := newIPv4TestServer(t, buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		BaseURL:          "http://relay.test",
 		AuthMode:         "oidc",
 		OIDCIssuer:       upstream.URL,
@@ -434,7 +481,7 @@ func TestKVIsNetworkScopedAndRequiresAuth(t *testing.T) {
 		t.Fatalf("NetworkMemberUpsert: %v", err)
 	}
 
-	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+	srv := newIPv4TestServer(t, buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		BaseURL:   "http://relay.test",
 		AuthMode:  "token",
 		AuthToken: "admin-token",
@@ -529,7 +576,7 @@ func TestAuthenticatedNetworkJoinAddsMembership(t *testing.T) {
 		t.Fatalf("InviteCreate: %v", err)
 	}
 
-	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+	srv := newIPv4TestServer(t, buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		BaseURL:   "http://relay.test",
 		AuthMode:  "token",
 		AuthToken: "admin-token",
@@ -579,7 +626,7 @@ func TestInviteJoinBootstrapsNodeViaEnrollment(t *testing.T) {
 		t.Fatalf("InviteCreate: %v", err)
 	}
 
-	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+	srv := newIPv4TestServer(t, buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		BaseURL:   "http://relay.test",
 		AuthMode:  "token",
 		AuthToken: "admin-token",
@@ -640,7 +687,7 @@ func TestNetworksCanBeCreatedAndListedForOwner(t *testing.T) {
 	memberToken := createGitHubSession(t, st, 101, "member")
 	otherToken := createGitHubSession(t, st, 202, "other")
 
-	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+	srv := newIPv4TestServer(t, buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		BaseURL:   "http://relay.test",
 		AuthMode:  "token",
 		AuthToken: "admin-token",
@@ -722,7 +769,7 @@ func TestClientRuntimeCredentialRequiresMembership(t *testing.T) {
 		t.Fatalf("NetworkMemberUpsert: %v", err)
 	}
 
-	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+	srv := newIPv4TestServer(t, buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		BaseURL:   "http://relay.test",
 		AuthMode:  "token",
 		AuthToken: "admin-token",
@@ -772,7 +819,7 @@ func TestNodeConnectPersistsPeerURL(t *testing.T) {
 		t.Fatalf("NodeRegister: %v", err)
 	}
 
-	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+	srv := newIPv4TestServer(t, buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		BaseURL:  "http://relay.test",
 		AuthMode: "none",
 	}, nil, networkauth.NewReplayCache(), nil))
@@ -802,5 +849,88 @@ func TestNodeConnectPersistsPeerURL(t *testing.T) {
 	}
 	if node.PeerURL != "https://builder.example.com/ws" {
 		t.Fatalf("PeerURL = %q, want advertised URL", node.PeerURL)
+	}
+}
+
+func TestNodeConnectDispatchesTaskReportToTaskStore(t *testing.T) {
+	st, err := store.NewSQLiteStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	token := "node-token"
+	now := time.Now().UTC()
+	if err := st.NodeRegister(context.Background(), store.NodeRecord{
+		NetworkID:    "network-a",
+		Name:         "builder",
+		Token:        token,
+		AuthorizedAt: now,
+		LastSeenAt:   now,
+	}); err != nil {
+		t.Fatalf("NodeRegister: %v", err)
+	}
+
+	hub := NewNodeHub()
+	tasks := &recordingTaskStore{ch: make(chan struct{}, 1)}
+	mux := http.NewServeMux()
+	RegisterNodeConnectHandler(mux, hub, st, tasks)
+	srv := newIPv4TestServer(t, mux)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/node/connect"
+	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{
+			"Authorization":       {"Bearer " + token},
+			"X-CodeWire-Peer-URL": {"https://builder.example.com/ws"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer ws.CloseNow()
+
+	err = ws.Write(ctx, websocket.MessageText, []byte(`{"type":"TaskReport","event_id":"task_123","session_id":7,"session_name":"planner","summary":"ship relay ingest","state":"working","timestamp":"2026-04-08T15:04:05Z","node_name":"spoofed"}`))
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	select {
+	case <-tasks.ch:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for task store publish")
+	}
+
+	tasks.mu.Lock()
+	defer tasks.mu.Unlock()
+	if tasks.calls != 1 {
+		t.Fatalf("calls = %d, want 1", tasks.calls)
+	}
+	if tasks.node == nil || tasks.msg == nil {
+		t.Fatal("expected recorded node and message")
+	}
+	if tasks.node.NetworkID != "network-a" {
+		t.Fatalf("network id = %q", tasks.node.NetworkID)
+	}
+	if tasks.node.Name != "builder" {
+		t.Fatalf("node name = %q", tasks.node.Name)
+	}
+	if tasks.msg.EventID != "task_123" {
+		t.Fatalf("event id = %q", tasks.msg.EventID)
+	}
+	if tasks.msg.SessionID != 7 {
+		t.Fatalf("session id = %d", tasks.msg.SessionID)
+	}
+	if tasks.msg.SessionName != "planner" {
+		t.Fatalf("session name = %q", tasks.msg.SessionName)
+	}
+	if tasks.msg.Summary != "ship relay ingest" {
+		t.Fatalf("summary = %q", tasks.msg.Summary)
+	}
+	if tasks.msg.State != "working" {
+		t.Fatalf("state = %q", tasks.msg.State)
 	}
 }

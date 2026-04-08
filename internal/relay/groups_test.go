@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -32,7 +31,7 @@ func TestGroupLifecycleRequiresOwnerAndPersistsDefaults(t *testing.T) {
 		t.Fatalf("NetworkMemberUpsert: %v", err)
 	}
 
-	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+	srv := newIPv4TestServer(t, buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		BaseURL:   "http://relay.test",
 		AuthMode:  "token",
 		AuthToken: "relay-admin",
@@ -211,7 +210,7 @@ func TestGroupHandlersRejectInvalidPolicyAndDuplicateCreate(t *testing.T) {
 		t.Fatalf("NetworkMemberUpsert: %v", err)
 	}
 
-	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+	srv := newIPv4TestServer(t, buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		BaseURL:   "http://relay.test",
 		AuthMode:  "token",
 		AuthToken: "relay-admin",
@@ -298,7 +297,7 @@ func TestGroupBindingsHandlerAllowsNodeScopedLookup(t *testing.T) {
 		t.Fatalf("GroupMemberAdd: %v", err)
 	}
 
-	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+	srv := newIPv4TestServer(t, buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		BaseURL: "http://relay.test",
 	}, nil, networkauth.NewReplayCache(), nil))
 	defer srv.Close()
@@ -359,7 +358,7 @@ func TestGroupMemberHandlersAllowNodeScopedMutation(t *testing.T) {
 		t.Fatalf("GroupCreate: %v", err)
 	}
 
-	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+	srv := newIPv4TestServer(t, buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		BaseURL: "http://relay.test",
 	}, nil, networkauth.NewReplayCache(), nil))
 	defer srv.Close()

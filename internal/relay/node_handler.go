@@ -16,7 +16,8 @@ import (
 // RegisterNodeConnectHandler adds GET /node/connect to mux.
 // Nodes connect here with Authorization: Bearer <node-token>.
 // The handler registers them in the hub and streams HubMessages to the node.
-func RegisterNodeConnectHandler(mux *http.ServeMux, hub *NodeHub, st store.Store) {
+func RegisterNodeConnectHandler(mux *http.ServeMux, hub *NodeHub, st store.Store, tasks TaskStore) {
+	tasks = normalizeTaskStore(tasks)
 	mux.HandleFunc("GET /node/connect", func(w http.ResponseWriter, r *http.Request) {
 		// Authenticate node.
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -72,15 +73,39 @@ func RegisterNodeConnectHandler(mux *http.ServeMux, hub *NodeHub, st store.Store
 			}
 		}()
 
-		// Read loop: keep connection alive (nodes may send pings or status).
+		// Read loop: dispatch node-originated messages while keeping the
+		// connection open for relay->node control traffic.
 		for {
-			_, _, err := ws.Read(ctx)
+			_, data, err := ws.Read(ctx)
 			if err != nil {
 				slog.Info("node agent disconnected", "node", node.Name, "err", err)
 				return
 			}
+			if err := dispatchNodeAgentMessage(ctx, tasks, *node, data); err != nil {
+				slog.Warn("failed to handle node websocket message", "node", node.Name, "err", err)
+			}
 		}
 	})
+}
+
+func dispatchNodeAgentMessage(ctx context.Context, tasks TaskStore, node store.NodeRecord, data []byte) error {
+	var envelope struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return nil
+	}
+	switch envelope.Type {
+	case "TaskReport":
+		var msg TaskReportMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return nil
+		}
+		_, err := tasks.PublishNodeTaskReport(ctx, node, msg)
+		return err
+	default:
+		return nil
+	}
 }
 
 // nodeAuthFromRequest extracts and validates the node token from the

@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	neturl "net/url"
 	"strings"
 
+	"nhooyr.io/websocket"
+
 	"github.com/codewiresh/codewire/internal/client"
 	"github.com/codewiresh/codewire/internal/config"
+	"github.com/codewiresh/codewire/internal/connection"
 	"github.com/codewiresh/codewire/internal/networkauth"
 	"github.com/codewiresh/codewire/internal/peer"
 	"github.com/codewiresh/codewire/internal/peerclient"
@@ -332,4 +336,65 @@ func printSessionEvent(event *protocol.SessionEvent) {
 		}
 		fmt.Printf("[%s] REPLY (%s): %s\n", fromLabel, d.RequestID, d.Body)
 	}
+}
+
+// attachRemoteSession attaches to a session on a remote node via tailnet.
+func attachRemoteSession(ctx context.Context, loc sessionLocator, noHistory bool) error {
+	node, cfg, err := lookupRelayNode(loc.Node)
+	if err != nil {
+		return err
+	}
+	if !node.Connected {
+		return fmt.Errorf("remote node %q is not connected", loc.Node)
+	}
+
+	runtimeCred, err := issueRuntimeCredentialForPeer(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Dial tailnet TCP to the remote node.
+	tcpConn, tailnetConn, err := peer.DialNetworkPeerTCP(ctx, *cfg.RelayURL, runtimeCred, loc.Node, peer.TailnetPeerPort)
+	if err != nil {
+		return fmt.Errorf("connecting to node %q over tailnet: %w", loc.Node, err)
+	}
+	defer tailnetConn.Close()
+
+	// Upgrade to WebSocket over the tailnet TCP connection, hitting /ws.
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return tcpConn, nil
+			},
+		},
+	}
+	wsConn, _, err := websocket.Dial(ctx, "ws://tailnet/ws", &websocket.DialOptions{
+		HTTPClient: httpClient,
+		HTTPHeader: http.Header{
+			"Authorization": []string{"Bearer " + runtimeCred},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("websocket upgrade to node %q: %w", loc.Node, err)
+	}
+	defer wsConn.CloseNow()
+
+	reader := connection.NewWSReader(ctx, wsConn)
+	writer := connection.NewWSWriter(ctx, wsConn)
+
+	// Resolve session ID.
+	var sessionID uint32
+	if loc.ID != nil {
+		sessionID = *loc.ID
+	} else if loc.Name != "" {
+		resolved, err := client.ResolveSessionArgConn(reader, writer, loc.Name)
+		if err != nil {
+			return fmt.Errorf("resolving session %q on node %q: %w", loc.Name, loc.Node, err)
+		}
+		sessionID = resolved
+	} else {
+		return fmt.Errorf("no session ID or name specified")
+	}
+
+	return client.AttachConn(reader, writer, sessionID, noHistory)
 }

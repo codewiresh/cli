@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -12,6 +14,108 @@ import (
 )
 
 var localGOOS = runtime.GOOS
+
+// offerLimaInstall prompts the user to install Lima automatically.
+func offerLimaInstall() error {
+	fmt.Fprintln(os.Stderr, "Lima is not installed.")
+	ok, err := localPromptConfirm("Install Lima now?")
+	if err != nil {
+		return fmt.Errorf("limactl not found in PATH")
+	}
+	if !ok {
+		return fmt.Errorf("limactl not found in PATH")
+	}
+
+	// macOS: prefer Homebrew if available
+	if localGOOS == "darwin" {
+		if _, brewErr := localLookPath("brew"); brewErr == nil {
+			fmt.Fprintf(os.Stderr, "\n  Installing Lima via Homebrew...\n")
+			out, err := localRunCommand("brew", "install", "lima")
+			if err != nil {
+				return fmt.Errorf("brew install lima failed: %v\n%s", err, strings.TrimSpace(string(out)))
+			}
+			if _, err := localLookPath("limactl"); err != nil {
+				return fmt.Errorf("lima installed but limactl not found in PATH")
+			}
+			fmt.Fprintf(os.Stderr, "  Lima installed.\n\n")
+			return nil
+		}
+	}
+
+	// Linux (or macOS without Homebrew): install from GitHub release
+	fmt.Fprintf(os.Stderr, "\n  Fetching latest Lima release...\n")
+
+	arch := "x86_64"
+	if runtime.GOARCH == "arm64" {
+		arch = "aarch64"
+	}
+	osName := "Linux"
+	if localGOOS == "darwin" {
+		osName = "Darwin"
+	}
+
+	// Get latest version tag
+	out, err := localRunCommand("curl", "-fsSL",
+		"https://api.github.com/repos/lima-vm/lima/releases/latest")
+	if err != nil {
+		return fmt.Errorf("failed to fetch latest release: %w", err)
+	}
+	version := ""
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "\"tag_name\"") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				version = strings.Trim(strings.TrimSpace(parts[1]), "\",")
+			}
+			break
+		}
+	}
+	if version == "" {
+		return fmt.Errorf("could not determine latest lima version")
+	}
+
+	fmt.Fprintf(os.Stderr, "  Installing Lima %s (%s/%s)...\n", version, osName, arch)
+
+	// Download and extract -- tag has "v" prefix but asset filenames do not
+	bareVersion := strings.TrimPrefix(version, "v")
+	url := fmt.Sprintf("https://github.com/lima-vm/lima/releases/download/%s/lima-%s-%s-%s.tar.gz",
+		version, bareVersion, osName, arch)
+	tmpDir := filepath.Join(os.TempDir(), "cw-lima-install")
+	os.MkdirAll(tmpDir, 0o755)
+	defer os.RemoveAll(tmpDir)
+
+	out, err = localRunCommand("sh", "-c",
+		fmt.Sprintf("curl -fsSL %q | tar xz -C %q", url, tmpDir))
+	if err != nil {
+		return fmt.Errorf("download failed: %v\n%s", err, strings.TrimSpace(string(out)))
+	}
+
+	// Lima tarballs contain bin/, libexec/, share/ (templates, guest agent)
+	binaryPath := filepath.Join(tmpDir, "bin", "limactl")
+	if _, statErr := os.Stat(binaryPath); statErr != nil {
+		return fmt.Errorf("limactl not found at expected path: %s", binaryPath)
+	}
+
+	// Install full tree to /usr/local/ so templates and guest agent are available
+	fmt.Fprintf(os.Stderr, "  Installing to /usr/local/ (requires sudo)...\n")
+	out, err = localRunCommand("sudo", "sh", "-c",
+		fmt.Sprintf("cp -r %s/bin/* /usr/local/bin/ && cp -r %s/share/* /usr/local/share/ && "+
+			"test -d %s/libexec && cp -r %s/libexec/* /usr/local/libexec/ || true",
+			tmpDir, tmpDir, tmpDir, tmpDir))
+	if err != nil {
+		return fmt.Errorf("install failed: %v\n%s\n\n  You can install manually:\n    sudo tar xzf <lima-tarball> -C /usr/local/",
+			err, strings.TrimSpace(string(out)))
+	}
+
+	// Verify
+	if _, err := localLookPath("limactl"); err != nil {
+		return fmt.Errorf("lima installed but limactl not found in PATH")
+	}
+
+	fmt.Fprintf(os.Stderr, "  Lima %s installed.\n\n", version)
+	return nil
+}
 
 type limaListEntry struct {
 	Name   string `json:"name"`
@@ -55,9 +159,13 @@ func limaCreateCommandArgs(instance *cwconfig.LocalInstance) []string {
 		mountType = defaultLimaMountType(vmType)
 	}
 
+	homeDir, _ := os.UserHomeDir()
+	ghConfigDir := filepath.Join(homeDir, ".config", "gh")
+
 	mountSet := fmt.Sprintf(
-		`.mounts=[{"location":%s,"mountPoint":"/workspace","writable":true}]`,
+		`.mounts=[{"location":%s,"mountPoint":"/workspace","writable":true},{"location":%s,"mountPoint":"/home/{{.User}}.guest/.config/gh","writable":false}]`,
 		strconv.Quote(instance.RepoPath),
+		strconv.Quote(ghConfigDir),
 	)
 
 	args := []string{
@@ -94,43 +202,104 @@ func limaCreateCommandArgs(instance *cwconfig.LocalInstance) []string {
 		args = append(args, "--port-forward", fmt.Sprintf("%d:%d,static=true", port.Port, port.Port))
 	}
 
-	return append(args, "template://default")
+	return append(args, "template:docker")
 }
+
+const limaContainerName = "cw-workspace"
 
 func createLocalLimaInstance(instance *cwconfig.LocalInstance) error {
 	if _, err := localLookPath("limactl"); err != nil {
-		return fmt.Errorf("limactl is required for the lima backend: %w", err)
+		if installErr := offerLimaInstall(); installErr != nil {
+			return installErr
+		}
 	}
 
 	instance.LimaInstanceName = limaInstanceName(instance)
 	instance.LimaVMType = defaultLimaVMType()
 	instance.LimaMountType = defaultLimaMountType(instance.LimaVMType)
 
+	// Boot the VM with Docker template
 	args := limaCreateCommandArgs(instance)
-	out, err := localRunCommand("limactl", args...)
-	if err != nil {
-		return fmt.Errorf("limactl %s: %v\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	fmt.Fprintf(os.Stderr, "  Creating Lima VM %q (this may download a VM image on first run)...\n", limaInstanceName(instance))
+	if err := localRunCommandStream("limactl", args...); err != nil {
+		return fmt.Errorf("limactl %s: %v", strings.Join(args, " "), err)
 	}
+
+	name := limaInstanceName(instance)
+
+	// Wait for Docker readiness inside the VM
+	fmt.Fprintf(os.Stderr, "  Waiting for Docker inside VM...\n")
+	if err := localRunCommandStream("limactl", "shell", "--workdir", "/", name, "docker", "info"); err != nil {
+		return fmt.Errorf("docker not ready inside Lima VM: %v", err)
+	}
+
+	// Login to GHCR using host's gh auth token (best-effort)
+	if ghPath, ghErr := localLookPath("gh"); ghErr == nil {
+		if token, tokenErr := localRunCommand(ghPath, "auth", "token"); tokenErr == nil {
+			tok := strings.TrimSpace(string(token))
+			if tok != "" {
+				_, _ = localRunCommand("limactl", "shell", "--workdir", "/", name, "sh", "-c",
+					"docker login ghcr.io -u oauth2 --password-stdin <<< "+strconv.Quote(tok))
+			}
+		}
+	}
+
+	// Pull the image
+	image := instance.Image
+	if image == "" {
+		image = "ubuntu:latest"
+	}
+	fmt.Fprintf(os.Stderr, "  Pulling %s...\n", image)
+	if err := localRunCommandStream("limactl", "shell", "--workdir", "/", name, "docker", "pull", image); err != nil {
+		return fmt.Errorf("docker pull %s: %v", image, err)
+	}
+
+	// Run the container with the workspace mounted
+	fmt.Fprintf(os.Stderr, "  Starting workspace container...\n")
+	if err := localRunCommandStream("limactl", "shell", "--workdir", "/", name,
+		"docker", "run", "-d",
+		"--name", limaContainerName,
+		"-v", "/workspace:/workspace",
+		"--workdir", "/workspace",
+		image,
+		"sleep", "infinity",
+	); err != nil {
+		return fmt.Errorf("docker run: %v", err)
+	}
+
 	return nil
 }
 
 func startLocalLimaInstance(instance *cwconfig.LocalInstance) error {
 	if _, err := localLookPath("limactl"); err != nil {
-		return fmt.Errorf("limactl is required for the lima backend: %w", err)
+		if installErr := offerLimaInstall(); installErr != nil {
+			return installErr
+		}
 	}
 	name := limaInstanceName(instance)
-	out, err := localRunCommand("limactl", "start", "--tty=false", name)
+	fmt.Fprintf(os.Stderr, "  Starting Lima VM %q...\n", name)
+	if err := localRunCommandStream("limactl", "start", "--tty=false", name); err != nil {
+		return fmt.Errorf("limactl start %s: %v", name, err)
+	}
+	// Start the workspace container
+	fmt.Fprintf(os.Stderr, "  Starting workspace container...\n")
+	out, err := localRunCommand("limactl", "shell", "--workdir", "/", name, "docker", "start", limaContainerName)
 	if err != nil {
-		return fmt.Errorf("limactl start --tty=false %s: %v\n%s", name, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("docker start %s: %v\n%s", limaContainerName, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
 func stopLocalLimaInstance(instance *cwconfig.LocalInstance) error {
 	if _, err := localLookPath("limactl"); err != nil {
-		return fmt.Errorf("limactl is required for the lima backend: %w", err)
+		if installErr := offerLimaInstall(); installErr != nil {
+			return installErr
+		}
 	}
 	name := limaInstanceName(instance)
+	// Stop the workspace container first
+	_, _ = localRunCommand("limactl", "shell", "--workdir", "/", name, "docker", "stop", limaContainerName)
+	// Stop the VM
 	out, err := localRunCommand("limactl", "stop", name)
 	if err != nil {
 		return fmt.Errorf("limactl stop %s: %v\n%s", name, err, strings.TrimSpace(string(out)))
@@ -140,7 +309,9 @@ func stopLocalLimaInstance(instance *cwconfig.LocalInstance) error {
 
 func deleteLocalLimaInstance(instance *cwconfig.LocalInstance) error {
 	if _, err := localLookPath("limactl"); err != nil {
-		return fmt.Errorf("limactl is required for the lima backend: %w", err)
+		if installErr := offerLimaInstall(); installErr != nil {
+			return installErr
+		}
 	}
 	name := limaInstanceName(instance)
 	out, err := localRunCommand("limactl", "delete", "--force", name)
@@ -156,7 +327,9 @@ func deleteLocalLimaInstance(instance *cwconfig.LocalInstance) error {
 
 func limaInstanceStatus(instance *cwconfig.LocalInstance) (string, error) {
 	if _, err := localLookPath("limactl"); err != nil {
-		return "", fmt.Errorf("limactl is required for the lima backend: %w", err)
+		if installErr := offerLimaInstall(); installErr != nil {
+			return "", installErr
+		}
 	}
 	name := limaInstanceName(instance)
 	out, err := localRunCommand("limactl", "list", "--format", "json", name)

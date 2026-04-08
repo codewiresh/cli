@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -36,7 +35,7 @@ func TestAccessGrantLifecycleRequiresOwnerAndPersists(t *testing.T) {
 		t.Fatalf("NetworkMemberUpsert: %v", err)
 	}
 
-	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+	srv := newIPv4TestServer(t, buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		BaseURL:   "http://relay.test",
 		AuthMode:  "token",
 		AuthToken: "relay-admin",
@@ -169,7 +168,7 @@ func TestAccessGrantCreateRejectsAmbiguousAudience(t *testing.T) {
 		t.Fatalf("OIDCUserUpsert: %v", err)
 	}
 
-	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+	srv := newIPv4TestServer(t, buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		BaseURL:   "http://relay.test",
 		AuthMode:  "token",
 		AuthToken: "relay-admin",
@@ -222,7 +221,7 @@ func TestAccessGrantListMineReturnsAudienceScopedGrants(t *testing.T) {
 		t.Fatalf("NetworkMemberUpsert alice: %v", err)
 	}
 
-	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+	srv := newIPv4TestServer(t, buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		BaseURL:   "http://relay.test",
 		AuthMode:  "token",
 		AuthToken: "relay-admin",
@@ -294,7 +293,7 @@ func TestAccessGrantEventStreamDeliversRevocations(t *testing.T) {
 		t.Fatalf("NetworkMemberUpsert alice: %v", err)
 	}
 
-	srv := httptest.NewServer(buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
+	srv := newIPv4TestServer(t, buildMux(NewNodeHub(), NewPendingSessions(), st, RelayConfig{
 		BaseURL:   "http://relay.test",
 		AuthMode:  "token",
 		AuthToken: "relay-admin",

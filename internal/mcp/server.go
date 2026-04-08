@@ -16,6 +16,8 @@ import (
 	"github.com/codewiresh/codewire/internal/protocol"
 )
 
+var nodeRequestFunc = nodeRequest
+
 // ---------------------------------------------------------------------------
 // JSON-RPC 2.0 types
 // ---------------------------------------------------------------------------
@@ -227,6 +229,29 @@ func getNodeTools() []tool {
 					},
 				},
 				"required": []string{"session_id"},
+			},
+		},
+		{
+			Name:        "codewire_report_task",
+			Description: "Report the current task status for a session",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"session_id": map[string]interface{}{
+						"type":        "integer",
+						"description": "The session ID reporting task status",
+					},
+					"summary": map[string]interface{}{
+						"type":        "string",
+						"description": "Brief description of the current work",
+					},
+					"state": map[string]interface{}{
+						"type":        "string",
+						"description": "Task state",
+						"enum":        []string{"working", "complete", "blocked", "failed"},
+					},
+				},
+				"required": []string{"session_id", "summary", "state"},
 			},
 		},
 		{
@@ -466,6 +491,8 @@ func handleToolCall(dataDir string, params json.RawMessage) (string, error) {
 		return toolWatchSession(dataDir, args)
 	case "codewire_get_session_status":
 		return toolGetSessionStatus(dataDir, args)
+	case "codewire_report_task":
+		return toolReportTask(dataDir, args)
 	case "codewire_launch_session":
 		return toolLaunchSession(dataDir, args)
 	case "codewire_kill_session":
@@ -519,7 +546,7 @@ func handleToolCall(dataDir string, params json.RawMessage) (string, error) {
 // ---------------------------------------------------------------------------
 
 func toolListSessions(dataDir string, args map[string]interface{}) (string, error) {
-	resp, err := nodeRequest(dataDir, &protocol.Request{Type: "ListSessions"})
+	resp, err := nodeRequestFunc(dataDir, &protocol.Request{Type: "ListSessions"})
 	if err != nil {
 		return "", err
 	}
@@ -578,7 +605,7 @@ func toolReadSessionOutput(dataDir string, args map[string]interface{}) (string,
 	}
 
 	f := false
-	resp, err := nodeRequest(dataDir, &protocol.Request{
+	resp, err := nodeRequestFunc(dataDir, &protocol.Request{
 		Type:   "Logs",
 		ID:     &sessionID,
 		Follow: &f,
@@ -623,7 +650,7 @@ func toolSendInput(dataDir string, args map[string]interface{}) (string, error) 
 		data = append(data, '\n')
 	}
 
-	resp, err := nodeRequest(dataDir, &protocol.Request{
+	resp, err := nodeRequestFunc(dataDir, &protocol.Request{
 		Type: "SendInput",
 		ID:   &sessionID,
 		Data: data,
@@ -676,7 +703,7 @@ func toolGetSessionStatus(dataDir string, args map[string]interface{}) (string, 
 		return "", err
 	}
 
-	resp, err := nodeRequest(dataDir, &protocol.Request{
+	resp, err := nodeRequestFunc(dataDir, &protocol.Request{
 		Type: "GetStatus",
 		ID:   &sessionID,
 	})
@@ -709,6 +736,41 @@ func toolGetSessionStatus(dataDir string, args map[string]interface{}) (string, 
 		return "", err
 	}
 	return string(out), nil
+}
+
+func toolReportTask(dataDir string, args map[string]interface{}) (string, error) {
+	sessionID, err := argUint32(args, "session_id")
+	if err != nil {
+		return "", err
+	}
+
+	summary, ok := args["summary"].(string)
+	if !ok || strings.TrimSpace(summary) == "" {
+		return "", fmt.Errorf("missing summary")
+	}
+
+	state, ok := args["state"].(string)
+	if !ok || strings.TrimSpace(state) == "" {
+		return "", fmt.Errorf("missing state")
+	}
+
+	resp, err := nodeRequestFunc(dataDir, &protocol.Request{
+		Type:    "ReportTask",
+		ID:      &sessionID,
+		Summary: summary,
+		State:   state,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	if resp.Type == "Error" {
+		return fmt.Sprintf("Error: %s", resp.Message), nil
+	}
+	if resp.Type == "TaskReported" && resp.ID != nil {
+		return fmt.Sprintf("Reported task for session %d", *resp.ID), nil
+	}
+	return "Unexpected response", nil
 }
 
 func toolLaunchSession(dataDir string, args map[string]interface{}) (string, error) {
@@ -749,7 +811,7 @@ func toolLaunchSession(dataDir string, args map[string]interface{}) (string, err
 		}
 	}
 
-	resp, err := nodeRequest(dataDir, &protocol.Request{
+	resp, err := nodeRequestFunc(dataDir, &protocol.Request{
 		Type:       "Launch",
 		Command:    command,
 		WorkingDir: workingDir,
@@ -781,7 +843,7 @@ func toolKillSession(dataDir string, args map[string]interface{}) (string, error
 	}
 
 	if len(tags) > 0 {
-		resp, err := nodeRequest(dataDir, &protocol.Request{
+		resp, err := nodeRequestFunc(dataDir, &protocol.Request{
 			Type: "KillByTags",
 			Tags: tags,
 		})
@@ -803,7 +865,7 @@ func toolKillSession(dataDir string, args map[string]interface{}) (string, error
 		return "", fmt.Errorf("either session_id or tags required")
 	}
 
-	resp, err := nodeRequest(dataDir, &protocol.Request{
+	resp, err := nodeRequestFunc(dataDir, &protocol.Request{
 		Type: "Kill",
 		ID:   &sessionID,
 	})
@@ -905,7 +967,7 @@ func toolMsg(dataDir string, args map[string]interface{}) (string, error) {
 		req.ID = &id
 	}
 
-	resp, err := nodeRequest(dataDir, req)
+	resp, err := nodeRequestFunc(dataDir, req)
 	if err != nil {
 		return "", err
 	}
@@ -933,7 +995,7 @@ func toolReadMessages(dataDir string, args map[string]interface{}) (string, erro
 		Tail: &tail,
 	}
 
-	resp, err := nodeRequest(dataDir, req)
+	resp, err := nodeRequestFunc(dataDir, req)
 	if err != nil {
 		return "", err
 	}
@@ -1045,7 +1107,7 @@ func toolReply(dataDir string, args map[string]interface{}) (string, error) {
 		req.ID = &id
 	}
 
-	resp, err := nodeRequest(dataDir, req)
+	resp, err := nodeRequestFunc(dataDir, req)
 	if err != nil {
 		return "", err
 	}

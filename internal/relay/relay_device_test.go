@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/codewiresh/codewire/internal/oauth"
@@ -44,7 +43,7 @@ func newTestOIDCProvider(mockURL string) *oauth.OIDCProvider {
 //   - returns poll_token, user_code, verification_uri, and interval to the caller
 func TestDeviceAuthorizeHandler(t *testing.T) {
 	// Mock Dex device authorization endpoint.
-	mockDex := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mockDex := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/device/auth" {
 			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusNotFound)
 			return
@@ -67,7 +66,7 @@ func TestDeviceAuthorizeHandler(t *testing.T) {
 	mux := http.NewServeMux()
 	relay.RegisterDeviceHandlersForTest(mux, st, p)
 
-	srv := httptest.NewServer(mux)
+	srv := newIPv4TestServer(t, mux)
 	defer srv.Close()
 	client := srv.Client()
 
@@ -114,7 +113,7 @@ func TestDeviceAuthorizeHandler(t *testing.T) {
 // TestDevicePollHandler_Pending verifies that when Dex returns
 // authorization_pending the relay returns {"status":"pending"} with 202.
 func TestDevicePollHandler_Pending(t *testing.T) {
-	mockDex := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mockDex := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/device/auth":
 			w.Header().Set("Content-Type", "application/json")
@@ -140,7 +139,7 @@ func TestDevicePollHandler_Pending(t *testing.T) {
 
 	mux := http.NewServeMux()
 	relay.RegisterDeviceHandlersForTest(mux, st, p)
-	srv := httptest.NewServer(mux)
+	srv := newIPv4TestServer(t, mux)
 	defer srv.Close()
 	client := srv.Client()
 
@@ -190,7 +189,7 @@ func TestDevicePollHandler_Pending(t *testing.T) {
 func TestDevicePollHandler_Authorized(t *testing.T) {
 	const accessToken = "dex_access_token_xyz"
 
-	mockDex := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mockDex := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/device/auth":
@@ -229,7 +228,7 @@ func TestDevicePollHandler_Authorized(t *testing.T) {
 
 	mux := http.NewServeMux()
 	relay.RegisterDeviceHandlersForTest(mux, st, p)
-	srv := httptest.NewServer(mux)
+	srv := newIPv4TestServer(t, mux)
 	defer srv.Close()
 	client := srv.Client()
 

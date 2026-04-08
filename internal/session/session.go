@@ -231,7 +231,10 @@ type SessionManager struct {
 	pendingRequests   map[string]pendingRequest // requestID → pending request state
 	nameChangeHook    func(id uint32, oldName, newName string, tags []string) error
 	sessionExitHook   func(id uint32, name string, tags []string)
+	taskReportForward func(sessionID uint32, sessionName, eventID, summary, state string, ts time.Time)
 }
+
+const maxTaskSummaryLen = 280
 
 type pendingRequest struct {
 	replyCh                   chan ReplyData
@@ -299,6 +302,50 @@ func (m *SessionManager) SetNameChangeHook(hook func(id uint32, oldName, newName
 // SetSessionExitHook registers a callback invoked after a session exits or is killed.
 func (m *SessionManager) SetSessionExitHook(hook func(id uint32, name string, tags []string)) {
 	m.sessionExitHook = hook
+}
+
+// SetTaskReportForward registers a callback invoked after a task report has
+// been recorded locally and published to subscribers.
+func (m *SessionManager) SetTaskReportForward(hook func(sessionID uint32, sessionName, eventID, summary, state string, ts time.Time)) {
+	m.taskReportForward = hook
+}
+
+// ReportTask records a task report event for one session, publishes it to
+// local subscribers, and optionally forwards it to the relay transport.
+func (m *SessionManager) ReportTask(sessionID uint32, summary, state string) error {
+	m.mu.RLock()
+	sess, ok := m.sessions[sessionID]
+	m.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("session %d not found", sessionID)
+	}
+
+	normalizedSummary, err := normalizeTaskSummary(summary)
+	if err != nil {
+		return err
+	}
+	normalizedState, err := normalizeTaskState(state)
+	if err != nil {
+		return err
+	}
+
+	sess.mu.Lock()
+	sessionName := sess.Meta.Name
+	tags := append([]string(nil), sess.Meta.Tags...)
+	sess.mu.Unlock()
+
+	eventID := randomTaskEventID()
+	event := NewTaskReportEvent(eventID, normalizedSummary, normalizedState)
+	if sess.eventLog != nil {
+		if err := sess.eventLog.Append(event); err != nil {
+			return fmt.Errorf("append task report event: %w", err)
+		}
+	}
+	m.Subscriptions.Publish(sessionID, tags, event)
+	if m.taskReportForward != nil {
+		m.taskReportForward(sessionID, sessionName, eventID, normalizedSummary, normalizedState, event.Timestamp)
+	}
+	return nil
 }
 
 // SetName assigns a unique name to a session. Returns an error if the name is
@@ -702,12 +749,37 @@ func randomReplyToken() string {
 	return randomOpaqueID("rpl_")
 }
 
+func randomTaskEventID() string {
+	return randomOpaqueID("task_")
+}
+
 func randomOpaqueID(prefix string) string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		panic("crypto/rand failed: " + err.Error())
 	}
 	return prefix + base64.RawURLEncoding.EncodeToString(b[:])
+}
+
+func normalizeTaskSummary(summary string) (string, error) {
+	summary = strings.Join(strings.Fields(strings.TrimSpace(summary)), " ")
+	if summary == "" {
+		return "", fmt.Errorf("task summary is required")
+	}
+	if len(summary) > maxTaskSummaryLen {
+		return "", fmt.Errorf("task summary exceeds %d characters", maxTaskSummaryLen)
+	}
+	return summary, nil
+}
+
+func normalizeTaskState(state string) (string, error) {
+	state = strings.TrimSpace(strings.ToLower(state))
+	switch state {
+	case "working", "complete", "blocked", "failed":
+		return state, nil
+	default:
+		return "", fmt.Errorf("invalid task state %q", state)
+	}
 }
 
 // DeliverDirectMessagePrompt injects a formatted direct-message prompt into a

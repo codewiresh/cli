@@ -43,7 +43,8 @@ var execLocally = func(workDir string, command []string) error {
 	return nil
 }
 
-var execInLocalRuntimeTarget = func(instance *cwconfig.LocalInstance, workDir string, command []string) error {
+var execInLocalRuntimeTarget = func(instance *cwconfig.LocalInstance, workDir string, command []string, allocTTY ...bool) error {
+	wantTTY := len(allocTTY) > 0 && allocTTY[0]
 	if instance == nil {
 		return fmt.Errorf("local instance is required")
 	}
@@ -55,6 +56,9 @@ var execInLocalRuntimeTarget = func(instance *cwconfig.LocalInstance, workDir st
 	switch instance.Backend {
 	case "docker":
 		args := []string{"exec", "-i"}
+		if wantTTY {
+			args = append(args, "-t")
+		}
 		if strings.TrimSpace(workDir) != "" {
 			args = append(args, "-w", workDir)
 		}
@@ -70,16 +74,34 @@ var execInLocalRuntimeTarget = func(instance *cwconfig.LocalInstance, workDir st
 		args = append(args, command...)
 		cmd = osExec.Command("incus", args...)
 	case "lima":
-		args := []string{"shell"}
+		// Lima runs a Docker container inside the VM. Route exec through it.
+		name := limaInstanceName(instance)
+
+		// Verify the command exists inside the container, not the VM.
+		checkOut, checkErr := localRunCommand("limactl", "shell", "--workdir", "/", name,
+			"docker", "exec", limaContainerName, "which", command[0])
+		if checkErr != nil {
+			return fmt.Errorf("%q not found inside Lima instance %q\n%s", command[0], name, strings.TrimSpace(string(checkOut)))
+		}
+
 		wd := workDir
 		if wd == "" {
 			wd = instance.Workdir
 		}
-		if strings.TrimSpace(wd) != "" {
-			args = append(args, "--workdir", wd)
+
+		// limactl shell <vm> docker exec -i [-t] -w <wd> cw-workspace <command...>
+		dockerArgs := []string{"docker", "exec", "-i"}
+		if wantTTY {
+			dockerArgs = append(dockerArgs, "-t")
 		}
-		args = append(args, limaInstanceName(instance))
-		args = append(args, command...)
+		if strings.TrimSpace(wd) != "" {
+			dockerArgs = append(dockerArgs, "-w", wd)
+		}
+		dockerArgs = append(dockerArgs, limaContainerName)
+		dockerArgs = append(dockerArgs, command...)
+
+		args := []string{"shell", "--workdir", "/", name}
+		args = append(args, dockerArgs...)
 		cmd = osExec.Command("limactl", args...)
 	case "firecracker":
 		vsockPath := instance.FirecrackerSocket + ".vsock"
@@ -116,9 +138,11 @@ var execInLocalRuntimeTarget = func(instance *cwconfig.LocalInstance, workDir st
 
 func execCmd() *cobra.Command {
 	var (
-		workDir string
-		timeout int
-		on      string
+		workDir     string
+		timeout     int
+		on          string
+		interactive bool
+		tty         bool
 	)
 
 	cmd := &cobra.Command{
@@ -150,7 +174,7 @@ func execCmd() *cobra.Command {
 					if workDir == "" {
 						workDir = localWorkspacePath
 					}
-					return execInLocalRuntimeTarget(instance, workDir, cmdArgs)
+					return execInLocalRuntimeTarget(instance, workDir, cmdArgs, interactive && tty)
 				}
 				if workDir == "" {
 					workDir, _ = os.Getwd()
@@ -183,5 +207,7 @@ func execCmd() *cobra.Command {
 	cmd.Flags().StringVar(&on, "on", "", "Override the current target for this command")
 	cmd.Flags().StringVarP(&workDir, "workdir", "w", "", "Working directory (default: cwd for local, /workspace for env)")
 	cmd.Flags().IntVar(&timeout, "timeout", 30, "Timeout in seconds for environment exec")
+	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "Keep stdin open")
+	cmd.Flags().BoolVarP(&tty, "tty", "t", false, "Allocate a pseudo-TTY")
 	return cmd
 }

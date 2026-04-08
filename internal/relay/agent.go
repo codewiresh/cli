@@ -20,6 +20,7 @@ type AgentConfig struct {
 	NodeName  string
 	NodeToken string
 	PeerURL   string
+	Outbound  <-chan []byte
 }
 
 // RunAgent connects to the relay and handles incoming SSH requests.
@@ -58,6 +59,10 @@ func runAgentOnce(ctx context.Context, cfg AgentConfig) error {
 
 	slog.Info("relay agent connected", "relay", cfg.RelayURL, "node", cfg.NodeName)
 
+	if cfg.Outbound != nil {
+		go forwardAgentOutbound(ctx, ws, cfg.Outbound)
+	}
+
 	for {
 		_, data, err := ws.Read(ctx)
 		if err != nil {
@@ -69,6 +74,30 @@ func runAgentOnce(ctx context.Context, cfg AgentConfig) error {
 		}
 		if msg.Type == "SSHRequest" {
 			go handleSSHBack(ctx, cfg, msg)
+		}
+	}
+}
+
+type wsTextWriter interface {
+	Write(ctx context.Context, typ websocket.MessageType, p []byte) error
+}
+
+func forwardAgentOutbound(ctx context.Context, ws wsTextWriter, outbound <-chan []byte) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case data, ok := <-outbound:
+			if !ok {
+				return
+			}
+			if len(data) == 0 {
+				continue
+			}
+			if err := ws.Write(ctx, websocket.MessageText, data); err != nil {
+				slog.Debug("relay agent outbound write failed", "err", err)
+				return
+			}
 		}
 	}
 }
