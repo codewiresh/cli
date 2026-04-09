@@ -149,6 +149,8 @@ func TestCreateLocalIncusInstanceInvokesExpectedCommands(t *testing.T) {
 		{"incus", "config", "device", "set", "cw-repo", "root", "size", "20GiB"},
 		{"incus", "config", "device", "add", "cw-repo", "workspace", "disk", "source=/tmp/repo", "path=/workspace"},
 		{"incus", "config", "device", "add", "cw-repo", "claude-config", "disk", "source=/home/testuser/.claude", "path=/home/codewire/.claude"},
+		{"incus", "config", "device", "add", "cw-repo", "gh-config", "disk", "source=/home/testuser/.config/gh", "path=/home/codewire/.config/gh", "readonly=true"},
+		{"incus", "config", "device", "add", "cw-repo", "ssh-config", "disk", "source=/home/testuser/.ssh", "path=/home/codewire/.ssh", "readonly=true"},
 		{"incus", "start", "cw-repo"},
 	}
 	if !reflect.DeepEqual(calls, want) {
@@ -346,7 +348,7 @@ func TestCreateLocalDockerInstanceInvokesExpectedCommands(t *testing.T) {
 	}
 
 	want := [][]string{
-		{"docker", "create", "--name", "cw-repo", "--hostname", "cw-repo", "--workdir", "/workspace", "--volume", "/tmp/repo:/workspace", "--volume", "/home/testuser/.claude:/home/codewire/.claude", "--cpus", "1.500", "--memory", "4096m", "--env", "A=1", "--env", "B=2", "ghcr.io/codewiresh/full:latest", "/bin/sh", "-lc", "trap 'exit 0' TERM INT; while true; do sleep 3600; done"},
+		{"docker", "create", "--name", "cw-repo", "--hostname", "cw-repo", "--workdir", "/workspace", "--volume", "/tmp/repo:/workspace", "--volume", "/home/testuser/.claude:/home/codewire/.claude", "--volume", "/home/testuser/.config/gh:/home/codewire/.config/gh:ro", "--volume", "/home/testuser/.ssh:/home/codewire/.ssh:ro", "--cpus", "1.500", "--memory", "4096m", "--env", "A=1", "--env", "B=2", "ghcr.io/codewiresh/full:latest", "/bin/sh", "-lc", "trap 'exit 0' TERM INT; while true; do sleep 3600; done"},
 		{"docker", "start", "cw-repo"},
 	}
 	if !reflect.DeepEqual(calls, want) {
@@ -479,7 +481,7 @@ func TestLimaCreateCommandArgs(t *testing.T) {
 
 	got := limaCreateCommandArgs(instance)
 
-	wantMountSet := `.mounts=[{"location":"/tmp/repo","mountPoint":"/workspace","writable":true},{"location":"/home/testuser/.config/gh","mountPoint":"/home/{{.User}}.guest/.config/gh","writable":false},{"location":"/home/testuser/.claude","mountPoint":"/home/{{.User}}.guest/.claude","writable":true}]`
+	wantMountSet := `.mounts=[{"location":"/tmp/repo","mountPoint":"/workspace","writable":true},{"location":"/home/testuser/.config/gh","mountPoint":"/home/{{.User}}.guest/.config/gh","writable":false},{"location":"/home/testuser/.ssh","mountPoint":"/mnt/host-ssh","writable":false},{"location":"/home/testuser/.claude","mountPoint":"/home/{{.User}}.guest/.claude","writable":true}]`
 
 	want := []string{
 		"start",
@@ -573,6 +575,8 @@ func TestCreateLocalLimaInstanceInvokesExpectedCommands(t *testing.T) {
 			"--name", "cw-workspace",
 			"-v", "/workspace:/workspace",
 			"-v", "/home/" + vmUser + ".guest/.claude:/home/codewire/.claude",
+			"-v", "/home/" + vmUser + ".guest/.config/gh:/home/codewire/.config/gh:ro",
+			"-v", "/mnt/host-ssh:/home/codewire/.ssh:ro",
 			"--workdir", "/workspace",
 			"ghcr.io/codewiresh/full:latest",
 			"sleep", "infinity"},
