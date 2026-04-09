@@ -177,13 +177,6 @@ func limaCreateCommandArgs(instance *cwconfig.LocalInstance) []string {
 			strconv.Quote(claudeDir),
 		)
 	}
-	claudeJSON := filepath.Join(homeDir, ".claude.json")
-	if _, err := localOsStat(claudeJSON); err == nil {
-		mounts += fmt.Sprintf(
-			`,{"location":%s,"mountPoint":"/home/{{.User}}.guest/.claude.json","writable":true}`,
-			strconv.Quote(claudeJSON),
-		)
-	}
 
 	mountSet := ".mounts=[" + mounts + "]"
 
@@ -297,10 +290,6 @@ func createLocalLimaInstance(instance *cwconfig.LocalInstance) error {
 		if _, statErr := localOsStat(hostClaude); statErr == nil {
 			dockerArgs = append(dockerArgs, "-v", claudeDir+":/home/codewire/.claude")
 		}
-		hostClaudeJSON := filepath.Join(homeDir, ".claude.json")
-		if _, statErr := localOsStat(hostClaudeJSON); statErr == nil {
-			dockerArgs = append(dockerArgs, "-v", filepath.Join(vmHome, ".claude.json")+":/home/codewire/.claude.json")
-		}
 	}
 	dockerArgs = append(dockerArgs,
 		"-v", filepath.Join(vmHome, ".config", "gh")+":/home/codewire/.config/gh:ro",
@@ -313,6 +302,19 @@ func createLocalLimaInstance(instance *cwconfig.LocalInstance) error {
 	)
 	if err := localRunCommandStream("limactl", append([]string{"shell", "--workdir", "/", name}, dockerArgs...)...); err != nil {
 		return fmt.Errorf("docker run: %v", err)
+	}
+
+	// Copy ~/.claude.json into the container (Lima mounts only support directories).
+	if homeDir, err := localUserHomeDir(); err == nil {
+		claudeJSON := filepath.Join(homeDir, ".claude.json")
+		if _, statErr := localOsStat(claudeJSON); statErr == nil {
+			vmTmp := "/tmp/claude.json"
+			if _, cpErr := localRunCommand("limactl", "copy", claudeJSON, name+":"+vmTmp); cpErr == nil {
+				_, _ = localRunCommand("limactl", "shell", "--workdir", "/", name,
+					"docker", "cp", vmTmp, limaContainerName+":/home/codewire/.claude.json")
+				_, _ = localRunCommand("limactl", "shell", "--workdir", "/", name, "rm", "-f", vmTmp)
+			}
+		}
 	}
 
 	cleanup = false
