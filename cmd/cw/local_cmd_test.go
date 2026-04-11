@@ -479,11 +479,14 @@ func TestLimaCreateCommandArgs(t *testing.T) {
 			{Port: 3000, Label: "web"},
 			{HostPort: 18080, GuestPort: 8080, Label: "api"},
 		},
+		Mounts: []cwconfig.MountConfig{
+			{Source: "/tmp/shared", Target: "/mnt/shared", Readonly: boolPtr(true)},
+		},
 	}
 
 	got := limaCreateCommandArgs(instance)
 
-	wantMountSet := `.mounts=[{"location":"/tmp/repo","mountPoint":"/workspace","writable":true},{"location":"/home/testuser/.config/gh","mountPoint":"/home/{{.User}}.guest/.config/gh","writable":false},{"location":"/home/testuser/.ssh","mountPoint":"/mnt/host-ssh","writable":false},{"location":"/home/testuser/.claude","mountPoint":"/home/{{.User}}.guest/.claude","writable":true},{"location":"/home/testuser/.codex","mountPoint":"/home/{{.User}}.guest/.codex","writable":true}]`
+	wantMountSet := `.mounts=[{"location":"/tmp/repo","mountPoint":"/workspace","writable":true},{"location":"/home/testuser/.config/gh","mountPoint":"/home/{{.User}}.guest/.config/gh","writable":false},{"location":"/home/testuser/.ssh","mountPoint":"/mnt/host-ssh","writable":false},{"location":"/home/testuser/.claude","mountPoint":"/home/{{.User}}.guest/.claude","writable":true},{"location":"/home/testuser/.codex","mountPoint":"/home/{{.User}}.guest/.codex","writable":true},{"location":"/tmp/shared","mountPoint":"/mnt/shared","writable":false}]`
 
 	want := []string{
 		"start",
@@ -566,6 +569,9 @@ func TestCreateLocalLimaInstanceInvokesExpectedCommands(t *testing.T) {
 		Ports: []cwconfig.PortConfig{
 			{Port: 3000, Label: "web"},
 		},
+		Mounts: []cwconfig.MountConfig{
+			{Source: "/tmp/shared", Target: "/mnt/shared", Readonly: boolPtr(true)},
+		},
 	}
 	if err := createLocalLimaInstance(instance); err != nil {
 		t.Fatalf("createLocalLimaInstance() error = %v", err)
@@ -590,6 +596,7 @@ func TestCreateLocalLimaInstanceInvokesExpectedCommands(t *testing.T) {
 			"-v", "/home/" + vmUser + ".guest/.config/gh:/home/codewire/.config/gh:ro",
 			"-v", "/mnt/host-ssh:/home/codewire/.ssh:ro",
 			"-v", "/home/" + vmUser + ".guest/.codex:/home/codewire/.codex",
+			"-v", "/tmp/shared:/mnt/shared:ro",
 			"--workdir", "/workspace",
 			"ghcr.io/codewiresh/full:latest",
 			"sleep", "infinity"},
@@ -605,6 +612,73 @@ func TestCreateLocalLimaInstanceInvokesExpectedCommands(t *testing.T) {
 	}
 	if instance.LimaMountType != "9p" {
 		t.Fatalf("LimaMountType = %q, want 9p", instance.LimaMountType)
+	}
+}
+
+func TestResolveLocalMountsNormalizesSourceAndTarget(t *testing.T) {
+	projectDir := t.TempDir()
+	sharedDir := filepath.Join(t.TempDir(), "shared")
+	if err := os.MkdirAll(sharedDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(sharedDir): %v", err)
+	}
+	assetsDir := filepath.Join(projectDir, "assets")
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(assetsDir): %v", err)
+	}
+
+	got, err := resolveLocalMounts(projectDir, []cwconfig.MountConfig{
+		{Source: assetsDir},
+		{Source: sharedDir, Target: "/mnt/shared", Readonly: boolPtr(false)},
+	})
+	if err != nil {
+		t.Fatalf("resolveLocalMounts() error = %v", err)
+	}
+	want := []cwconfig.MountConfig{
+		{Source: assetsDir, Target: assetsDir},
+		{Source: sharedDir, Target: "/mnt/shared", Readonly: boolPtr(false)},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("resolveLocalMounts() = %#v, want %#v", got, want)
+	}
+}
+
+func TestLimaAdditionalMountsFollowsExternalClaudeSymlinkTargets(t *testing.T) {
+	origUserHomeDir := localUserHomeDir
+	origOsStat := localOsStat
+	t.Cleanup(func() {
+		localUserHomeDir = origUserHomeDir
+		localOsStat = origOsStat
+	})
+
+	root := t.TempDir()
+	homeDir := filepath.Join(root, "home")
+	agenticDir := filepath.Join(root, "agentic")
+	if err := os.MkdirAll(filepath.Join(homeDir, ".claude"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(home .claude): %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(agenticDir, ".claude"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(agentic .claude): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agenticDir, "MEMORY.md"), []byte("memory"), 0o644); err != nil {
+		t.Fatalf("WriteFile(MEMORY.md): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agenticDir, ".claude", "settings.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("WriteFile(settings.json): %v", err)
+	}
+	if err := os.Symlink(filepath.Join(agenticDir, "MEMORY.md"), filepath.Join(homeDir, ".claude", "CLAUDE.md")); err != nil {
+		t.Fatalf("Symlink(CLAUDE.md): %v", err)
+	}
+	if err := os.Symlink(filepath.Join(agenticDir, ".claude", "settings.json"), filepath.Join(homeDir, ".claude", "settings.json")); err != nil {
+		t.Fatalf("Symlink(settings.json): %v", err)
+	}
+
+	localUserHomeDir = func() (string, error) { return homeDir, nil }
+	localOsStat = os.Stat
+
+	got := limaAdditionalMounts(&cwconfig.LocalInstance{})
+	want := []cwconfig.MountConfig{{Source: agenticDir, Target: agenticDir, Readonly: boolPtr(false)}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("limaAdditionalMounts() = %#v, want %#v", got, want)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -149,6 +150,228 @@ func defaultLimaMountType(vmType string) string {
 	return "9p"
 }
 
+type limaVMMount struct {
+	Location   string `json:"location"`
+	MountPoint string `json:"mountPoint"`
+	Writable   bool   `json:"writable"`
+}
+
+type limaContainerMount struct {
+	Source   string
+	Target   string
+	ReadOnly bool
+}
+
+func pathWithinRoot(root, candidate string) bool {
+	root = filepath.Clean(root)
+	candidate = filepath.Clean(candidate)
+	if root == candidate {
+		return true
+	}
+	rel, err := filepath.Rel(root, candidate)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)))
+}
+
+func discoverExternalSymlinkMounts(root string, readOnly bool) []cwconfig.MountConfig {
+	root = filepath.Clean(strings.TrimSpace(root))
+	if root == "" {
+		return nil
+	}
+	if _, err := localOsStat(root); err != nil {
+		return nil
+	}
+
+	candidates := map[string]struct{}{}
+	var walk func(string)
+	walk = func(dir string) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, entry := range entries {
+			path := filepath.Join(dir, entry.Name())
+			if entry.Type()&os.ModeSymlink != 0 {
+				target, err := os.Readlink(path)
+				if err != nil {
+					continue
+				}
+				if !filepath.IsAbs(target) {
+					target = filepath.Join(filepath.Dir(path), target)
+				}
+				target = filepath.Clean(target)
+				if pathWithinRoot(root, target) {
+					continue
+				}
+				info, err := localOsStat(target)
+				if err != nil {
+					continue
+				}
+				if !info.IsDir() && !info.Mode().IsRegular() {
+					continue
+				}
+				mountPath := target
+				if !info.IsDir() {
+					mountPath = filepath.Dir(target)
+				}
+				if mountPath == "/" || mountPath == "." {
+					continue
+				}
+				candidates[mountPath] = struct{}{}
+				continue
+			}
+			if entry.IsDir() {
+				walk(path)
+			}
+		}
+	}
+	walk(root)
+
+	paths := make([]string, 0, len(candidates))
+	for candidate := range candidates {
+		paths = append(paths, candidate)
+	}
+	sort.Slice(paths, func(i, j int) bool {
+		if len(paths[i]) == len(paths[j]) {
+			return paths[i] < paths[j]
+		}
+		return len(paths[i]) < len(paths[j])
+	})
+
+	collapsed := make([]string, 0, len(paths))
+	for _, candidate := range paths {
+		skip := false
+		for _, existing := range collapsed {
+			if pathWithinRoot(existing, candidate) {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			collapsed = append(collapsed, candidate)
+		}
+	}
+
+	mounts := make([]cwconfig.MountConfig, 0, len(collapsed))
+	for _, candidate := range collapsed {
+		mounts = append(mounts, cwconfig.MountConfig{
+			Source:   candidate,
+			Target:   candidate,
+			Readonly: boolPtr(readOnly),
+		})
+	}
+	return mounts
+}
+
+func limaAdditionalMounts(instance *cwconfig.LocalInstance) []cwconfig.MountConfig {
+	mounts := make([]cwconfig.MountConfig, 0)
+	if homeDir, err := localUserHomeDir(); err == nil {
+		mounts = append(mounts, discoverExternalSymlinkMounts(filepath.Join(homeDir, ".claude"), false)...)
+		mounts = append(mounts, discoverExternalSymlinkMounts(filepath.Join(homeDir, ".codex"), false)...)
+		mounts = append(mounts, discoverExternalSymlinkMounts(filepath.Join(homeDir, ".config", "gh"), true)...)
+		mounts = append(mounts, discoverExternalSymlinkMounts(filepath.Join(homeDir, ".ssh"), true)...)
+	}
+	mounts = append(mounts, instance.Mounts...)
+
+	indexByKey := map[string]int{}
+	normalized := make([]cwconfig.MountConfig, 0, len(mounts))
+	for _, mount := range mounts {
+		source := filepath.Clean(strings.TrimSpace(mount.Source))
+		target := mount.EffectiveTarget()
+		if source == "" || target == "" {
+			continue
+		}
+		normalizedMount := cwconfig.MountConfig{
+			Source:   source,
+			Target:   target,
+			Readonly: boolPtr(mount.IsReadOnly()),
+		}
+		key := source + "\x00" + target
+		if idx, ok := indexByKey[key]; ok {
+			normalized[idx] = normalizedMount
+			continue
+		}
+		indexByKey[key] = len(normalized)
+		normalized = append(normalized, normalizedMount)
+	}
+	sort.Slice(normalized, func(i, j int) bool {
+		left := normalized[i].EffectiveTarget()
+		right := normalized[j].EffectiveTarget()
+		if left == right {
+			return normalized[i].Source < normalized[j].Source
+		}
+		return left < right
+	})
+	return normalized
+}
+
+func limaVMMounts(instance *cwconfig.LocalInstance) []limaVMMount {
+	homeDir, _ := localUserHomeDir()
+	ghConfigDir := filepath.Join(homeDir, ".config", "gh")
+	sshDir := filepath.Join(homeDir, ".ssh")
+	mounts := []limaVMMount{
+		{Location: instance.RepoPath, MountPoint: "/workspace", Writable: true},
+		{Location: ghConfigDir, MountPoint: "/home/{{.User}}.guest/.config/gh", Writable: false},
+		{Location: sshDir, MountPoint: "/mnt/host-ssh", Writable: false},
+	}
+
+	claudeDir := filepath.Join(homeDir, ".claude")
+	if _, err := localOsStat(claudeDir); err == nil {
+		mounts = append(mounts, limaVMMount{Location: claudeDir, MountPoint: "/home/{{.User}}.guest/.claude", Writable: true})
+	}
+	codexDir := filepath.Join(homeDir, ".codex")
+	if _, err := localOsStat(codexDir); err == nil {
+		mounts = append(mounts, limaVMMount{Location: codexDir, MountPoint: "/home/{{.User}}.guest/.codex", Writable: true})
+	}
+	for _, mount := range limaAdditionalMounts(instance) {
+		mounts = append(mounts, limaVMMount{
+			Location:   mount.Source,
+			MountPoint: mount.EffectiveTarget(),
+			Writable:   !mount.IsReadOnly(),
+		})
+	}
+	return mounts
+}
+
+func limaContainerMounts(instance *cwconfig.LocalInstance) []limaContainerMount {
+	vmUser := os.Getenv("USER")
+	vmHome := filepath.Join("/home", vmUser+".guest")
+	mounts := []limaContainerMount{
+		{Source: filepath.Join(vmHome, ".config", "gh"), Target: "/home/codewire/.config/gh", ReadOnly: true},
+		{Source: "/mnt/host-ssh", Target: "/home/codewire/.ssh", ReadOnly: true},
+		{Source: filepath.Join(vmHome, ".codex"), Target: "/home/codewire/.codex", ReadOnly: false},
+	}
+	if homeDir, err := localUserHomeDir(); err == nil {
+		hostClaude := filepath.Join(homeDir, ".claude")
+		if _, statErr := localOsStat(hostClaude); statErr == nil {
+			mounts = append([]limaContainerMount{{Source: filepath.Join(vmHome, ".claude"), Target: "/home/codewire/.claude", ReadOnly: false}}, mounts...)
+		}
+	}
+	for _, mount := range limaAdditionalMounts(instance) {
+		mounts = append(mounts, limaContainerMount{
+			Source:   mount.Source,
+			Target:   mount.EffectiveTarget(),
+			ReadOnly: mount.IsReadOnly(),
+		})
+	}
+	return mounts
+}
+
+func limaContainerMountArgs(instance *cwconfig.LocalInstance) []string {
+	mounts := limaContainerMounts(instance)
+	args := make([]string, 0, len(mounts)*2)
+	for _, mount := range mounts {
+		spec := mount.Source + ":" + mount.Target
+		if mount.ReadOnly {
+			spec += ":ro"
+		}
+		args = append(args, "-v", spec)
+	}
+	return args
+}
+
 func limaCreateCommandArgs(instance *cwconfig.LocalInstance) []string {
 	vmType := strings.TrimSpace(instance.LimaVMType)
 	if vmType == "" {
@@ -159,33 +382,8 @@ func limaCreateCommandArgs(instance *cwconfig.LocalInstance) []string {
 		mountType = defaultLimaMountType(vmType)
 	}
 
-	homeDir, _ := localUserHomeDir()
-	ghConfigDir := filepath.Join(homeDir, ".config", "gh")
-	sshDir := filepath.Join(homeDir, ".ssh")
-
-	mounts := fmt.Sprintf(
-		`{"location":%s,"mountPoint":"/workspace","writable":true},{"location":%s,"mountPoint":"/home/{{.User}}.guest/.config/gh","writable":false},{"location":%s,"mountPoint":"/mnt/host-ssh","writable":false}`,
-		strconv.Quote(instance.RepoPath),
-		strconv.Quote(ghConfigDir),
-		strconv.Quote(sshDir),
-	)
-
-	claudeDir := filepath.Join(homeDir, ".claude")
-	if _, err := localOsStat(claudeDir); err == nil {
-		mounts += fmt.Sprintf(
-			`,{"location":%s,"mountPoint":"/home/{{.User}}.guest/.claude","writable":true}`,
-			strconv.Quote(claudeDir),
-		)
-	}
-	codexDir := filepath.Join(homeDir, ".codex")
-	if _, err := localOsStat(codexDir); err == nil {
-		mounts += fmt.Sprintf(
-			`,{"location":%s,"mountPoint":"/home/{{.User}}.guest/.codex","writable":true}`,
-			strconv.Quote(codexDir),
-		)
-	}
-
-	mountSet := ".mounts=[" + mounts + "]"
+	mountBytes, _ := json.Marshal(limaVMMounts(instance))
+	mountSet := ".mounts=" + string(mountBytes)
 
 	args := []string{
 		"start",
@@ -307,20 +505,7 @@ func createLocalLimaInstance(instance *cwconfig.LocalInstance) error {
 			"-v", limaDockerSockPath + ":" + limaDockerSockPath,
 			"-v", "/workspace:/workspace",
 		}
-		vmUser := os.Getenv("USER")
-		vmHome := filepath.Join("/home", vmUser+".guest")
-		claudeDir := filepath.Join(vmHome, ".claude")
-		if homeDir, err := localUserHomeDir(); err == nil {
-			hostClaude := filepath.Join(homeDir, ".claude")
-			if _, statErr := localOsStat(hostClaude); statErr == nil {
-				dockerArgs = append(dockerArgs, "-v", claudeDir+":/home/codewire/.claude")
-			}
-		}
-		dockerArgs = append(dockerArgs,
-			"-v", filepath.Join(vmHome, ".config", "gh")+":/home/codewire/.config/gh:ro",
-			"-v", "/mnt/host-ssh:/home/codewire/.ssh:ro",
-			"-v", filepath.Join(vmHome, ".codex")+":/home/codewire/.codex",
-		)
+		dockerArgs = append(dockerArgs, limaContainerMountArgs(instance)...)
 		dockerArgs = append(dockerArgs,
 			"--workdir", "/workspace",
 			image,

@@ -517,6 +517,42 @@ func localPortSummary(instance *cwconfig.LocalInstance) string {
 	return strings.Join(parts, ", ")
 }
 
+func resolveLocalMounts(projectDir string, mounts []cwconfig.MountConfig) ([]cwconfig.MountConfig, error) {
+	if len(mounts) == 0 {
+		return nil, nil
+	}
+
+	resolved := make([]cwconfig.MountConfig, 0, len(mounts))
+	for _, mount := range mounts {
+		source := strings.TrimSpace(mount.Source)
+		if source == "" {
+			return nil, fmt.Errorf("mount source is required")
+		}
+		if !filepath.IsAbs(source) {
+			source = filepath.Join(projectDir, source)
+		}
+		source = filepath.Clean(source)
+		if _, err := os.Stat(source); err != nil {
+			return nil, fmt.Errorf("read mount source %s: %w", source, err)
+		}
+
+		target := strings.TrimSpace(mount.Target)
+		if target == "" {
+			target = source
+		}
+		if !filepath.IsAbs(target) {
+			return nil, fmt.Errorf("mount target must be absolute: %s", target)
+		}
+
+		resolved = append(resolved, cwconfig.MountConfig{
+			Source:   source,
+			Target:   filepath.Clean(target),
+			Readonly: mount.Readonly,
+		})
+	}
+	return resolved, nil
+}
+
 func prepareLocalInstance(opts localCreateOptions) (cwconfig.LocalInstance, error) {
 	projectDir, err := filepath.Abs(opts.Path)
 	if err != nil {
@@ -601,6 +637,11 @@ func prepareLocalInstance(opts localCreateOptions) (cwconfig.LocalInstance, erro
 		return cwconfig.LocalInstance{}, fmt.Errorf("local create requires an image; set image in codewire.yaml or pass --image")
 	}
 
+	resolvedMounts, err := resolveLocalMounts(projectDir, cfg.Mounts)
+	if err != nil {
+		return cwconfig.LocalInstance{}, err
+	}
+
 	name := strings.TrimSpace(opts.Name)
 	if name == "" {
 		name = sanitizeLocalName(filepath.Base(projectDir))
@@ -622,6 +663,7 @@ func prepareLocalInstance(opts localCreateOptions) (cwconfig.LocalInstance, erro
 		Secrets:            localSecretProject(cfg),
 		Env:                cfg.Env,
 		Ports:              cfg.Ports,
+		Mounts:             resolvedMounts,
 		CPU:                cfg.CPU,
 		Memory:             cfg.Memory,
 		Disk:               cfg.Disk,

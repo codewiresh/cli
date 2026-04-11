@@ -19,6 +19,7 @@ type CodewireConfig struct {
 	Secrets            *CodewireSecretsConfig `yaml:"secrets,omitempty"`
 	Env                map[string]string      `yaml:"env,omitempty"`
 	Ports              []PortConfig           `yaml:"ports,omitempty"`
+	Mounts             []MountConfig          `yaml:"mounts,omitempty"`
 	CPU                int                    `yaml:"cpu,omitempty"`
 	Memory             int                    `yaml:"memory,omitempty"`
 	Disk               int                    `yaml:"disk,omitempty"`
@@ -27,6 +28,63 @@ type CodewireConfig struct {
 	InstallAgents      *bool                  `yaml:"install_agents,omitempty"`
 	IncludeOrgSecrets  *bool                  `yaml:"include_org_secrets,omitempty"`
 	IncludeUserSecrets *bool                  `yaml:"include_user_secrets,omitempty"`
+}
+
+type MountConfig struct {
+	Source   string `yaml:"source,omitempty" toml:"source,omitempty"`
+	Target   string `yaml:"target,omitempty" toml:"target,omitempty"`
+	Readonly *bool  `yaml:"readonly,omitempty" toml:"readonly,omitempty"`
+}
+
+func (m *MountConfig) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		m.Source = strings.TrimSpace(value.Value)
+		m.Target = ""
+		m.Readonly = nil
+		if m.Source == "" {
+			return fmt.Errorf("parse mount: empty value")
+		}
+		return nil
+	case yaml.MappingNode:
+		type rawMountConfig MountConfig
+		var raw rawMountConfig
+		if err := value.Decode(&raw); err != nil {
+			return err
+		}
+		*m = MountConfig(raw)
+		if strings.TrimSpace(m.Source) == "" {
+			return fmt.Errorf("parse mount: source is required")
+		}
+		return nil
+	default:
+		return fmt.Errorf("parse mount: expected string or mapping")
+	}
+}
+
+func (m MountConfig) MarshalYAML() (any, error) {
+	if strings.TrimSpace(m.Source) == "" {
+		return nil, fmt.Errorf("marshal mount: source is required")
+	}
+	if strings.TrimSpace(m.Target) == "" && m.Readonly == nil {
+		return m.Source, nil
+	}
+	type rawMountConfig MountConfig
+	return rawMountConfig(m), nil
+}
+
+func (m MountConfig) EffectiveTarget() string {
+	if strings.TrimSpace(m.Target) != "" {
+		return filepath.Clean(strings.TrimSpace(m.Target))
+	}
+	return filepath.Clean(strings.TrimSpace(m.Source))
+}
+
+func (m MountConfig) IsReadOnly() bool {
+	if m.Readonly == nil {
+		return true
+	}
+	return *m.Readonly
 }
 
 // PortConfig represents a port in codewire.yaml.

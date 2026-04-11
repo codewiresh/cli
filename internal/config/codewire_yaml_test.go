@@ -8,6 +8,10 @@ import (
 	"testing"
 )
 
+func boolPtr(v bool) *bool {
+	return &v
+}
+
 func TestLoadCodewireConfigParsesComposeStylePorts(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "codewire.yaml")
@@ -99,5 +103,66 @@ func TestLoadCodewireConfigRejectsPartialPortMappings(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "host_port and guest_port must both be greater than zero") {
 		t.Fatalf("error = %q, want partial port mapping error", err)
+	}
+}
+
+func TestLoadCodewireConfigParsesMounts(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "codewire.yaml")
+	data := `mounts:
+  - ../agentic
+  - source: /srv/shared
+    target: /mnt/shared
+    readonly: false
+`
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := LoadCodewireConfig(path)
+	if err != nil {
+		t.Fatalf("LoadCodewireConfig() error = %v", err)
+	}
+	want := []MountConfig{
+		{Source: "../agentic"},
+		{Source: "/srv/shared", Target: "/mnt/shared", Readonly: boolPtr(false)},
+	}
+	if !reflect.DeepEqual(cfg.Mounts, want) {
+		t.Fatalf("cfg.Mounts = %#v, want %#v", cfg.Mounts, want)
+	}
+}
+
+func TestWriteCodewireConfigUsesShortMountSyntaxWhenPossible(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "codewire.yaml")
+	cfg := &CodewireConfig{
+		Mounts: []MountConfig{
+			{Source: "/srv/agentic"},
+			{Source: "/srv/shared", Target: "/mnt/shared", Readonly: boolPtr(false)},
+		},
+	}
+
+	if err := WriteCodewireConfig(path, cfg); err != nil {
+		t.Fatalf("WriteCodewireConfig() error = %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	got := string(data)
+	if !strings.Contains(got, "- /srv/agentic\n") {
+		t.Fatalf("expected scalar mount syntax, got %q", got)
+	}
+	if !strings.Contains(got, "source: /srv/shared") || !strings.Contains(got, "target: /mnt/shared") || !strings.Contains(got, "readonly: false") {
+		t.Fatalf("expected structured mount syntax, got %q", got)
+	}
+
+	reloaded, err := LoadCodewireConfig(path)
+	if err != nil {
+		t.Fatalf("LoadCodewireConfig() reload error = %v", err)
+	}
+	if !reflect.DeepEqual(reloaded.Mounts, cfg.Mounts) {
+		t.Fatalf("reloaded.Mounts = %#v, want %#v", reloaded.Mounts, cfg.Mounts)
 	}
 }

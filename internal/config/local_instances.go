@@ -27,6 +27,7 @@ type LocalInstance struct {
 	Secrets            string            `toml:"secrets,omitempty"`
 	Env                map[string]string `toml:"env,omitempty"`
 	Ports              []PortConfig      `toml:"ports,omitempty"`
+	Mounts             []MountConfig     `toml:"mounts,omitempty"`
 	CPU                int               `toml:"cpu,omitempty"`
 	Memory             int               `toml:"memory,omitempty"`
 	Disk               int               `toml:"disk,omitempty"`
