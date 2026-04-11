@@ -22,6 +22,7 @@ import (
 	"github.com/creack/pty"
 
 	"github.com/codewiresh/codewire/internal/protocol"
+	termutil "github.com/codewiresh/codewire/internal/terminal"
 )
 
 // namePattern validates session names: alphanumeric + hyphens, 1-32 chars.
@@ -1207,7 +1208,7 @@ func (m *SessionManager) GetStatus(id uint32) (protocol.SessionInfo, uint64, err
 			start = 0
 		}
 		tail := lines[start:]
-		joined := strings.Join(tail, "\n")
+		joined := termutil.StripANSI(strings.Join(tail, "\n"))
 		if joined != "" {
 			info.LastOutputSnippet = &joined
 		}
@@ -1424,8 +1425,35 @@ func buildEnv(overrides []string) []string {
 			filtered = append(filtered, e)
 		}
 	}
+	filtered = applyDefaultTerminalEnv(filtered)
 	filtered = applyEnvOverrides(filtered, loadCodewireEnvOverrides())
 	return applyEnvOverrides(filtered, overrides)
+}
+
+func applyDefaultTerminalEnv(base []string) []string {
+	overrides := make([]string, 0, 2)
+
+	term, ok := envValue(base, "TERM")
+	if !ok || strings.TrimSpace(term) == "" || term == "dumb" {
+		overrides = append(overrides, "TERM=xterm-256color")
+	}
+
+	colorTerm, ok := envValue(base, "COLORTERM")
+	if !ok || strings.TrimSpace(colorTerm) == "" {
+		overrides = append(overrides, "COLORTERM=truecolor")
+	}
+
+	return applyEnvOverrides(base, overrides)
+}
+
+func envValue(env []string, key string) (string, bool) {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return entry[len(prefix):], true
+		}
+	}
+	return "", false
 }
 
 func loadCodewireEnvOverrides() []string {
@@ -1485,9 +1513,6 @@ func applyEnvOverrides(base, overrides []string) []string {
 	return result
 }
 
-// ansiRegex matches ANSI escape sequences for stripping from output.
-var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b\[[0-9;]*m`)
-
 // captureResult reads the tail of a log file, strips ANSI codes, and returns
 // the last maxLines lines. It reads from the end of the file to avoid loading
 // the entire file into memory.
@@ -1516,7 +1541,7 @@ func captureResult(logPath string, maxLines int) *string {
 	}
 
 	// Strip ANSI escape codes.
-	clean := ansiRegex.ReplaceAllString(string(buf), "")
+	clean := termutil.StripANSI(string(buf))
 
 	// Take last N lines.
 	lines := strings.Split(clean, "\n")

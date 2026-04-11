@@ -39,6 +39,32 @@ const (
 	attachBarPollInterval    = 250 * time.Millisecond
 )
 
+var forwardedTerminalEnvKeys = []string{
+	"TERM",
+	"COLORTERM",
+	"TERM_PROGRAM",
+	"TERM_PROGRAM_VERSION",
+	"LC_TERMINAL",
+	"LC_TERMINAL_VERSION",
+	"KITTY_WINDOW_ID",
+	"KITTY_PUBLIC_KEY",
+	"KITTY_INSTALLATION_DIR",
+	"WEZTERM_PANE",
+	"WT_SESSION",
+	"WT_PROFILE_ID",
+	"VTE_VERSION",
+}
+
+func launchEnvWithTerminalCapabilities(env []string) []string {
+	out := make([]string, 0, len(forwardedTerminalEnvKeys)+len(env))
+	for _, key := range forwardedTerminalEnvKeys {
+		if value, ok := os.LookupEnv(key); ok && strings.TrimSpace(value) != "" {
+			out = append(out, key+"="+value)
+		}
+	}
+	return append(out, env...)
+}
+
 // ResolveSessionArg resolves a session argument that can be either a numeric ID
 // or a session name (optionally prefixed with @). It queries the node to
 // resolve names to IDs.
@@ -206,7 +232,7 @@ func Run(target *Target, command []string, workingDir string, name string, env [
 		Command:    command,
 		WorkingDir: workingDir,
 		Name:       name,
-		Env:        env,
+		Env:        launchEnvWithTerminalCapabilities(env),
 		StdinData:  stdinData,
 		Tags:       tags,
 	})

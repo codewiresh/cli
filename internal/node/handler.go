@@ -501,17 +501,19 @@ func replayHistory(writer connection.FrameWriter, logPath string, historyLines *
 		return nil
 	}
 
+	data := string(content)
 	if historyLines != nil {
-		lines := strings.Split(string(content), "\n")
+		lines := strings.Split(data, "\n")
 		n := int(*historyLines)
 		if n < len(lines) {
 			lines = lines[len(lines)-n:]
 		}
-		content = []byte(strings.Join(lines, "\n"))
+		data = strings.Join(lines, "\n")
 	}
+	data = sanitizeReplayOutput(data)
 
-	if len(content) > 0 {
-		return writer.SendData(content)
+	if len(data) > 0 {
+		return writer.SendData([]byte(data))
 	}
 	return nil
 }
@@ -549,17 +551,18 @@ func handleWatchSession(
 		if logErr == nil {
 			content, readErr := os.ReadFile(logPath)
 			if readErr == nil && len(content) > 0 {
-				data := content
+				data := string(content)
 				if historyLines != nil {
-					lines := strings.Split(string(data), "\n")
+					lines := strings.Split(data, "\n")
 					n := int(*historyLines)
 					if n < len(lines) {
 						lines = lines[len(lines)-n:]
 					}
-					data = []byte(strings.Join(lines, "\n"))
+					data = strings.Join(lines, "\n")
 				}
+				data = sanitizeReplayOutput(data)
 				if len(data) > 0 {
-					output := string(data)
+					output := data
 					f := false
 					_ = writer.SendResponse(&protocol.Response{
 						Type:   "WatchUpdate",

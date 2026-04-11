@@ -47,6 +47,52 @@ func TestBuildEnvAppliesOverrides(t *testing.T) {
 	}
 }
 
+func TestBuildEnvDefaultsTerminalCapabilitiesWhenMissing(t *testing.T) {
+	t.Setenv("TERM", "")
+	t.Setenv("COLORTERM", "")
+
+	env := buildEnv(nil)
+
+	term, ok := envValue(env, "TERM")
+	if !ok || term != "xterm-256color" {
+		t.Fatalf("TERM = %q, %v; want xterm-256color", term, ok)
+	}
+
+	colorTerm, ok := envValue(env, "COLORTERM")
+	if !ok || colorTerm != "truecolor" {
+		t.Fatalf("COLORTERM = %q, %v; want truecolor", colorTerm, ok)
+	}
+}
+
+func TestBuildEnvReplacesDumbTERM(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	t.Setenv("COLORTERM", "")
+
+	env := buildEnv(nil)
+
+	term, ok := envValue(env, "TERM")
+	if !ok || term != "xterm-256color" {
+		t.Fatalf("TERM = %q, %v; want xterm-256color", term, ok)
+	}
+}
+
+func TestBuildEnvPreservesExplicitTerminalCapabilities(t *testing.T) {
+	t.Setenv("TERM", "screen-256color")
+	t.Setenv("COLORTERM", "24bit")
+
+	env := buildEnv(nil)
+
+	term, ok := envValue(env, "TERM")
+	if !ok || term != "screen-256color" {
+		t.Fatalf("TERM = %q, %v; want screen-256color", term, ok)
+	}
+
+	colorTerm, ok := envValue(env, "COLORTERM")
+	if !ok || colorTerm != "24bit" {
+		t.Fatalf("COLORTERM = %q, %v; want 24bit", colorTerm, ok)
+	}
+}
+
 func TestBuildEnvStripsClaudeCodeEntrypoint(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
 	env := buildEnv(nil)
@@ -91,6 +137,22 @@ func TestBuildEnvLoadsCodewireWorkspaceEnv(t *testing.T) {
 	}
 	if !foundClaude || !foundAnthropic {
 		t.Fatalf("expected codewire env vars to be loaded, got %v", env)
+	}
+}
+
+func TestCaptureResultStripsOSCQueries(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "output.log")
+	content := "prefix\x1b]11;?\x1b\\\x1b[6n\nLogged in using ChatGPT\n"
+	if err := os.WriteFile(logPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	got := captureResult(logPath, 10)
+	if got == nil {
+		t.Fatal("captureResult returned nil")
+	}
+	want := "prefix\nLogged in using ChatGPT"
+	if *got != want {
+		t.Fatalf("captureResult = %q, want %q", *got, want)
 	}
 }
 

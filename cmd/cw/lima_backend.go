@@ -224,7 +224,11 @@ func limaCreateCommandArgs(instance *cwconfig.LocalInstance) []string {
 	return append(args, "template:docker")
 }
 
-const limaContainerName = "cw-workspace"
+const (
+	limaContainerName   = "cw-workspace"
+	limaDockerSockPath  = "/var/run/docker.sock"
+	limaDockerHostValue = "unix:///var/run/docker.sock"
+)
 
 func createLocalLimaInstance(instance *cwconfig.LocalInstance) error {
 	if _, err := localLookPath("limactl"); err != nil {
@@ -237,18 +241,11 @@ func createLocalLimaInstance(instance *cwconfig.LocalInstance) error {
 	instance.LimaVMType = defaultLimaVMType()
 	instance.LimaMountType = defaultLimaMountType(instance.LimaVMType)
 
-	// Boot the VM with Docker template
-	args := limaCreateCommandArgs(instance)
-	fmt.Fprintf(os.Stderr, "  Creating Lima VM %q (this may download a VM image on first run)...\n", limaInstanceName(instance))
-	if err := localRunCommandStream("limactl", args...); err != nil {
-		// Clean up zombie VM on boot failure
-		_, _ = localRunCommand("limactl", "delete", "--force", limaInstanceName(instance))
-		return fmt.Errorf("limactl %s: %v", strings.Join(args, " "), err)
-	}
-
 	name := limaInstanceName(instance)
-
-	cleanup := true
+	cleanup, err := ensureLimaVMForCreate(instance)
+	if err != nil {
+		return err
+	}
 	defer func() {
 		if cleanup {
 			_, _ = localRunCommand("limactl", "delete", "--force", name)
@@ -288,34 +285,55 @@ func createLocalLimaInstance(instance *cwconfig.LocalInstance) error {
 		return fmt.Errorf("docker pull %s: %v", image, err)
 	}
 
-	// Run the container with the workspace mounted
+	status, err := limaWorkspaceContainerStatus(instance)
+	if err != nil {
+		return err
+	}
+	dockerSockGID, err := limaDockerSocketGID(instance)
+	if err != nil {
+		return err
+	}
 	fmt.Fprintf(os.Stderr, "  Starting workspace container...\n")
-	dockerArgs := []string{
-		"sudo", "docker", "run", "-d",
-		"--name", limaContainerName,
-		"-v", "/workspace:/workspace",
-	}
-	vmUser := os.Getenv("USER")
-	vmHome := filepath.Join("/home", vmUser+".guest")
-	claudeDir := filepath.Join(vmHome, ".claude")
-	if homeDir, err := localUserHomeDir(); err == nil {
-		hostClaude := filepath.Join(homeDir, ".claude")
-		if _, statErr := localOsStat(hostClaude); statErr == nil {
-			dockerArgs = append(dockerArgs, "-v", claudeDir+":/home/codewire/.claude")
+	switch status {
+	case "missing":
+		dockerArgs := []string{
+			"sudo", "docker", "run", "-d",
+			"--name", limaContainerName,
+			"--network", "host",
+			"--group-add", dockerSockGID,
+			"-e", "DOCKER_HOST=" + limaDockerHostValue,
+			"-v", limaDockerSockPath + ":" + limaDockerSockPath,
+			"-v", "/workspace:/workspace",
 		}
-	}
-	dockerArgs = append(dockerArgs,
-		"-v", filepath.Join(vmHome, ".config", "gh")+":/home/codewire/.config/gh:ro",
-		"-v", "/mnt/host-ssh:/home/codewire/.ssh:ro",
-		"-v", filepath.Join(vmHome, ".codex")+":/home/codewire/.codex",
-	)
-	dockerArgs = append(dockerArgs,
-		"--workdir", "/workspace",
-		image,
-		"sleep", "infinity",
-	)
-	if err := localRunCommandStream("limactl", append([]string{"shell", "--workdir", "/", name}, dockerArgs...)...); err != nil {
-		return fmt.Errorf("docker run: %v", err)
+		vmUser := os.Getenv("USER")
+		vmHome := filepath.Join("/home", vmUser+".guest")
+		claudeDir := filepath.Join(vmHome, ".claude")
+		if homeDir, err := localUserHomeDir(); err == nil {
+			hostClaude := filepath.Join(homeDir, ".claude")
+			if _, statErr := localOsStat(hostClaude); statErr == nil {
+				dockerArgs = append(dockerArgs, "-v", claudeDir+":/home/codewire/.claude")
+			}
+		}
+		dockerArgs = append(dockerArgs,
+			"-v", filepath.Join(vmHome, ".config", "gh")+":/home/codewire/.config/gh:ro",
+			"-v", "/mnt/host-ssh:/home/codewire/.ssh:ro",
+			"-v", filepath.Join(vmHome, ".codex")+":/home/codewire/.codex",
+		)
+		dockerArgs = append(dockerArgs,
+			"--workdir", "/workspace",
+			image,
+			"sleep", "infinity",
+		)
+		if err := localRunCommandStream("limactl", append([]string{"shell", "--workdir", "/", name}, dockerArgs...)...); err != nil {
+			return fmt.Errorf("docker run: %v", err)
+		}
+	case "running":
+		// Container already exists and is running; adopt it.
+	default:
+		out, err := localRunCommand("limactl", "shell", "--workdir", "/", name, "sudo", "docker", "start", limaContainerName)
+		if err != nil {
+			return fmt.Errorf("docker start %s: %v\n%s", limaContainerName, err, strings.TrimSpace(string(out)))
+		}
 	}
 
 	// Copy ~/.claude.json into the container (Lima mounts only support directories).
@@ -333,6 +351,64 @@ func createLocalLimaInstance(instance *cwconfig.LocalInstance) error {
 
 	cleanup = false
 	return nil
+}
+
+func ensureLimaVMForCreate(instance *cwconfig.LocalInstance) (bool, error) {
+	name := limaInstanceName(instance)
+	status, err := limaInstanceStatus(instance)
+	if err != nil {
+		return false, err
+	}
+	if status == "missing" {
+		args := limaCreateCommandArgs(instance)
+		fmt.Fprintf(os.Stderr, "  Creating Lima VM %q (this may download a VM image on first run)...\n", name)
+		if err := localRunCommandStream("limactl", args...); err != nil {
+			// Clean up zombie VM on boot failure.
+			_, _ = localRunCommand("limactl", "delete", "--force", name)
+			return false, fmt.Errorf("limactl %s: %v", strings.Join(args, " "), err)
+		}
+		return true, nil
+	}
+
+	fmt.Fprintf(os.Stderr, "  Reusing existing Lima VM %q...\n", name)
+	if status != "running" {
+		if err := localRunCommandStream("limactl", "start", "--tty=false", name); err != nil {
+			return false, fmt.Errorf("limactl start %s: %v", name, err)
+		}
+	}
+	return false, nil
+}
+
+func limaDockerSocketGID(instance *cwconfig.LocalInstance) (string, error) {
+	name := limaInstanceName(instance)
+	out, err := localRunCommand("limactl", "shell", "--workdir", "/", name,
+		"sudo", "stat", "-c", "%g", limaDockerSockPath)
+	if err != nil {
+		return "", fmt.Errorf("stat docker socket gid: %v\n%s", err, strings.TrimSpace(string(out)))
+	}
+	gid := strings.TrimSpace(string(out))
+	if gid == "" {
+		return "", fmt.Errorf("stat docker socket gid: empty output")
+	}
+	return gid, nil
+}
+
+func limaWorkspaceContainerStatus(instance *cwconfig.LocalInstance) (string, error) {
+	name := limaInstanceName(instance)
+	out, err := localRunCommand("limactl", "shell", "--workdir", "/", name,
+		"sudo", "docker", "inspect", "--format", "{{.State.Status}}", limaContainerName)
+	if err != nil {
+		lower := strings.ToLower(string(out))
+		if strings.Contains(lower, "no such object") || strings.Contains(lower, "no such container") || strings.Contains(lower, "not found") {
+			return "missing", nil
+		}
+		return "", fmt.Errorf("docker inspect %s: %v\n%s", limaContainerName, err, strings.TrimSpace(string(out)))
+	}
+	status := strings.ToLower(strings.TrimSpace(string(out)))
+	if status == "" {
+		return "unknown", nil
+	}
+	return status, nil
 }
 
 func startLocalLimaInstance(instance *cwconfig.LocalInstance) error {
@@ -398,13 +474,13 @@ func limaInstanceStatus(instance *cwconfig.LocalInstance) (string, error) {
 		}
 	}
 	name := limaInstanceName(instance)
-	out, err := localRunCommand("limactl", "list", "--format", "json", name)
+	out, err := localRunCommand("limactl", "list", "--format", "json")
 	if err != nil {
 		lower := strings.ToLower(string(out))
-		if strings.Contains(lower, "not found") || strings.Contains(lower, "no such") {
+		if strings.Contains(lower, "not found") || strings.Contains(lower, "no such") || strings.Contains(lower, "no instance matching") || strings.Contains(lower, "unmatched instances") {
 			return "missing", nil
 		}
-		return "", fmt.Errorf("limactl list --format json %s: %v\n%s", name, err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("limactl list --format json: %v\n%s", err, strings.TrimSpace(string(out)))
 	}
 
 	data := bytes.TrimSpace(out)
@@ -413,15 +489,21 @@ func limaInstanceStatus(instance *cwconfig.LocalInstance) (string, error) {
 	}
 
 	var entries []limaListEntry
-	if data[0] == '{' {
-		var entry limaListEntry
-		if err := json.Unmarshal(data, &entry); err != nil {
-			return "", fmt.Errorf("parse limactl list output: %w", err)
-		}
-		entries = []limaListEntry{entry}
-	} else {
+	if data[0] == '[' {
 		if err := json.Unmarshal(data, &entries); err != nil {
 			return "", fmt.Errorf("parse limactl list output: %w", err)
+		}
+	} else {
+		for _, line := range bytes.Split(data, []byte{'\n'}) {
+			line = bytes.TrimSpace(line)
+			if len(line) == 0 {
+				continue
+			}
+			var entry limaListEntry
+			if err := json.Unmarshal(line, &entry); err != nil {
+				return "", fmt.Errorf("parse limactl list output: %w", err)
+			}
+			entries = append(entries, entry)
 		}
 	}
 

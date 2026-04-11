@@ -329,3 +329,58 @@ func TestJoinNetworkPersistsEnrollment(t *testing.T) {
 		t.Fatalf("RelayNodeToken = %#v, want nil", cfg.RelayNodeToken)
 	}
 }
+
+func TestLaunchEnvWithTerminalCapabilitiesForwardsCurrentTerminal(t *testing.T) {
+	for _, key := range forwardedTerminalEnvKeys {
+		t.Setenv(key, "")
+	}
+	t.Setenv("TERM", "xterm-kitty")
+	t.Setenv("COLORTERM", "truecolor")
+	t.Setenv("TERM_PROGRAM", "WarpTerminal")
+	t.Setenv("KITTY_WINDOW_ID", "9")
+
+	env := launchEnvWithTerminalCapabilities(nil)
+	want := map[string]bool{
+		"TERM=xterm-kitty":          true,
+		"COLORTERM=truecolor":       true,
+		"TERM_PROGRAM=WarpTerminal": true,
+		"KITTY_WINDOW_ID=9":         true,
+	}
+	if len(env) != len(want) {
+		t.Fatalf("len(env) = %d, want %d: %v", len(env), len(want), env)
+	}
+	for _, entry := range env {
+		if !want[entry] {
+			t.Fatalf("unexpected forwarded env %q in %v", entry, env)
+		}
+		delete(want, entry)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing forwarded env entries: %v", want)
+	}
+}
+
+func TestLaunchEnvWithTerminalCapabilitiesAppendsExplicitOverrides(t *testing.T) {
+	for _, key := range forwardedTerminalEnvKeys {
+		t.Setenv(key, "")
+	}
+	t.Setenv("TERM", "xterm-kitty")
+	t.Setenv("COLORTERM", "truecolor")
+
+	env := launchEnvWithTerminalCapabilities([]string{"TERM=screen-256color", "COLORTERM=24bit", "FOO=bar"})
+	want := []string{
+		"TERM=xterm-kitty",
+		"COLORTERM=truecolor",
+		"TERM=screen-256color",
+		"COLORTERM=24bit",
+		"FOO=bar",
+	}
+	if len(env) != len(want) {
+		t.Fatalf("len(env) = %d, want %d: %v", len(env), len(want), env)
+	}
+	for i := range want {
+		if env[i] != want[i] {
+			t.Fatalf("env[%d] = %q, want %q; full=%v", i, env[i], want[i], env)
+		}
+	}
+}

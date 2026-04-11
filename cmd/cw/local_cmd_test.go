@@ -149,8 +149,10 @@ func TestCreateLocalIncusInstanceInvokesExpectedCommands(t *testing.T) {
 		{"incus", "config", "device", "set", "cw-repo", "root", "size", "20GiB"},
 		{"incus", "config", "device", "add", "cw-repo", "workspace", "disk", "source=/tmp/repo", "path=/workspace"},
 		{"incus", "config", "device", "add", "cw-repo", "claude-config", "disk", "source=/home/testuser/.claude", "path=/home/codewire/.claude"},
+		{"incus", "config", "device", "add", "cw-repo", "claude-json", "disk", "source=/home/testuser/.claude.json", "path=/home/codewire/.claude.json"},
 		{"incus", "config", "device", "add", "cw-repo", "gh-config", "disk", "source=/home/testuser/.config/gh", "path=/home/codewire/.config/gh", "readonly=true"},
 		{"incus", "config", "device", "add", "cw-repo", "ssh-config", "disk", "source=/home/testuser/.ssh", "path=/home/codewire/.ssh", "readonly=true"},
+		{"incus", "config", "device", "add", "cw-repo", "codex-config", "disk", "source=/home/testuser/.codex", "path=/home/codewire/.codex"},
 		{"incus", "start", "cw-repo"},
 	}
 	if !reflect.DeepEqual(calls, want) {
@@ -348,7 +350,7 @@ func TestCreateLocalDockerInstanceInvokesExpectedCommands(t *testing.T) {
 	}
 
 	want := [][]string{
-		{"docker", "create", "--name", "cw-repo", "--hostname", "cw-repo", "--workdir", "/workspace", "--volume", "/tmp/repo:/workspace", "--volume", "/home/testuser/.claude:/home/codewire/.claude", "--volume", "/home/testuser/.config/gh:/home/codewire/.config/gh:ro", "--volume", "/home/testuser/.ssh:/home/codewire/.ssh:ro", "--cpus", "1.500", "--memory", "4096m", "--env", "A=1", "--env", "B=2", "ghcr.io/codewiresh/full:latest", "/bin/sh", "-lc", "trap 'exit 0' TERM INT; while true; do sleep 3600; done"},
+		{"docker", "create", "--name", "cw-repo", "--hostname", "cw-repo", "--workdir", "/workspace", "--volume", "/tmp/repo:/workspace", "--volume", "/home/testuser/.claude:/home/codewire/.claude", "--volume", "/home/testuser/.claude.json:/home/codewire/.claude.json", "--volume", "/home/testuser/.config/gh:/home/codewire/.config/gh:ro", "--volume", "/home/testuser/.ssh:/home/codewire/.ssh:ro", "--volume", "/home/testuser/.codex:/home/codewire/.codex", "--cpus", "1.500", "--memory", "4096m", "--env", "A=1", "--env", "B=2", "ghcr.io/codewiresh/full:latest", "/bin/sh", "-lc", "trap 'exit 0' TERM INT; while true; do sleep 3600; done"},
 		{"docker", "start", "cw-repo"},
 	}
 	if !reflect.DeepEqual(calls, want) {
@@ -481,7 +483,7 @@ func TestLimaCreateCommandArgs(t *testing.T) {
 
 	got := limaCreateCommandArgs(instance)
 
-	wantMountSet := `.mounts=[{"location":"/tmp/repo","mountPoint":"/workspace","writable":true},{"location":"/home/testuser/.config/gh","mountPoint":"/home/{{.User}}.guest/.config/gh","writable":false},{"location":"/home/testuser/.ssh","mountPoint":"/mnt/host-ssh","writable":false},{"location":"/home/testuser/.claude","mountPoint":"/home/{{.User}}.guest/.claude","writable":true}]`
+	wantMountSet := `.mounts=[{"location":"/tmp/repo","mountPoint":"/workspace","writable":true},{"location":"/home/testuser/.config/gh","mountPoint":"/home/{{.User}}.guest/.config/gh","writable":false},{"location":"/home/testuser/.ssh","mountPoint":"/mnt/host-ssh","writable":false},{"location":"/home/testuser/.claude","mountPoint":"/home/{{.User}}.guest/.claude","writable":true},{"location":"/home/testuser/.codex","mountPoint":"/home/{{.User}}.guest/.codex","writable":true}]`
 
 	want := []string{
 		"start",
@@ -542,6 +544,12 @@ func TestCreateLocalLimaInstanceInvokesExpectedCommands(t *testing.T) {
 		if name == "/usr/bin/gh" {
 			return []byte("fake-token\n"), nil
 		}
+		if name == "limactl" && len(args) >= 10 && args[0] == "shell" && args[4] == "sudo" && args[5] == "docker" && args[6] == "inspect" {
+			return []byte("Error: No such container"), errors.New("missing")
+		}
+		if name == "limactl" && len(args) >= 9 && args[0] == "shell" && args[4] == "sudo" && args[5] == "stat" && args[6] == "-c" && args[7] == "%g" {
+			return []byte("988\n"), nil
+		}
 		return nil, nil
 	}
 
@@ -567,16 +575,21 @@ func TestCreateLocalLimaInstanceInvokesExpectedCommands(t *testing.T) {
 		// 1. Boot VM
 		append([]string{"limactl"}, limaCreateCommandArgs(instance)...),
 		// 2. Wait for Docker
-		{"limactl", "shell", "--workdir", "/", "cw-repo", "docker", "info"},
+		{"limactl", "shell", "--workdir", "/", "cw-repo", "sudo", "docker", "info"},
 		// 3. Pull image
-		{"limactl", "shell", "--workdir", "/", "cw-repo", "docker", "pull", "ghcr.io/codewiresh/full:latest"},
+		{"limactl", "shell", "--workdir", "/", "cw-repo", "sudo", "docker", "pull", "ghcr.io/codewiresh/full:latest"},
 		// 4. Run container
-		{"limactl", "shell", "--workdir", "/", "cw-repo", "docker", "run", "-d",
+		{"limactl", "shell", "--workdir", "/", "cw-repo", "sudo", "docker", "run", "-d",
 			"--name", "cw-workspace",
+			"--network", "host",
+			"--group-add", "988",
+			"-e", "DOCKER_HOST=" + limaDockerHostValue,
+			"-v", limaDockerSockPath + ":" + limaDockerSockPath,
 			"-v", "/workspace:/workspace",
 			"-v", "/home/" + vmUser + ".guest/.claude:/home/codewire/.claude",
 			"-v", "/home/" + vmUser + ".guest/.config/gh:/home/codewire/.config/gh:ro",
 			"-v", "/mnt/host-ssh:/home/codewire/.ssh:ro",
+			"-v", "/home/" + vmUser + ".guest/.codex:/home/codewire/.codex",
 			"--workdir", "/workspace",
 			"ghcr.io/codewiresh/full:latest",
 			"sleep", "infinity"},
@@ -592,6 +605,76 @@ func TestCreateLocalLimaInstanceInvokesExpectedCommands(t *testing.T) {
 	}
 	if instance.LimaMountType != "9p" {
 		t.Fatalf("LimaMountType = %q, want 9p", instance.LimaMountType)
+	}
+}
+
+func TestCreateLocalLimaInstanceReusesExistingVMAndContainer(t *testing.T) {
+	origLookPath := localLookPath
+	origRunStream := localRunCommandStream
+	origRunCommand := localRunCommand
+	origGOOS := localGOOS
+	origUserHomeDir := localUserHomeDir
+	origOsStat := localOsStat
+	t.Cleanup(func() {
+		localLookPath = origLookPath
+		localRunCommandStream = origRunStream
+		localRunCommand = origRunCommand
+		localGOOS = origGOOS
+		localUserHomeDir = origUserHomeDir
+		localOsStat = origOsStat
+	})
+
+	localGOOS = "linux"
+	localUserHomeDir = func() (string, error) { return "/home/testuser", nil }
+	localOsStat = func(name string) (os.FileInfo, error) { return nil, nil }
+	localLookPath = func(file string) (string, error) {
+		if file == "limactl" {
+			return "/usr/bin/limactl", nil
+		}
+		if file == "gh" {
+			return "/usr/bin/gh", nil
+		}
+		return "", errors.New("not found")
+	}
+
+	var streamCalls [][]string
+	localRunCommandStream = func(name string, args ...string) error {
+		streamCalls = append(streamCalls, append([]string{name}, args...))
+		return nil
+	}
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		if name == "/usr/bin/gh" {
+			return []byte("fake-token\n"), nil
+		}
+		if name == "limactl" && len(args) >= 3 && args[0] == "list" && args[1] == "--format" && args[2] == "json" {
+			return []byte(`[{"name":"cw-repo","status":"Running"}]`), nil
+		}
+		if name == "limactl" && len(args) >= 10 && args[0] == "shell" && args[4] == "sudo" && args[5] == "docker" && args[6] == "inspect" {
+			return []byte("running\n"), nil
+		}
+		if name == "limactl" && len(args) >= 9 && args[0] == "shell" && args[4] == "sudo" && args[5] == "stat" && args[6] == "-c" && args[7] == "%g" {
+			return []byte("988\n"), nil
+		}
+		return nil, nil
+	}
+
+	instance := &cwconfig.LocalInstance{
+		Name:        "repo",
+		Backend:     "lima",
+		RuntimeName: "cw-repo",
+		RepoPath:    "/tmp/repo",
+		Image:       "ghcr.io/codewiresh/full:latest",
+	}
+	if err := createLocalLimaInstance(instance); err != nil {
+		t.Fatalf("createLocalLimaInstance() error = %v", err)
+	}
+
+	want := [][]string{
+		{"limactl", "shell", "--workdir", "/", "cw-repo", "sudo", "docker", "info"},
+		{"limactl", "shell", "--workdir", "/", "cw-repo", "sudo", "docker", "pull", "ghcr.io/codewiresh/full:latest"},
+	}
+	if !reflect.DeepEqual(streamCalls, want) {
+		t.Fatalf("reused lima stream calls:\n  got:  %#v\n  want: %#v", streamCalls, want)
 	}
 }
 
@@ -640,9 +723,10 @@ func TestLimaLifecycleCommands(t *testing.T) {
 	want := [][]string{
 		// start: boot VM then start container
 		{"limactl", "start", "--tty=false", "cw-repo"},
-		{"limactl", "shell", "--workdir", "/", "cw-repo", "docker", "start", "cw-workspace"},
+		{"limactl", "shell", "--workdir", "/", "cw-repo", "sudo", "systemctl", "start", "docker"},
+		{"limactl", "shell", "--workdir", "/", "cw-repo", "sudo", "docker", "start", "cw-workspace"},
 		// stop: stop container then stop VM
-		{"limactl", "shell", "--workdir", "/", "cw-repo", "docker", "stop", "cw-workspace"},
+		{"limactl", "shell", "--workdir", "/", "cw-repo", "sudo", "docker", "stop", "cw-workspace"},
 		{"limactl", "stop", "cw-repo"},
 		// delete: just delete the VM (container goes with it)
 		{"limactl", "delete", "--force", "cw-repo"},
@@ -1131,6 +1215,33 @@ func TestLimaDeleteFailureReturnsError(t *testing.T) {
 	err := deleteLocalLimaInstance(instance)
 	if err == nil {
 		t.Fatal("expected error for non-not-found delete failure")
+	}
+}
+
+func TestLimaInstanceStatusMissingOnNDJSONListOutput(t *testing.T) {
+	origLookPath := localLookPath
+	origRunCommand := localRunCommand
+	t.Cleanup(func() {
+		localLookPath = origLookPath
+		localRunCommand = origRunCommand
+	})
+
+	localLookPath = func(file string) (string, error) {
+		return "/usr/bin/" + file, nil
+	}
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		return []byte(`{"name":"cw-other","status":"Running"}
+{"name":"cw-something","status":"Stopped"}
+`), nil
+	}
+
+	instance := &cwconfig.LocalInstance{LimaInstanceName: "cw-repo"}
+	status, err := limaInstanceStatus(instance)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != "missing" {
+		t.Fatalf("status = %q, want %q", status, "missing")
 	}
 }
 
