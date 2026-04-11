@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -30,8 +31,161 @@ type CodewireConfig struct {
 
 // PortConfig represents a port in codewire.yaml.
 type PortConfig struct {
-	Port  int    `yaml:"port"`
-	Label string `yaml:"label"`
+	Port      int    `yaml:"port,omitempty" toml:"port,omitempty"`
+	HostPort  int    `yaml:"host_port,omitempty" toml:"host_port,omitempty"`
+	GuestPort int    `yaml:"guest_port,omitempty" toml:"guest_port,omitempty"`
+	Label     string `yaml:"label,omitempty" toml:"label,omitempty"`
+}
+
+func (p *PortConfig) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		port, err := parsePortConfigScalar(value.Value)
+		if err != nil {
+			return err
+		}
+		*p = port
+		return nil
+	case yaml.MappingNode:
+		type rawPortConfig struct {
+			Port      int    `yaml:"port,omitempty"`
+			HostPort  int    `yaml:"host_port,omitempty"`
+			GuestPort int    `yaml:"guest_port,omitempty"`
+			Published int    `yaml:"published,omitempty"`
+			Target    int    `yaml:"target,omitempty"`
+			Label     string `yaml:"label,omitempty"`
+		}
+		var raw rawPortConfig
+		if err := value.Decode(&raw); err != nil {
+			return err
+		}
+		port := PortConfig{
+			Port:      raw.Port,
+			HostPort:  raw.HostPort,
+			GuestPort: raw.GuestPort,
+			Label:     raw.Label,
+		}
+		if raw.Published > 0 {
+			port.HostPort = raw.Published
+		}
+		if raw.Target > 0 {
+			port.GuestPort = raw.Target
+		}
+		canonical, err := canonicalizePortConfig(port)
+		if err != nil {
+			return err
+		}
+		*p = canonical
+		return nil
+	default:
+		return fmt.Errorf("parse port: expected scalar or mapping")
+	}
+}
+
+func (p PortConfig) MarshalYAML() (any, error) {
+	canonical, err := canonicalizePortConfig(p)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(canonical.Label) == "" {
+		host := canonical.EffectiveHostPort()
+		guest := canonical.EffectiveGuestPort()
+		if host == guest {
+			return guest, nil
+		}
+		return fmt.Sprintf("%d:%d", host, guest), nil
+	}
+	if canonical.Port > 0 {
+		return struct {
+			Port  int    `yaml:"port,omitempty"`
+			Label string `yaml:"label,omitempty"`
+		}{
+			Port:  canonical.Port,
+			Label: canonical.Label,
+		}, nil
+	}
+	return struct {
+		HostPort  int    `yaml:"host_port,omitempty"`
+		GuestPort int    `yaml:"guest_port,omitempty"`
+		Label     string `yaml:"label,omitempty"`
+	}{
+		HostPort:  canonical.HostPort,
+		GuestPort: canonical.GuestPort,
+		Label:     canonical.Label,
+	}, nil
+}
+
+func parsePortConfigScalar(raw string) (PortConfig, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return PortConfig{}, fmt.Errorf("parse port: empty value")
+	}
+	if port, err := strconv.Atoi(raw); err == nil {
+		return canonicalizePortConfig(PortConfig{Port: port})
+	}
+	parts := strings.Split(raw, ":")
+	if len(parts) != 2 {
+		return PortConfig{}, fmt.Errorf("parse port %q: expected PORT or HOST:PORT", raw)
+	}
+	hostPort, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return PortConfig{}, fmt.Errorf("parse port %q: invalid host port", raw)
+	}
+	guestPort, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return PortConfig{}, fmt.Errorf("parse port %q: invalid guest port", raw)
+	}
+	return canonicalizePortConfig(PortConfig{HostPort: hostPort, GuestPort: guestPort})
+}
+
+func canonicalizePortConfig(port PortConfig) (PortConfig, error) {
+	label := strings.TrimSpace(port.Label)
+	hasPort := port.Port > 0
+	hasHostGuest := port.HostPort > 0 || port.GuestPort > 0
+	if hasPort && hasHostGuest {
+		return PortConfig{}, fmt.Errorf("parse port: use either port or host_port/guest_port")
+	}
+	if hasPort {
+		if port.Port <= 0 {
+			return PortConfig{}, fmt.Errorf("parse port: port must be greater than zero")
+		}
+		return PortConfig{Port: port.Port, Label: label}, nil
+	}
+	if port.HostPort <= 0 || port.GuestPort <= 0 {
+		return PortConfig{}, fmt.Errorf("parse port: host_port and guest_port must both be greater than zero")
+	}
+	canonical := (PortConfig{HostPort: port.HostPort, GuestPort: port.GuestPort, Label: label}).Canonical()
+	return canonical, nil
+}
+
+func (p PortConfig) EffectiveGuestPort() int {
+	if p.GuestPort > 0 {
+		return p.GuestPort
+	}
+	return p.Port
+}
+
+func (p PortConfig) EffectiveHostPort() int {
+	if p.HostPort > 0 {
+		return p.HostPort
+	}
+	return p.EffectiveGuestPort()
+}
+
+func (p PortConfig) Canonical() PortConfig {
+	host := p.EffectiveHostPort()
+	guest := p.EffectiveGuestPort()
+	out := PortConfig{Label: p.Label}
+	if host <= 0 || guest <= 0 {
+		return out
+	}
+	if host == guest {
+		out.Port = guest
+		return out
+	}
+	out.HostPort = host
+	out.GuestPort = guest
+	return out
 }
 
 type CodewireAgentsConfig struct {

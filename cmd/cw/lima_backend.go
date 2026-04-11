@@ -215,10 +215,12 @@ func limaCreateCommandArgs(instance *cwconfig.LocalInstance) []string {
 		args = append(args, "--disk", strconv.Itoa(instance.Disk))
 	}
 	for _, port := range instance.Ports {
-		if port.Port <= 0 {
+		hostPort := port.EffectiveHostPort()
+		guestPort := port.EffectiveGuestPort()
+		if hostPort <= 0 || guestPort <= 0 {
 			continue
 		}
-		args = append(args, "--port-forward", fmt.Sprintf("%d:%d,static=true", port.Port, port.Port))
+		args = append(args, "--port-forward", fmt.Sprintf("%d:%d,static=true", hostPort, guestPort))
 	}
 
 	return append(args, "template:docker")

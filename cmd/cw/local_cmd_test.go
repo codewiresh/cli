@@ -477,7 +477,7 @@ func TestLimaCreateCommandArgs(t *testing.T) {
 		Disk:        20,
 		Ports: []cwconfig.PortConfig{
 			{Port: 3000, Label: "web"},
-			{Port: 8080, Label: "api"},
+			{HostPort: 18080, GuestPort: 8080, Label: "api"},
 		},
 	}
 
@@ -497,7 +497,7 @@ func TestLimaCreateCommandArgs(t *testing.T) {
 		"--memory", "4",
 		"--disk", "20",
 		"--port-forward", "3000:3000,static=true",
-		"--port-forward", "8080:8080,static=true",
+		"--port-forward", "18080:8080,static=true",
 		"template:docker",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -768,12 +768,147 @@ func TestLocalPortSummaryFormatsLimaPorts(t *testing.T) {
 		Backend: "lima",
 		Ports: []cwconfig.PortConfig{
 			{Port: 3000, Label: "web"},
-			{Port: 8080, Label: "api"},
+			{HostPort: 18080, GuestPort: 8080, Label: "api"},
 		},
 	})
-	want := "3000 -> 3000 (web), 8080 -> 8080 (api)"
+	want := "3000 -> 3000 (web), 18080 -> 8080 (api)"
 	if got != want {
 		t.Fatalf("localPortSummary() = %q, want %q", got, want)
+	}
+}
+
+func TestLocalPortsCmdAddsLimaPortsAndPersistsState(t *testing.T) {
+	origLoadLocal := loadLocalInstancesForCLI
+	origSaveLocal := saveLocalInstancesForCLI
+	origRunCommand := localRunCommand
+	t.Cleanup(func() {
+		loadLocalInstancesForCLI = origLoadLocal
+		saveLocalInstancesForCLI = origSaveLocal
+		localRunCommand = origRunCommand
+	})
+
+	state := &cwconfig.LocalInstancesConfig{
+		Instances: map[string]cwconfig.LocalInstance{
+			"repo": {
+				Name:             "repo",
+				Backend:          "lima",
+				RuntimeName:      "cw-repo",
+				LimaInstanceName: "cw-repo",
+				Ports: []cwconfig.PortConfig{
+					{Port: 3000, Label: "web"},
+				},
+			},
+		},
+	}
+	loadLocalInstancesForCLI = func() (*cwconfig.LocalInstancesConfig, error) {
+		return state, nil
+	}
+
+	var saved *cwconfig.LocalInstancesConfig
+	saveLocalInstancesForCLI = func(cfg *cwconfig.LocalInstancesConfig) error {
+		saved = cfg
+		return nil
+	}
+
+	var calls [][]string
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string{name}, args...))
+		return nil, nil
+	}
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = oldStdout }()
+
+	cmd := localPortsCmd()
+	cmd.SetArgs([]string{"repo", "--publish", "18080:8080"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("local ports command failed: %v", err)
+	}
+
+	_ = w.Close()
+	_, _ = io.ReadAll(r)
+
+	wantCalls := [][]string{{
+		"limactl",
+		"edit",
+		"--tty=false",
+		"cw-repo",
+		"--set",
+		`.portForwards = (.portForwards // []) + [{"guestPort":8080,"hostPort":18080,"proto":"tcp"}]`,
+	}}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("localRunCommand calls = %#v, want %#v", calls, wantCalls)
+	}
+	if saved == nil {
+		t.Fatal("expected local instance state to be saved")
+	}
+	wantPorts := []cwconfig.PortConfig{
+		{Port: 3000, Label: "web"},
+		{HostPort: 18080, GuestPort: 8080},
+	}
+	gotPorts := saved.Instances["repo"].Ports
+	if !reflect.DeepEqual(gotPorts, wantPorts) {
+		t.Fatalf("saved ports = %#v, want %#v", gotPorts, wantPorts)
+	}
+}
+
+func TestLocalPortsCmdRejectsConflictingLimaHostPort(t *testing.T) {
+	origLoadLocal := loadLocalInstancesForCLI
+	origSaveLocal := saveLocalInstancesForCLI
+	origRunCommand := localRunCommand
+	t.Cleanup(func() {
+		loadLocalInstancesForCLI = origLoadLocal
+		saveLocalInstancesForCLI = origSaveLocal
+		localRunCommand = origRunCommand
+	})
+
+	loadLocalInstancesForCLI = func() (*cwconfig.LocalInstancesConfig, error) {
+		return &cwconfig.LocalInstancesConfig{
+			Instances: map[string]cwconfig.LocalInstance{
+				"repo": {
+					Name:             "repo",
+					Backend:          "lima",
+					RuntimeName:      "cw-repo",
+					LimaInstanceName: "cw-repo",
+					Ports: []cwconfig.PortConfig{
+						{HostPort: 18080, GuestPort: 8080},
+					},
+				},
+			},
+		}, nil
+	}
+
+	saved := false
+	saveLocalInstancesForCLI = func(cfg *cwconfig.LocalInstancesConfig) error {
+		saved = true
+		return nil
+	}
+
+	called := false
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		called = true
+		return nil, nil
+	}
+
+	cmd := localPortsCmd()
+	cmd.SetArgs([]string{"repo", "--publish", "18080:3000"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected local ports command to fail")
+	}
+	if !strings.Contains(err.Error(), "host port 18080 is already forwarded to guest port 8080") {
+		t.Fatalf("error = %q, want host port conflict", err)
+	}
+	if called {
+		t.Fatal("expected limactl edit not to be called")
+	}
+	if saved {
+		t.Fatal("expected local instance state not to be saved")
 	}
 }
 

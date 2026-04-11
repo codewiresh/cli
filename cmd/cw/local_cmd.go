@@ -300,46 +300,62 @@ func localPortsCmd() *cobra.Command {
 		Short: "Forward ports from host to a local runtime when the backend supports it",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			instance, err := resolveLocalInstanceArg(optionalArg(args))
+			state, err := loadLocalInstancesForCLI()
 			if err != nil {
 				return err
 			}
-			if instance.Backend == "lima" {
-				return fmt.Errorf("port forwarding for lima instances is managed by Lima configuration; recreate the instance with desired ports in codewire.yaml")
-			}
-			if instance.Backend != "firecracker" {
-				return fmt.Errorf("interactive 'cw local ports' forwarding is only available for the experimental firecracker backend; use backend-native port mapping for docker or configured forwards for lima")
+			key, instance, err := resolveLocalInstance(state, optionalArg(args))
+			if err != nil {
+				return err
 			}
 
 			publish, _ := cmd.Flags().GetStringSlice("publish")
 			if len(publish) == 0 {
-				if len(instance.Ports) == 0 {
-					fmt.Println("No ports configured.")
-					return nil
-				}
-				for _, p := range instance.Ports {
-					fmt.Printf("  %d (%s)\n", p.Port, p.Label)
-				}
+				printLocalConfiguredPorts(instance)
 				return nil
 			}
 
-			vsockPath := instance.FirecrackerSocket + ".vsock"
-			for _, spec := range publish {
-				var hostPort, guestPort int
-				if _, err := fmt.Sscanf(spec, "%d:%d", &hostPort, &guestPort); err != nil {
-					return fmt.Errorf("invalid port spec %q (use host:guest format, e.g. 8080:3000)", spec)
-				}
-				ln, err := forwardPort(hostPort, guestPort, vsockPath)
+			switch instance.Backend {
+			case "lima":
+				updatedPorts, added, err := addLimaPortForwards(instance, publish)
 				if err != nil {
 					return err
 				}
-				defer ln.Close()
-				fmt.Fprintf(os.Stderr, "  Forwarding localhost:%d -> guest:%d\n", hostPort, guestPort)
-			}
+				instance.Ports = updatedPorts
+				state.Instances[key] = *instance
+				if err := saveLocalInstancesForCLI(state); err != nil {
+					return fmt.Errorf("save local instance state: %w", err)
+				}
+				if added == 0 {
+					fmt.Println("No new ports were added.")
+				} else {
+					successMsg("Updated Lima port forwards for %s.", instance.Name)
+				}
+				printLocalConfiguredPorts(instance)
+				return nil
+			case "firecracker":
+				vsockPath := instance.FirecrackerSocket + ".vsock"
+				for _, spec := range publish {
+					port, err := parsePublishedPortSpec(spec)
+					if err != nil {
+						return err
+					}
+					hostPort := port.EffectiveHostPort()
+					guestPort := port.EffectiveGuestPort()
+					ln, err := forwardPort(hostPort, guestPort, vsockPath)
+					if err != nil {
+						return err
+					}
+					defer ln.Close()
+					fmt.Fprintf(os.Stderr, "  Forwarding localhost:%d -> guest:%d\n", hostPort, guestPort)
+				}
 
-			fmt.Fprintf(os.Stderr, "\n  Press Ctrl+C to stop forwarding.\n")
-			// Block until interrupted
-			select {}
+				fmt.Fprintf(os.Stderr, "\n  Press Ctrl+C to stop forwarding.\n")
+				// Block until interrupted
+				select {}
+			default:
+				return fmt.Errorf("interactive 'cw local ports' forwarding is only available for Lima and the experimental firecracker backend; use backend-native port mapping for docker")
+			}
 		},
 	}
 	cmd.Flags().StringSliceP("publish", "p", nil, "Port mapping host:guest (e.g. 8080:3000)")
@@ -353,6 +369,137 @@ func optionalArg(args []string) string {
 	return args[0]
 }
 
+type limaPortForwardEdit struct {
+	GuestPort int    `json:"guestPort"`
+	HostPort  int    `json:"hostPort"`
+	Proto     string `json:"proto"`
+}
+
+func parsePublishedPortSpec(spec string) (cwconfig.PortConfig, error) {
+	var hostPort, guestPort int
+	if _, err := fmt.Sscanf(spec, "%d:%d", &hostPort, &guestPort); err != nil || hostPort <= 0 || guestPort <= 0 {
+		return cwconfig.PortConfig{}, fmt.Errorf("invalid port spec %q (use host:guest format, e.g. 8080:3000)", spec)
+	}
+	return (cwconfig.PortConfig{HostPort: hostPort, GuestPort: guestPort}).Canonical(), nil
+}
+
+func printLocalConfiguredPorts(instance *cwconfig.LocalInstance) {
+	if instance == nil || len(instance.Ports) == 0 {
+		fmt.Println("No ports configured.")
+		return
+	}
+
+	printed := false
+	for _, port := range instance.Ports {
+		part := localPortDisplay(instance, port)
+		if part == "" {
+			continue
+		}
+		fmt.Printf("  %s\n", part)
+		printed = true
+	}
+	if !printed {
+		fmt.Println("No ports configured.")
+	}
+}
+
+func localPortDisplay(instance *cwconfig.LocalInstance, port cwconfig.PortConfig) string {
+	hostPort := port.EffectiveHostPort()
+	guestPort := port.EffectiveGuestPort()
+	if hostPort <= 0 || guestPort <= 0 {
+		return ""
+	}
+
+	var part string
+	switch {
+	case hostPort != guestPort:
+		part = fmt.Sprintf("%d -> %d", hostPort, guestPort)
+	case instance != nil && instance.Backend == "lima":
+		part = fmt.Sprintf("%d -> %d", hostPort, guestPort)
+	default:
+		part = fmt.Sprintf("%d", guestPort)
+	}
+	if label := strings.TrimSpace(port.Label); label != "" {
+		part += " (" + label + ")"
+	}
+	return part
+}
+
+func addLimaPortForwards(instance *cwconfig.LocalInstance, publish []string) ([]cwconfig.PortConfig, int, error) {
+	if instance == nil {
+		return nil, 0, fmt.Errorf("missing local instance")
+	}
+
+	existingByHost := make(map[int]cwconfig.PortConfig, len(instance.Ports))
+	updatedPorts := make([]cwconfig.PortConfig, 0, len(instance.Ports)+len(publish))
+	for _, port := range instance.Ports {
+		canonical := port.Canonical()
+		hostPort := canonical.EffectiveHostPort()
+		guestPort := canonical.EffectiveGuestPort()
+		if hostPort <= 0 || guestPort <= 0 {
+			continue
+		}
+		if existing, ok := existingByHost[hostPort]; ok && existing.EffectiveGuestPort() != guestPort {
+			return nil, 0, fmt.Errorf("Lima instance %q has conflicting host port %d mapped to guest ports %d and %d", instance.Name, hostPort, existing.EffectiveGuestPort(), guestPort)
+		}
+		existingByHost[hostPort] = canonical
+		updatedPorts = append(updatedPorts, canonical)
+	}
+
+	forwards := make([]limaPortForwardEdit, 0, len(publish))
+	added := 0
+	for _, spec := range publish {
+		port, err := parsePublishedPortSpec(spec)
+		if err != nil {
+			return nil, 0, err
+		}
+		hostPort := port.EffectiveHostPort()
+		guestPort := port.EffectiveGuestPort()
+		if existing, ok := existingByHost[hostPort]; ok {
+			if existing.EffectiveGuestPort() != guestPort {
+				return nil, 0, fmt.Errorf("host port %d is already forwarded to guest port %d", hostPort, existing.EffectiveGuestPort())
+			}
+			continue
+		}
+		existingByHost[hostPort] = port
+		updatedPorts = append(updatedPorts, port)
+		forwards = append(forwards, limaPortForwardEdit{GuestPort: guestPort, HostPort: hostPort, Proto: "tcp"})
+		added++
+	}
+
+	if len(forwards) == 0 {
+		return updatedPorts, 0, nil
+	}
+	if err := limaAddPortForwards(instance, forwards); err != nil {
+		return nil, 0, err
+	}
+	return updatedPorts, added, nil
+}
+
+func limaAddPortForwards(instance *cwconfig.LocalInstance, forwards []limaPortForwardEdit) error {
+	if len(forwards) == 0 {
+		return nil
+	}
+	name := limaInstanceName(instance)
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("missing Lima instance name")
+	}
+	payload, err := json.Marshal(forwards)
+	if err != nil {
+		return fmt.Errorf("marshal Lima port forwards: %w", err)
+	}
+	setExpr := fmt.Sprintf(".portForwards = (.portForwards // []) + %s", payload)
+	out, err := localRunCommand("limactl", "edit", "--tty=false", name, "--set", setExpr)
+	if err != nil {
+		trimmed := strings.TrimSpace(string(out))
+		if trimmed != "" {
+			return fmt.Errorf("limactl edit %s: %v\n%s", name, err, trimmed)
+		}
+		return fmt.Errorf("limactl edit %s: %w", name, err)
+	}
+	return nil
+}
+
 func localPortSummary(instance *cwconfig.LocalInstance) string {
 	if instance == nil || len(instance.Ports) == 0 {
 		return ""
@@ -360,19 +507,9 @@ func localPortSummary(instance *cwconfig.LocalInstance) string {
 
 	parts := make([]string, 0, len(instance.Ports))
 	for _, port := range instance.Ports {
-		if port.Port <= 0 {
+		part := localPortDisplay(instance, port)
+		if part == "" {
 			continue
-		}
-
-		var part string
-		switch instance.Backend {
-		case "lima":
-			part = fmt.Sprintf("%d -> %d", port.Port, port.Port)
-		default:
-			part = fmt.Sprintf("%d", port.Port)
-		}
-		if label := strings.TrimSpace(port.Label); label != "" {
-			part += " (" + label + ")"
 		}
 		parts = append(parts, part)
 	}
