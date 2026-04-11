@@ -686,6 +686,9 @@ func limaInstanceStatus(instance *cwconfig.LocalInstance) (string, error) {
 			if len(line) == 0 {
 				continue
 			}
+			if line[0] != '{' {
+				continue
+			}
 			var entry limaListEntry
 			if err := json.Unmarshal(line, &entry); err != nil {
 				return "", fmt.Errorf("parse limactl list output: %w", err)

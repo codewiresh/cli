@@ -1479,6 +1479,32 @@ func TestLimaInstanceStatusMissingOnNotFound(t *testing.T) {
 	}
 }
 
+func TestLimaInstanceStatusIgnoresWarningOnlyOutput(t *testing.T) {
+	origLookPath := localLookPath
+	origRunCommand := localRunCommand
+	t.Cleanup(func() {
+		localLookPath = origLookPath
+		localRunCommand = origRunCommand
+	})
+
+	localLookPath = func(file string) (string, error) {
+		return "/usr/bin/" + file, nil
+	}
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		return []byte(`time="2026-04-11T17:00:49+02:00" level=warning msg="No instance found. Run ` + "`limactl create`" + ` to create an instance."
+`), nil
+	}
+
+	instance := &cwconfig.LocalInstance{LimaInstanceName: "cw-repo"}
+	status, err := limaInstanceStatus(instance)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != "missing" {
+		t.Fatalf("status = %q, want %q", status, "missing")
+	}
+}
+
 func TestLimaInstanceStatusEmptyOutput(t *testing.T) {
 	origLookPath := localLookPath
 	origRunCommand := localRunCommand
