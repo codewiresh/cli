@@ -27,6 +27,27 @@ func stubLocalCLIDataDir(t *testing.T) string {
 	return dir
 }
 
+func stubLocalGitHubToken(t *testing.T, token string) {
+	t.Helper()
+	orig := localGitHubToken
+	localGitHubToken = func() string { return token }
+	t.Cleanup(func() { localGitHubToken = orig })
+}
+
+func stubLocalGitConfigPath(t *testing.T, path string) {
+	t.Helper()
+	orig := localGitConfigPath
+	localGitConfigPath = func() string { return path }
+	t.Cleanup(func() { localGitConfigPath = orig })
+}
+
+func stubLocalSSHAuthSock(t *testing.T, path string) {
+	t.Helper()
+	orig := localSSHAuthSock
+	localSSHAuthSock = func() string { return path }
+	t.Cleanup(func() { localSSHAuthSock = orig })
+}
+
 func TestIncusOCIImageRef(t *testing.T) {
 	remoteName, remoteURL, remoteImage, err := incusOCIImageRef("ghcr.io/codewiresh/full:latest")
 	if err != nil {
@@ -137,6 +158,9 @@ func TestCreateLocalIncusInstanceInvokesExpectedCommands(t *testing.T) {
 
 	localUserHomeDir = func() (string, error) { return "/home/testuser", nil }
 	localOsStat = func(name string) (os.FileInfo, error) { return nil, nil }
+	stubLocalGitHubToken(t, "gho_test")
+	stubLocalGitConfigPath(t, "/home/testuser/.gitconfig")
+	stubLocalSSHAuthSock(t, "")
 
 	localLookPath = func(file string) (string, error) {
 		if file != "incus" && file != "skopeo" {
@@ -175,7 +199,9 @@ func TestCreateLocalIncusInstanceInvokesExpectedCommands(t *testing.T) {
 		{"incus", "config", "device", "add", "cw-repo", "workspace", "disk", "source=/tmp/repo", "path=/workspace"},
 		{"incus", "config", "device", "add", "cw-repo", "claude-config", "disk", "source=/home/testuser/.claude", "path=/home/codewire/.claude"},
 		{"incus", "config", "device", "add", "cw-repo", "claude-json", "disk", "source=/home/testuser/.claude.json", "path=/home/codewire/.claude.json"},
-		{"incus", "config", "device", "add", "cw-repo", "gh-config", "disk", "source=/home/testuser/.config/gh", "path=/home/codewire/.config/gh", "readonly=true"},
+		{"incus", "config", "device", "add", "cw-repo", "gh-config", "disk", "source=/home/testuser/.config/gh", "path=/home/codewire/.config/gh"},
+		{"incus", "config", "set", "cw-repo", "environment.GH_TOKEN", "gho_test"},
+		{"incus", "config", "device", "add", "cw-repo", "git-config", "disk", "source=/home/testuser/.gitconfig", "path=/home/codewire/.gitconfig", "readonly=true"},
 		{"incus", "config", "device", "add", "cw-repo", "ssh-config", "disk", "source=/home/testuser/.ssh", "path=/home/codewire/.ssh", "readonly=true"},
 		{"incus", "config", "device", "add", "cw-repo", "codex-config", "disk", "source=/home/testuser/.codex", "path=/home/codewire/.codex"},
 		{"incus", "start", "cw-repo"},
@@ -199,6 +225,9 @@ func TestCreateLocalIncusInstanceCleansUpOnFailure(t *testing.T) {
 
 	localUserHomeDir = func() (string, error) { return "/home/testuser", nil }
 	localOsStat = func(name string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	stubLocalGitHubToken(t, "")
+	stubLocalGitConfigPath(t, "")
+	stubLocalSSHAuthSock(t, "")
 
 	localLookPath = func(file string) (string, error) {
 		if file != "incus" && file != "skopeo" {
@@ -349,6 +378,9 @@ func TestCreateLocalDockerInstanceInvokesExpectedCommands(t *testing.T) {
 	// ~/.claude exists
 	localUserHomeDir = func() (string, error) { return "/home/testuser", nil }
 	localOsStat = func(name string) (os.FileInfo, error) { return nil, nil }
+	stubLocalGitHubToken(t, "gho_test")
+	stubLocalGitConfigPath(t, "/home/testuser/.gitconfig")
+	stubLocalSSHAuthSock(t, "/home/testuser/.1password/agent.sock")
 
 	var calls [][]string
 	localRunCommand = func(name string, args ...string) ([]byte, error) {
@@ -375,7 +407,7 @@ func TestCreateLocalDockerInstanceInvokesExpectedCommands(t *testing.T) {
 	}
 
 	want := [][]string{
-		{"docker", "create", "--name", "cw-repo", "--hostname", "cw-repo", "--workdir", "/workspace", "--volume", "/tmp/repo:/workspace", "--volume", "/home/testuser/.claude:/home/codewire/.claude", "--volume", "/home/testuser/.claude.json:/home/codewire/.claude.json", "--volume", "/home/testuser/.config/gh:/home/codewire/.config/gh:ro", "--volume", "/home/testuser/.ssh:/home/codewire/.ssh:ro", "--volume", "/home/testuser/.codex:/home/codewire/.codex", "--cpus", "1.500", "--memory", "4096m", "--env", "A=1", "--env", "B=2", "ghcr.io/codewiresh/full:latest", "/bin/sh", "-lc", "trap 'exit 0' TERM INT; while true; do sleep 3600; done"},
+		{"docker", "create", "--name", "cw-repo", "--hostname", "cw-repo", "--workdir", "/workspace", "--volume", "/tmp/repo:/workspace", "--volume", "/home/testuser/.claude:/home/codewire/.claude", "--volume", "/home/testuser/.claude.json:/home/codewire/.claude.json", "--volume", "/home/testuser/.config/gh:/home/codewire/.config/gh", "--volume", "/home/testuser/.gitconfig:/home/codewire/.gitconfig:ro", "--volume", "/home/testuser/.1password/agent.sock:/tmp/codewire-ssh-agent.sock", "--volume", "/home/testuser/.ssh:/home/codewire/.ssh:ro", "--volume", "/home/testuser/.codex:/home/codewire/.codex", "--cpus", "1.500", "--memory", "4096m", "--env", "GH_TOKEN=gho_test", "--env", "SSH_AUTH_SOCK=/tmp/codewire-ssh-agent.sock", "--env", "A=1", "--env", "B=2", "ghcr.io/codewiresh/full:latest", "/bin/sh", "-lc", "trap 'exit 0' TERM INT; while true; do sleep 3600; done"},
 		{"docker", "start", "cw-repo"},
 	}
 	if !reflect.DeepEqual(calls, want) {
@@ -404,6 +436,9 @@ func TestCreateLocalDockerInstanceSkipsClaudeMountWhenMissing(t *testing.T) {
 	localOsStat = func(name string) (os.FileInfo, error) {
 		return nil, os.ErrNotExist
 	}
+	stubLocalGitHubToken(t, "")
+	stubLocalGitConfigPath(t, "")
+	stubLocalSSHAuthSock(t, "")
 
 	var calls [][]string
 	localRunCommand = func(name string, args ...string) ([]byte, error) {
@@ -450,6 +485,9 @@ func TestCreateLocalDockerInstanceCleansUpOnFailure(t *testing.T) {
 	// No ~/.claude for this test
 	localUserHomeDir = func() (string, error) { return "/home/testuser", nil }
 	localOsStat = func(name string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	stubLocalGitHubToken(t, "")
+	stubLocalGitConfigPath(t, "")
+	stubLocalSSHAuthSock(t, "")
 
 	var calls [][]string
 	localRunCommand = func(name string, args ...string) ([]byte, error) {
@@ -493,6 +531,13 @@ func TestLimaCreateCommandArgs(t *testing.T) {
 	localGOOS = "linux"
 	localUserHomeDir = func() (string, error) { return "/home/testuser", nil }
 	localOsStat = func(name string) (os.FileInfo, error) { return nil, nil }
+	gitStateDir := filepath.Join(dataDir, "lima", "cw-repo", "git")
+	if err := os.MkdirAll(gitStateDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(gitStateDir): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(gitStateDir, ".gitconfig"), []byte("[user]\n\tname = Test User\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(.gitconfig): %v", err)
+	}
 
 	instance := &cwconfig.LocalInstance{
 		Name:        "repo",
@@ -512,7 +557,8 @@ func TestLimaCreateCommandArgs(t *testing.T) {
 
 	got := limaCreateCommandArgs(instance)
 	wantClaudeDir := filepath.Join(dataDir, "lima", "cw-repo", "claude")
-	wantMountSet := `.mounts=[{"location":"/tmp/repo","mountPoint":"/tmp/repo","writable":true},{"location":"` + wantClaudeDir + `","mountPoint":"/home/{{.User}}.guest/.claude","writable":true},{"location":"/home/testuser/.config/gh","mountPoint":"/home/{{.User}}.guest/.config/gh","writable":false},{"location":"/home/testuser/.ssh","mountPoint":"/mnt/host-ssh","writable":false},{"location":"/home/testuser/.codex","mountPoint":"/home/{{.User}}.guest/.codex","writable":true},{"location":"/tmp/shared","mountPoint":"/mnt/shared","writable":false}]`
+	wantGitDir := filepath.Join(dataDir, "lima", "cw-repo", "git")
+	wantMountSet := `.mounts=[{"location":"/tmp/repo","mountPoint":"/tmp/repo","writable":true},{"location":"` + wantClaudeDir + `","mountPoint":"/home/{{.User}}.guest/.claude","writable":true},{"location":"/home/testuser/.config/gh","mountPoint":"/home/{{.User}}.guest/.config/gh","writable":true},{"location":"` + wantGitDir + `","mountPoint":"/home/{{.User}}.guest/.codewire-git","writable":false},{"location":"/home/testuser/.ssh","mountPoint":"/mnt/host-ssh","writable":false},{"location":"/home/testuser/.codex","mountPoint":"/home/{{.User}}.guest/.codex","writable":true},{"location":"/tmp/shared","mountPoint":"/mnt/shared","writable":false}]`
 
 	want := []string{
 		"start",
@@ -554,6 +600,13 @@ func TestCreateLocalLimaInstanceInvokesExpectedCommands(t *testing.T) {
 	localGOOS = "linux"
 	localUserHomeDir = func() (string, error) { return "/home/testuser", nil }
 	localOsStat = func(name string) (os.FileInfo, error) { return nil, nil }
+	stubLocalGitHubToken(t, "gho_test")
+	stubLocalSSHAuthSock(t, "/home/testuser/.1password/agent.sock")
+	gitConfigPath := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(gitConfigPath, []byte("[user]\n\tname = Test User\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(gitconfig): %v", err)
+	}
+	stubLocalGitConfigPath(t, gitConfigPath)
 	localLookPath = func(file string) (string, error) {
 		if file == "limactl" {
 			return "/usr/bin/limactl", nil
@@ -570,9 +623,6 @@ func TestCreateLocalLimaInstanceInvokesExpectedCommands(t *testing.T) {
 		return nil
 	}
 	localRunCommand = func(name string, args ...string) ([]byte, error) {
-		if name == "/usr/bin/gh" {
-			return []byte("fake-token\n"), nil
-		}
 		if name == "limactl" && len(args) >= 10 && args[0] == "shell" && args[4] == "sudo" && args[5] == "docker" && args[6] == "inspect" {
 			return []byte("Error: No such container"), errors.New("missing")
 		}
@@ -610,8 +660,12 @@ func TestCreateLocalLimaInstanceInvokesExpectedCommands(t *testing.T) {
 			"-e", "DOCKER_HOST=" + limaDockerHostValue,
 			"-v", limaDockerSockPath + ":" + limaDockerSockPath,
 			"-v", "/tmp/repo:/tmp/repo",
+			"-e", "GH_TOKEN=gho_test",
+			"-e", "SSH_AUTH_SOCK=/tmp/codewire-ssh-agent.sock",
+			"-v", "/home/" + vmUser + ".guest/.codewire-git/.gitconfig:/home/codewire/.gitconfig:ro",
+			"-v", "/tmp/codewire-ssh-agent.sock:/tmp/codewire-ssh-agent.sock",
 			"-v", "/home/" + vmUser + ".guest/.claude:/home/codewire/.claude",
-			"-v", "/home/" + vmUser + ".guest/.config/gh:/home/codewire/.config/gh:ro",
+			"-v", "/home/" + vmUser + ".guest/.config/gh:/home/codewire/.config/gh",
 			"-v", "/mnt/host-ssh:/home/codewire/.ssh:ro",
 			"-v", "/home/" + vmUser + ".guest/.codex:/home/codewire/.codex",
 			"-v", "/tmp/shared:/mnt/shared:ro",
@@ -630,6 +684,35 @@ func TestCreateLocalLimaInstanceInvokesExpectedCommands(t *testing.T) {
 	}
 	if instance.LimaMountType != "9p" {
 		t.Fatalf("LimaMountType = %q, want 9p", instance.LimaMountType)
+	}
+}
+
+func TestEnsureLimaSSHAgentForwardUsesLimaEdit(t *testing.T) {
+	origRunCommand := localRunCommand
+	t.Cleanup(func() { localRunCommand = origRunCommand })
+	stubLocalSSHAuthSock(t, "/home/testuser/.1password/agent.sock")
+
+	var calls [][]string
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string{name}, args...))
+		return nil, nil
+	}
+
+	instance := &cwconfig.LocalInstance{LimaInstanceName: "cw-repo"}
+	if err := ensureLimaSSHAgentForward(instance); err != nil {
+		t.Fatalf("ensureLimaSSHAgentForward() error = %v", err)
+	}
+
+	want := [][]string{{
+		"limactl",
+		"edit",
+		"--tty=false",
+		"cw-repo",
+		"--set",
+		`.portForwards = ((.portForwards // []) | map(select(.guestSocket != "/tmp/codewire-ssh-agent.sock")) + [{"guestSocket":"/tmp/codewire-ssh-agent.sock","hostSocket":"/home/testuser/.1password/agent.sock"}])`,
+	}}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("limactl edit calls = %#v, want %#v", calls, want)
 	}
 }
 
@@ -783,6 +866,9 @@ func TestCreateLocalLimaInstanceReusesExistingVMAndContainer(t *testing.T) {
 	localGOOS = "linux"
 	localUserHomeDir = func() (string, error) { return "/home/testuser", nil }
 	localOsStat = func(name string) (os.FileInfo, error) { return nil, nil }
+	stubLocalGitHubToken(t, "")
+	stubLocalGitConfigPath(t, "")
+	stubLocalSSHAuthSock(t, "")
 	localLookPath = func(file string) (string, error) {
 		if file == "limactl" {
 			return "/usr/bin/limactl", nil
@@ -799,9 +885,6 @@ func TestCreateLocalLimaInstanceReusesExistingVMAndContainer(t *testing.T) {
 		return nil
 	}
 	localRunCommand = func(name string, args ...string) ([]byte, error) {
-		if name == "/usr/bin/gh" {
-			return []byte("fake-token\n"), nil
-		}
 		if name == "limactl" && len(args) >= 3 && args[0] == "list" && args[1] == "--format" && args[2] == "json" {
 			return []byte(`[{"name":"cw-repo","status":"Running"}]`), nil
 		}
@@ -849,6 +932,9 @@ func TestLimaLifecycleCommands(t *testing.T) {
 	})
 
 	localUserHomeDir = func() (string, error) { return homeDir, nil }
+	stubLocalGitHubToken(t, "")
+	stubLocalGitConfigPath(t, "")
+	stubLocalSSHAuthSock(t, "")
 	localLookPath = func(file string) (string, error) {
 		if file != "limactl" {
 			t.Fatalf("LookPath(%q) unexpected", file)
@@ -1407,6 +1493,9 @@ func TestLimaCreateFailureReturnsError(t *testing.T) {
 
 	localGOOS = "linux"
 	localUserHomeDir = func() (string, error) { return homeDir, nil }
+	stubLocalGitHubToken(t, "")
+	stubLocalGitConfigPath(t, "")
+	stubLocalSSHAuthSock(t, "")
 	localLookPath = func(file string) (string, error) {
 		return "/usr/bin/" + file, nil
 	}
@@ -1437,6 +1526,9 @@ func TestLimaStartFailureReturnsError(t *testing.T) {
 	})
 
 	localUserHomeDir = func() (string, error) { return homeDir, nil }
+	stubLocalGitHubToken(t, "")
+	stubLocalGitConfigPath(t, "")
+	stubLocalSSHAuthSock(t, "")
 	localLookPath = func(file string) (string, error) {
 		return "/usr/bin/" + file, nil
 	}

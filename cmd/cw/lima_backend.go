@@ -295,6 +295,46 @@ func limaClaudeStateHostDir(instance *cwconfig.LocalInstance) string {
 	return filepath.Join(limaStateDir(instance), "claude")
 }
 
+func limaGitStateHostDir(instance *cwconfig.LocalInstance) string {
+	return filepath.Join(limaStateDir(instance), "git")
+}
+
+func ensureLimaGitConfig(instance *cwconfig.LocalInstance) error {
+	source := strings.TrimSpace(localGitConfigPath())
+	if source == "" {
+		return nil
+	}
+	targetDir := limaGitStateHostDir(instance)
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		return fmt.Errorf("create Lima git state dir: %w", err)
+	}
+	if err := copyPathIfMissing(source, filepath.Join(targetDir, ".gitconfig")); err != nil {
+		return fmt.Errorf("seed Lima git config: %w", err)
+	}
+	return nil
+}
+
+func ensureLimaSSHAgentForward(instance *cwconfig.LocalInstance) error {
+	hostSocket := strings.TrimSpace(localSSHAuthSock())
+	if hostSocket == "" {
+		return nil
+	}
+	payload, err := json.Marshal([]map[string]string{{"guestSocket": localSSHAuthSockPath, "hostSocket": hostSocket}})
+	if err != nil {
+		return fmt.Errorf("marshal Lima SSH agent forward: %w", err)
+	}
+	setExpr := fmt.Sprintf(`.portForwards = ((.portForwards // []) | map(select(.guestSocket != %q)) + %s)`, localSSHAuthSockPath, string(payload))
+	out, err := localRunCommand("limactl", "edit", "--tty=false", limaInstanceName(instance), "--set", setExpr)
+	if err != nil {
+		trimmed := strings.TrimSpace(string(out))
+		if trimmed != "" {
+			return fmt.Errorf("limactl edit %s: %v\n%s", limaInstanceName(instance), err, trimmed)
+		}
+		return fmt.Errorf("limactl edit %s: %w", limaInstanceName(instance), err)
+	}
+	return nil
+}
+
 func ensureLimaClaudeState(instance *cwconfig.LocalInstance) error {
 	targetDir := limaClaudeStateHostDir(instance)
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
@@ -394,7 +434,7 @@ func limaAdditionalMounts(instance *cwconfig.LocalInstance) []cwconfig.MountConf
 	mounts := make([]cwconfig.MountConfig, 0)
 	if homeDir, err := localUserHomeDir(); err == nil {
 		mounts = append(mounts, discoverExternalSymlinkMounts(filepath.Join(homeDir, ".codex"), false)...)
-		mounts = append(mounts, discoverExternalSymlinkMounts(filepath.Join(homeDir, ".config", "gh"), true)...)
+		mounts = append(mounts, discoverExternalSymlinkMounts(filepath.Join(homeDir, ".config", "gh"), false)...)
 		mounts = append(mounts, discoverExternalSymlinkMounts(filepath.Join(homeDir, ".ssh"), true)...)
 	}
 	mounts = append(mounts, instance.Mounts...)
@@ -438,9 +478,12 @@ func limaVMMounts(instance *cwconfig.LocalInstance) []limaVMMount {
 	mounts := []limaVMMount{
 		{Location: limaRepoMountPath(instance), MountPoint: limaRepoMountPath(instance), Writable: true},
 		{Location: limaClaudeStateHostDir(instance), MountPoint: "/home/{{.User}}.guest/.claude", Writable: true},
-		{Location: ghConfigDir, MountPoint: "/home/{{.User}}.guest/.config/gh", Writable: false},
-		{Location: sshDir, MountPoint: "/mnt/host-ssh", Writable: false},
+		{Location: ghConfigDir, MountPoint: "/home/{{.User}}.guest/.config/gh", Writable: true},
 	}
+	if _, err := os.Stat(filepath.Join(limaGitStateHostDir(instance), ".gitconfig")); err == nil {
+		mounts = append(mounts, limaVMMount{Location: limaGitStateHostDir(instance), MountPoint: "/home/{{.User}}.guest/.codewire-git", Writable: false})
+	}
+	mounts = append(mounts, limaVMMount{Location: sshDir, MountPoint: "/mnt/host-ssh", Writable: false})
 
 	codexDir := filepath.Join(homeDir, ".codex")
 	if _, err := localOsStat(codexDir); err == nil {
@@ -461,9 +504,15 @@ func limaContainerMounts(instance *cwconfig.LocalInstance) []limaContainerMount 
 	vmHome := filepath.Join("/home", vmUser+".guest")
 	mounts := []limaContainerMount{
 		{Source: filepath.Join(vmHome, ".claude"), Target: "/home/codewire/.claude", ReadOnly: false},
-		{Source: filepath.Join(vmHome, ".config", "gh"), Target: "/home/codewire/.config/gh", ReadOnly: true},
+		{Source: filepath.Join(vmHome, ".config", "gh"), Target: "/home/codewire/.config/gh", ReadOnly: false},
 		{Source: "/mnt/host-ssh", Target: "/home/codewire/.ssh", ReadOnly: true},
 		{Source: filepath.Join(vmHome, ".codex"), Target: "/home/codewire/.codex", ReadOnly: false},
+	}
+	if sshAuthSock := strings.TrimSpace(localSSHAuthSock()); sshAuthSock != "" {
+		mounts = append([]limaContainerMount{{Source: localSSHAuthSockPath, Target: localSSHAuthSockPath, ReadOnly: false}}, mounts...)
+	}
+	if _, err := os.Stat(filepath.Join(limaGitStateHostDir(instance), ".gitconfig")); err == nil {
+		mounts = append([]limaContainerMount{{Source: filepath.Join(vmHome, ".codewire-git", ".gitconfig"), Target: "/home/codewire/.gitconfig", ReadOnly: true}}, mounts...)
 	}
 	for _, mount := range limaAdditionalMounts(instance) {
 		mounts = append(mounts, limaContainerMount{
@@ -561,6 +610,9 @@ func createLocalLimaInstance(instance *cwconfig.LocalInstance) error {
 	if err := ensureLimaClaudeState(instance); err != nil {
 		return err
 	}
+	if err := ensureLimaGitConfig(instance); err != nil {
+		return err
+	}
 	cleanup, err := ensureLimaVMForCreate(instance)
 	if err != nil {
 		return err
@@ -582,16 +634,14 @@ func createLocalLimaInstance(instance *cwconfig.LocalInstance) error {
 	if err := localRunCommandStream("limactl", "shell", "--workdir", "/", name, "sudo", "docker", "info"); err != nil {
 		return fmt.Errorf("docker not ready inside Lima VM: %v", err)
 	}
+	if err := ensureLimaSSHAgentForward(instance); err != nil {
+		return err
+	}
 
 	// Login to GHCR using host's gh auth token (best-effort)
-	if ghPath, ghErr := localLookPath("gh"); ghErr == nil {
-		if token, tokenErr := localRunCommand(ghPath, "auth", "token"); tokenErr == nil {
-			tok := strings.TrimSpace(string(token))
-			if tok != "" {
-				_, _ = localRunCommand("limactl", "shell", "--workdir", "/", name, "sh", "-c",
-					"sudo docker login ghcr.io -u oauth2 --password-stdin <<< "+strconv.Quote(tok))
-			}
-		}
+	if tok := strings.TrimSpace(localGitHubToken()); tok != "" {
+		_, _ = localRunCommand("limactl", "shell", "--workdir", "/", name, "sh", "-c",
+			"sudo docker login ghcr.io -u oauth2 --password-stdin <<< "+strconv.Quote(tok))
 	}
 
 	// Pull the image
@@ -624,6 +674,12 @@ func createLocalLimaInstance(instance *cwconfig.LocalInstance) error {
 			"-e", "DOCKER_HOST=" + limaDockerHostValue,
 			"-v", limaDockerSockPath + ":" + limaDockerSockPath,
 			"-v", repoMountPath + ":" + repoMountPath,
+		}
+		if token := strings.TrimSpace(localGitHubToken()); token != "" {
+			dockerArgs = append(dockerArgs, "-e", "GH_TOKEN="+token)
+		}
+		if sshAuthSock := strings.TrimSpace(localSSHAuthSock()); sshAuthSock != "" {
+			dockerArgs = append(dockerArgs, "-e", "SSH_AUTH_SOCK="+localSSHAuthSockPath)
 		}
 		dockerArgs = append(dockerArgs, limaContainerMountArgs(instance)...)
 		dockerArgs = append(dockerArgs,
@@ -713,6 +769,9 @@ func startLocalLimaInstance(instance *cwconfig.LocalInstance) error {
 	}
 	name := limaInstanceName(instance)
 	if err := ensureLimaClaudeState(instance); err != nil {
+		return err
+	}
+	if err := ensureLimaGitConfig(instance); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "  Starting Lima VM %q...\n", name)

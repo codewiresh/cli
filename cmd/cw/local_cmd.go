@@ -16,7 +16,10 @@ import (
 	cwconfig "github.com/codewiresh/codewire/internal/config"
 )
 
-const localWorkspacePath = "/workspace"
+const (
+	localWorkspacePath   = "/workspace"
+	localSSHAuthSockPath = "/tmp/codewire-ssh-agent.sock"
+)
 
 var (
 	loadLocalInstancesForCLI = func() (*cwconfig.LocalInstancesConfig, error) {
@@ -42,7 +45,61 @@ var (
 	localUserHomeDir   = os.UserHomeDir
 	localOsStat        = os.Stat
 	localCLIDataDir    = dataDir
+	localGitHubToken   = detectLocalGitHubToken
+	localGitConfigPath = detectLocalGitConfigPath
+	localSSHAuthSock   = detectLocalSSHAuthSock
 )
+
+func detectLocalGitHubToken() string {
+	if token := strings.TrimSpace(os.Getenv("GH_TOKEN")); token != "" {
+		return token
+	}
+	if token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); token != "" {
+		return token
+	}
+	ghPath, err := localLookPath("gh")
+	if err != nil {
+		return ""
+	}
+	out, err := localRunCommand(ghPath, "auth", "token")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func detectLocalGitConfigPath() string {
+	homeDir, err := localUserHomeDir()
+	if err != nil {
+		return ""
+	}
+	path := filepath.Join(homeDir, ".gitconfig")
+	if _, err := localOsStat(path); err != nil {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	return path
+}
+
+func detectLocalSSHAuthSock() string {
+	homeDir, err := localUserHomeDir()
+	if err == nil {
+		onePasswordSock := filepath.Join(homeDir, ".1password", "agent.sock")
+		if _, err := localOsStat(onePasswordSock); err == nil {
+			return onePasswordSock
+		}
+	}
+	path := strings.TrimSpace(os.Getenv("SSH_AUTH_SOCK"))
+	if path == "" {
+		return ""
+	}
+	if _, err := localOsStat(path); err != nil {
+		return ""
+	}
+	return path
+}
 
 type localCreateOptions struct {
 	Backend       string
@@ -917,7 +974,18 @@ func createLocalIncusInstance(instance *cwconfig.LocalInstance) error {
 		ghConfigDir := filepath.Join(homeDir, ".config", "gh")
 		if _, statErr := localOsStat(ghConfigDir); statErr == nil {
 			if err := runIncus("config", "device", "add", instance.RuntimeName, "gh-config", "disk",
-				"source="+ghConfigDir, "path=/home/codewire/.config/gh", "readonly=true"); err != nil {
+				"source="+ghConfigDir, "path=/home/codewire/.config/gh"); err != nil {
+				return err
+			}
+		}
+		if token := strings.TrimSpace(localGitHubToken()); token != "" {
+			if err := runIncus("config", "set", instance.RuntimeName, "environment.GH_TOKEN", token); err != nil {
+				return err
+			}
+		}
+		if gitConfigPath := strings.TrimSpace(localGitConfigPath()); gitConfigPath != "" {
+			if err := runIncus("config", "device", "add", instance.RuntimeName, "git-config", "disk",
+				"source="+gitConfigPath, "path=/home/codewire/.gitconfig", "readonly=true"); err != nil {
 				return err
 			}
 		}
@@ -966,7 +1034,13 @@ func createLocalDockerInstance(instance *cwconfig.LocalInstance) error {
 		}
 		ghConfigDir := filepath.Join(homeDir, ".config", "gh")
 		if _, err := localOsStat(ghConfigDir); err == nil {
-			args = append(args, "--volume", ghConfigDir+":/home/codewire/.config/gh:ro")
+			args = append(args, "--volume", ghConfigDir+":/home/codewire/.config/gh")
+		}
+		if gitConfigPath := strings.TrimSpace(localGitConfigPath()); gitConfigPath != "" {
+			args = append(args, "--volume", gitConfigPath+":/home/codewire/.gitconfig:ro")
+		}
+		if sshAuthSock := strings.TrimSpace(localSSHAuthSock()); sshAuthSock != "" {
+			args = append(args, "--volume", sshAuthSock+":"+localSSHAuthSockPath)
 		}
 		sshDir := filepath.Join(homeDir, ".ssh")
 		if _, err := localOsStat(sshDir); err == nil {
@@ -982,6 +1056,12 @@ func createLocalDockerInstance(instance *cwconfig.LocalInstance) error {
 	}
 	if instance.Memory > 0 {
 		args = append(args, "--memory", fmt.Sprintf("%dm", instance.Memory))
+	}
+	if token := strings.TrimSpace(localGitHubToken()); token != "" {
+		args = append(args, "--env", "GH_TOKEN="+token)
+	}
+	if sshAuthSock := strings.TrimSpace(localSSHAuthSock()); sshAuthSock != "" {
+		args = append(args, "--env", "SSH_AUTH_SOCK="+localSSHAuthSockPath)
 	}
 	if len(instance.Env) > 0 {
 		keys := make([]string, 0, len(instance.Env))
