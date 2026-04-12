@@ -4,22 +4,19 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/crypto/ssh"
 	"nhooyr.io/websocket"
 
+	"github.com/codewiresh/codewire/internal/envshell"
 	"github.com/codewiresh/codewire/internal/peer"
 	"github.com/codewiresh/codewire/internal/platform"
 	"github.com/codewiresh/codewire/internal/terminal"
-	"github.com/codewiresh/tailnet"
 )
 
 func sshCmd() *cobra.Command {
@@ -160,81 +157,38 @@ func sshStdioWebSocket(client *platform.Client, orgID, envID string) error {
 }
 
 // sshInteractive connects to the environment via SSH over WireGuard (primary)
-// or WebSocket proxy (fallback).
+// or WebSocket proxy (fallback), then runs an interactive terminal session.
 func sshInteractive(client *platform.Client, orgID, envID string) error {
-	// Try WireGuard first.
-	err := sshOverWireGuard(client, orgID, envID)
-	if err == nil {
-		return nil
-	}
-
-	// Classify the WireGuard failure for diagnostics.
-	errMsg := err.Error()
-	switch {
-	case strings.Contains(errMsg, "timeout waiting for agent peer info"):
-		fmt.Fprintf(os.Stderr, "wireguard: no peer info from sidecar (coordinator exchange timed out)\n")
-		fmt.Fprintf(os.Stderr, "  hint: sidecar may be on a different server replica, or DERP relay unreachable\n")
-		fmt.Fprintf(os.Stderr, "  debug: CW_DEBUG_TAILNET=1 cw ssh %s\n", envID)
-	case strings.Contains(errMsg, "coordinator connect"):
-		fmt.Fprintf(os.Stderr, "wireguard: coordinator WebSocket failed (%v)\n", err)
-	case strings.Contains(errMsg, "dial agent ssh"):
-		fmt.Fprintf(os.Stderr, "wireguard: peer found but SSH dial failed (%v)\n", err)
-		fmt.Fprintf(os.Stderr, "  hint: DERP relay may be unreachable from sidecar, or sidecar SSH not listening\n")
-	case strings.Contains(errMsg, "ssh handshake"):
-		fmt.Fprintf(os.Stderr, "wireguard: tunnel OK but SSH handshake failed (%v)\n", err)
-	default:
-		fmt.Fprintf(os.Stderr, "wireguard unavailable (%v)\n", err)
-	}
-	fmt.Fprintln(os.Stderr, "trying websocket proxy...")
-
-	// Check if SSH proxy is available
-	available, _ := client.CheckSSHProxy(orgID, envID)
-	if !available {
-		fmt.Fprintln(os.Stderr, "websocket proxy: sshd not reachable via port-forward")
-		fmt.Fprintln(os.Stderr, "  hint: sidecar may not be running, or exec-check endpoint failing")
-		return terminalFallback(client, orgID, envID)
-	}
-
-	return sshOverWebSocket(client, orgID, envID)
-}
-
-// connectWireGuard creates a WireGuard tunnel to the environment's agent and
-// returns a TCP connection to the agent's SSH port (22).
-func connectWireGuard(ctx context.Context, client *platform.Client, orgID, envID string) (net.Conn, *tailnet.Conn, error) {
-	tcpConn, wgConn, err := peer.DialEnvironmentPeerTCP(ctx, client, orgID, envID, 22)
-	if err != nil {
-		return nil, nil, err
-	}
-	return tcpConn, wgConn, nil
-}
-
-// sshOverWireGuard establishes an SSH connection through WireGuard.
-func sshOverWireGuard(client *platform.Client, orgID, envID string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	tcpConn, wgConn, err := connectWireGuard(ctx, client, orgID, envID)
+	cols, rows, _ := terminal.TerminalSize()
+	if cols == 0 {
+		cols = 80
+	}
+	if rows == 0 {
+		rows = 24
+	}
+
+	shell, err := envshell.Dial(ctx, envshell.DialOptions{
+		Client:         client,
+		OrgID:          orgID,
+		EnvID:          envID,
+		InitialCols:    uint16(cols),
+		InitialRows:    uint16(rows),
+		KnownHostsPath: defaultKnownHostsPath(),
+	})
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "ssh dial failed: %v\n", err)
+		available, _ := client.CheckSSHProxy(orgID, envID)
+		if !available {
+			return terminalFallback(client, orgID, envID)
+		}
 		return err
 	}
-	defer wgConn.Close()
+	defer shell.Close()
 
-	sshConfig := &ssh.ClientConfig{
-		User: "codewire",
-		Auth: []ssh.AuthMethod{ssh.Password("")},
-	}
-	sshConfig.HostKeyCallback, err = codewireHostKeyCallback()
-	if err != nil {
-		return fmt.Errorf("known_hosts callback: %w", err)
-	}
-
-	sshConn, chans, reqs, err := ssh.NewClientConn(tcpConn, "cw-"+envID+":22", sshConfig)
-	if err != nil {
-		return fmt.Errorf("ssh handshake: %w", err)
-	}
-	defer sshConn.Close()
-
-	return runSSHSession(ssh.NewClient(sshConn, chans, reqs))
+	return runInteractiveShell(shell)
 }
 
 // sshStdioWireGuard connects via WireGuard and pipes stdin/stdout to the
@@ -243,7 +197,7 @@ func sshStdioWireGuard(client *platform.Client, orgID, envID string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	tcpConn, wgConn, err := connectWireGuard(ctx, client, orgID, envID)
+	tcpConn, wgConn, err := peer.DialEnvironmentPeerTCP(ctx, client, orgID, envID, 22)
 	if err != nil {
 		return err
 	}
@@ -279,88 +233,15 @@ func sshStdioWireGuard(client *platform.Client, orgID, envID string) error {
 	return err
 }
 
-// sshOverWebSocket establishes an SSH connection through the WebSocket proxy.
-// Uses "none" auth — the workspace SSH server runs with NoClientAuth since
-// network-layer authentication (WireGuard or server-side auth) handles identity.
-func sshOverWebSocket(client *platform.Client, orgID, envID string) error {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	wsURL := strings.Replace(client.ServerURL, "https://", "wss://", 1)
-	wsURL = strings.Replace(wsURL, "http://", "ws://", 1)
-	wsURL += fmt.Sprintf("/api/v1/organizations/%s/environments/%s/ssh-proxy", orgID, envID)
-
-	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
-		Subprotocols: []string{"ssh"},
-		HTTPHeader: http.Header{
-			"Authorization": []string{"Bearer " + client.SessionToken},
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("ssh proxy connect: %w", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
-	wsConn := &wsNetConn{conn: conn, ctx: ctx}
-
-	sshConfig := &ssh.ClientConfig{
-		User: "codewire",
-		Auth: []ssh.AuthMethod{ssh.Password("")},
-	}
-	sshConfig.HostKeyCallback, err = codewireHostKeyCallback()
-	if err != nil {
-		return fmt.Errorf("known_hosts callback: %w", err)
-	}
-
-	sshConn, chans, reqs, err := ssh.NewClientConn(wsConn, "cw-"+envID+":22", sshConfig)
-	if err != nil {
-		return fmt.Errorf("ssh handshake: %w", err)
-	}
-	defer sshConn.Close()
-
-	return runSSHSession(ssh.NewClient(sshConn, chans, reqs))
-}
-
-// runSSHSession opens a PTY session on the given SSH client with detach support.
-func runSSHSession(sshClient *ssh.Client) error {
-	defer sshClient.Close()
-
-	session, err := sshClient.NewSession()
-	if err != nil {
-		return fmt.Errorf("ssh session: %w", err)
-	}
-	defer session.Close()
-
-	cols, rows, err := terminal.TerminalSize()
-	if err != nil {
-		cols, rows = 80, 24
-	}
-
-	if err := session.RequestPty("xterm-256color", int(rows), int(cols), ssh.TerminalModes{
-		ssh.ECHO:          1,
-		ssh.TTY_OP_ISPEED: 14400,
-		ssh.TTY_OP_OSPEED: 14400,
-	}); err != nil {
-		return fmt.Errorf("request pty: %w", err)
-	}
-
+// runInteractiveShell wires a Shell to the local terminal with raw mode,
+// resize propagation, and Ctrl+B d detach detection. This is CLI-specific
+// and does not belong in the envshell package.
+func runInteractiveShell(shell envshell.Shell) error {
 	rawGuard, err := terminal.EnableRawMode()
 	if err != nil {
 		return fmt.Errorf("raw mode: %w", err)
 	}
 	defer rawGuard.Restore()
-
-	stdinPipe, err := session.StdinPipe()
-	if err != nil {
-		return fmt.Errorf("stdin pipe: %w", err)
-	}
-
-	session.Stdout = os.Stdout
-	session.Stderr = os.Stderr
-
-	if err := session.Shell(); err != nil {
-		return fmt.Errorf("start shell: %w", err)
-	}
 
 	resizeCh, resizeCleanup := terminal.ResizeSignal()
 	defer resizeCleanup()
@@ -368,6 +249,7 @@ func runSSHSession(sshClient *ssh.Client) error {
 	detach := terminal.NewDetachDetector()
 	done := make(chan error, 1)
 
+	// stdin -> shell.Write with detach detection
 	go func() {
 		buf := make([]byte, 1024)
 		for {
@@ -381,7 +263,7 @@ func runSSHSession(sshClient *ssh.Client) error {
 					return
 				}
 				if len(fwd) > 0 {
-					if _, wErr := stdinPipe.Write(fwd); wErr != nil {
+					if _, wErr := shell.Write(fwd); wErr != nil {
 						done <- wErr
 						return
 					}
@@ -394,32 +276,37 @@ func runSSHSession(sshClient *ssh.Client) error {
 		}
 	}()
 
+	// shell.Read -> stdout
+	go func() {
+		buf := make([]byte, 32 * 1024)
+		for {
+			n, err := shell.Read(buf)
+			if n > 0 {
+				os.Stdout.Write(buf[:n])
+			}
+			if err != nil {
+				done <- err
+				return
+			}
+		}
+	}()
+
+	// resize propagation
 	go func() {
 		for range resizeCh {
 			c, r, err := terminal.TerminalSize()
 			if err == nil {
-				session.WindowChange(int(r), int(c))
+				shell.Resize(uint16(c), uint16(r))
 			}
 		}
 	}()
 
-	sessionDone := make(chan error, 1)
-	go func() {
-		sessionDone <- session.Wait()
-	}()
-
-	select {
-	case err := <-done:
-		return err
-	case err := <-sessionDone:
+	err = <-done
+	if err == io.EOF {
 		rawGuard.Restore()
-		if err != nil {
-			if exitErr, ok := err.(*ssh.ExitError); ok {
-				os.Exit(exitErr.ExitStatus())
-			}
-		}
 		return nil
 	}
+	return err
 }
 
 // terminalFallback uses the existing terminal WebSocket for environments without sshd.
@@ -529,55 +416,3 @@ func terminalFallback(client *platform.Client, orgID, envID string) error {
 	<-done
 	return nil
 }
-
-// wsNetConn wraps a nhooyr.io/websocket.Conn to implement io.ReadWriteCloser
-// for use with golang.org/x/crypto/ssh.NewClientConn.
-type wsNetConn struct {
-	conn   *websocket.Conn
-	ctx    context.Context
-	reader io.Reader
-}
-
-func (w *wsNetConn) Read(p []byte) (int, error) {
-	for {
-		if w.reader != nil {
-			n, err := w.reader.Read(p)
-			if n > 0 {
-				return n, nil
-			}
-			if err != io.EOF {
-				return 0, err
-			}
-			w.reader = nil
-		}
-		_, reader, err := w.conn.Reader(w.ctx)
-		if err != nil {
-			return 0, err
-		}
-		w.reader = reader
-	}
-}
-
-func (w *wsNetConn) Write(p []byte) (int, error) {
-	err := w.conn.Write(w.ctx, websocket.MessageBinary, p)
-	if err != nil {
-		return 0, err
-	}
-	return len(p), nil
-}
-
-func (w *wsNetConn) Close() error {
-	return w.conn.Close(websocket.StatusNormalClosure, "")
-}
-
-func (w *wsNetConn) LocalAddr() net.Addr  { return wsAddr{} }
-func (w *wsNetConn) RemoteAddr() net.Addr { return wsAddr{} }
-
-func (w *wsNetConn) SetDeadline(t time.Time) error      { return nil }
-func (w *wsNetConn) SetReadDeadline(t time.Time) error  { return nil }
-func (w *wsNetConn) SetWriteDeadline(t time.Time) error { return nil }
-
-type wsAddr struct{}
-
-func (wsAddr) Network() string { return "websocket" }
-func (wsAddr) String() string  { return "websocket:22" }
