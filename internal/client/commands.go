@@ -366,6 +366,9 @@ func AttachConn(reader connection.FrameReader, writer connection.FrameWriter, se
 	}
 	defer guard.Restore()
 
+	// Take ownership of the visible terminal before drawing the attach UI.
+	_, _ = os.Stdout.Write([]byte("[H[2J"))
+
 	// ---------------------------------------------------------------
 	// Step 4: set up status bar
 	// ---------------------------------------------------------------

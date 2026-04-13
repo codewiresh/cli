@@ -203,9 +203,23 @@ func localStartCmd() *cobra.Command {
 		Short: "Start an existing local runtime instance",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			instance, err := resolveLocalInstanceArg(optionalArg(args))
+			state, err := loadLocalInstancesForCLI()
 			if err != nil {
 				return err
+			}
+			key, instance, err := resolveLocalInstance(state, optionalArg(args))
+			if err != nil {
+				return err
+			}
+			changed, err := reconcileLocalInstancePortsFromConfig(instance)
+			if err != nil {
+				return err
+			}
+			if changed {
+				state.Instances[key] = *instance
+				if err := saveLocalInstancesForCLI(state); err != nil {
+					return fmt.Errorf("save local instance state: %w", err)
+				}
 			}
 			if err := startLocalRuntime(instance); err != nil {
 				return err
@@ -481,6 +495,95 @@ func localPortDisplay(instance *cwconfig.LocalInstance, port cwconfig.PortConfig
 		part += " (" + label + ")"
 	}
 	return part
+}
+
+func canonicalLocalPorts(ports []cwconfig.PortConfig) []cwconfig.PortConfig {
+	canonical := make([]cwconfig.PortConfig, 0, len(ports))
+	for _, port := range ports {
+		normalized := port.Canonical()
+		if normalized.EffectiveHostPort() <= 0 || normalized.EffectiveGuestPort() <= 0 {
+			continue
+		}
+		canonical = append(canonical, normalized)
+	}
+	return canonical
+}
+
+func sameLocalPorts(a, b []cwconfig.PortConfig) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func reconcileLocalInstancePortsFromConfig(instance *cwconfig.LocalInstance) (bool, error) {
+	if instance == nil || strings.TrimSpace(instance.RepoPath) == "" {
+		return false, nil
+	}
+
+	cfg, err := loadLocalCodewireConfig(instance.RepoPath, "codewire.yaml")
+	if err != nil {
+		return false, err
+	}
+	desiredPorts := canonicalLocalPorts(cfg.Ports)
+	currentPorts := canonicalLocalPorts(instance.Ports)
+	if sameLocalPorts(currentPorts, desiredPorts) {
+		return false, nil
+	}
+
+	if instance.Backend == "lima" {
+		status, err := localRuntimeStatus(instance)
+		if err != nil {
+			return false, err
+		}
+		if status == "running" {
+			return false, fmt.Errorf("Lima instance %q is running with stale codewire.yaml port config; stop it and rerun 'cw local start %s' to apply the change", instance.Name, instance.Name)
+		}
+		if status != "missing" {
+			if err := limaSetPortForwards(instance, desiredPorts); err != nil {
+				return false, err
+			}
+		}
+	}
+
+	instance.Ports = desiredPorts
+	return true, nil
+}
+
+func limaSetPortForwards(instance *cwconfig.LocalInstance, ports []cwconfig.PortConfig) error {
+	name := limaInstanceName(instance)
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("missing Lima instance name")
+	}
+
+	forwards := make([]limaPortForwardEdit, 0, len(ports))
+	for _, port := range canonicalLocalPorts(ports) {
+		forwards = append(forwards, limaPortForwardEdit{
+			GuestPort: port.EffectiveGuestPort(),
+			HostPort:  port.EffectiveHostPort(),
+			Proto:     "tcp",
+		})
+	}
+
+	payload, err := json.Marshal(forwards)
+	if err != nil {
+		return fmt.Errorf("marshal Lima port forwards: %w", err)
+	}
+	setExpr := fmt.Sprintf(`.portForwards = ((.portForwards // []) | map(select(.guestSocket != null)) + %s)`, payload)
+	out, err := localRunCommand("limactl", "edit", "--tty=false", name, "--set", setExpr)
+	if err != nil {
+		trimmed := strings.TrimSpace(string(out))
+		if trimmed != "" {
+			return fmt.Errorf("limactl edit %s: %v\n%s", name, err, trimmed)
+		}
+		return fmt.Errorf("limactl edit %s: %w", name, err)
+	}
+	return nil
 }
 
 func addLimaPortForwards(instance *cwconfig.LocalInstance, publish []string) ([]cwconfig.PortConfig, int, error) {

@@ -84,19 +84,15 @@ func (s *StatusBar) Resume() {
 	s.suspended = false
 }
 
-// Teardown removes only the terminal state owned by the status bar.
+// Teardown removes only terminal state the bar can safely own.
+// It intentionally leaves the last row untouched so detach does not erase
+// user-visible output that landed there after the bar rendered.
 func (s *StatusBar) Teardown() []byte {
 	if !s.active {
 		return nil
 	}
 	s.active = false
-	var out []byte
-	out = append(out, "\x1b[r"...)
-	out = append(out, "\x1b7"...)
-	out = append(out, fmt.Sprintf("\x1b[%d;1H", s.Rows)...)
-	out = append(out, "\x1b[2K"...)
-	out = append(out, "\x1b8"...)
-	return out
+	return []byte("[r")
 }
 
 // Draw renders the status bar (save cursor, render, restore cursor).

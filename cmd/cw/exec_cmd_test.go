@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	cwconfig "github.com/codewiresh/codewire/internal/config"
@@ -173,6 +174,34 @@ func TestExecCmdUsesCurrentLocalInstanceTarget(t *testing.T) {
 	}
 	if len(gotCommand) != 1 || gotCommand[0] != "pwd" {
 		t.Fatalf("command = %#v", gotCommand)
+	}
+}
+
+func TestLocalRuntimeTerminalEnvNormalizesUnsupportedHostTerminals(t *testing.T) {
+	t.Setenv("TERM", "xterm-kitty")
+	t.Setenv("COLORTERM", "truecolor")
+	t.Setenv("TERM_PROGRAM", "WarpTerminal")
+	env := localRuntimeTerminalEnv()
+	joined := strings.Join(env, "\n")
+	for _, want := range []string{"TERM=xterm-256color", "COLORTERM=truecolor", "TERM_PROGRAM=WarpTerminal"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("localRuntimeTerminalEnv() missing %q in %#v", want, env)
+		}
+	}
+	if strings.Contains(joined, "TERM=xterm-kitty") {
+		t.Fatalf("localRuntimeTerminalEnv() leaked unsupported TERM in %#v", env)
+	}
+}
+
+func TestLocalRuntimeTerminalEnvFallsBackToSafeDefaults(t *testing.T) {
+	t.Setenv("TERM", "")
+	t.Setenv("COLORTERM", "")
+	env := localRuntimeTerminalEnv()
+	joined := strings.Join(env, "\n")
+	for _, want := range []string{"TERM=xterm-256color", "COLORTERM=truecolor"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("localRuntimeTerminalEnv() missing %q in %#v", want, env)
+		}
 	}
 }
 

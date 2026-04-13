@@ -108,7 +108,7 @@ func handleClient(reader connection.FrameReader, writer connection.FrameWriter, 
 		if includeHistory {
 			logPath, logErr := manager.LogPath(sessionID)
 			if logErr == nil {
-				if histErr := replayHistory(writer, logPath, req.HistoryLines); histErr != nil {
+				if histErr := replayHistory(writer, logPath, req.HistoryLines, true); histErr != nil {
 					slog.Warn("failed to replay history", "id", sessionID, "err", histErr)
 				}
 			}
@@ -488,7 +488,7 @@ func handleAttachSession(
 
 // replayHistory reads the session log file and sends its contents as a data
 // frame. If historyLines is non-nil, only the last N lines are sent.
-func replayHistory(writer connection.FrameWriter, logPath string, historyLines *uint) error {
+func replayHistory(writer connection.FrameWriter, logPath string, historyLines *uint, clearScreen bool) error {
 	content, err := os.ReadFile(logPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -511,6 +511,9 @@ func replayHistory(writer connection.FrameWriter, logPath string, historyLines *
 		data = strings.Join(lines, "\n")
 	}
 	data = sanitizeReplayOutput(data)
+	if clearScreen && historyLines == nil && len(data) > 0 {
+		data = "[H[2J" + data
+	}
 
 	if len(data) > 0 {
 		return writer.SendData([]byte(data))

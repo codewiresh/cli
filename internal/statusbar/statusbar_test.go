@@ -38,23 +38,16 @@ func TestSetupSetsScrollRegionAndDrawsBar(t *testing.T) {
 	}
 }
 
-func TestTeardownOnlyClearsOwnedBarState(t *testing.T) {
+func TestTeardownOnlyResetsScrollRegion(t *testing.T) {
 	bar := New(1, 80, 24)
 	_ = bar.Setup()
 	out := string(bar.Teardown())
-	checks := map[string]string{
-		"\x1b[r":     "scroll region reset",
-		"\x1b[24;1H": "move to last row",
-		"\x1b[2K":    "clear line",
+	if !strings.Contains(out, "[r") {
+		t.Fatal("should reset scroll region")
 	}
-	for seq, name := range checks {
-		if !strings.Contains(out, seq) {
-			t.Fatalf("should contain %s (%s)", name, seq)
-		}
-	}
-	for _, seq := range []string{"\x1b[?1049l", "\x1b[?25h", "\x1b[<u", "\x1b[?1004l", "\x1b[?1000l", "\x1b[?1006l"} {
+	for _, seq := range []string{"[24;1H", "[2K", "[?1049l", "[?25h", "[<u", "[?1004l", "[?1000l", "[?1006l"} {
 		if strings.Contains(out, seq) {
-			t.Fatalf("should not contain unrelated terminal reset %q", seq)
+			t.Fatalf("should not contain terminal sequence %q", seq)
 		}
 	}
 }

@@ -531,6 +531,7 @@ func TestLimaCreateCommandArgs(t *testing.T) {
 	localGOOS = "linux"
 	localUserHomeDir = func() (string, error) { return "/home/testuser", nil }
 	localOsStat = func(name string) (os.FileInfo, error) { return nil, nil }
+	stubLocalSSHAuthSock(t, "/home/testuser/.1password/agent.sock")
 	gitStateDir := filepath.Join(dataDir, "lima", "cw-repo", "git")
 	if err := os.MkdirAll(gitStateDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll(gitStateDir): %v", err)
@@ -568,6 +569,7 @@ func TestLimaCreateCommandArgs(t *testing.T) {
 		"--mount-type", "9p",
 		"--mount-none",
 		"--set", wantMountSet,
+		"--set", `.portForwards = ((.portForwards // []) | map(select(.guestSocket != "/tmp/codewire-ssh-agent.sock")) + [{"guestSocket":"/tmp/codewire-ssh-agent.sock","hostSocket":"/home/testuser/.1password/agent.sock"}])`,
 		"--cpus", "2",
 		"--memory", "4",
 		"--disk", "20",
@@ -618,11 +620,14 @@ func TestCreateLocalLimaInstanceInvokesExpectedCommands(t *testing.T) {
 	}
 
 	var streamCalls [][]string
+	var commandCalls [][]string
 	localRunCommandStream = func(name string, args ...string) error {
 		streamCalls = append(streamCalls, append([]string{name}, args...))
 		return nil
 	}
 	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		call := append([]string{name}, args...)
+		commandCalls = append(commandCalls, call)
 		if name == "limactl" && len(args) >= 10 && args[0] == "shell" && args[4] == "sudo" && args[5] == "docker" && args[6] == "inspect" {
 			return []byte("Error: No such container"), errors.New("missing")
 		}
@@ -675,6 +680,17 @@ func TestCreateLocalLimaInstanceInvokesExpectedCommands(t *testing.T) {
 	}
 	if !reflect.DeepEqual(streamCalls, want) {
 		t.Fatalf("lima stream calls:\n  got:  %#v\n  want: %#v", streamCalls, want)
+	}
+	wantCommand := []string{"limactl", "shell", "--workdir", "/", "cw-repo", "sudo", "docker", "exec", "-u", "0", "cw-workspace", "sh", "-lc", `gid="988"; if getent group "$gid" >/dev/null 2>&1; then exit 0; fi; groupadd -g "$gid" codewire-docker >/dev/null 2>&1 || groupadd -g "$gid" docker >/dev/null 2>&1 || true`}
+	found := false
+	for _, call := range commandCalls {
+		if reflect.DeepEqual(call, wantCommand) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected lima docker socket group call %#v in %#v", wantCommand, commandCalls)
 	}
 	if instance.LimaInstanceName != "cw-repo" {
 		t.Fatalf("LimaInstanceName = %q, want %q", instance.LimaInstanceName, "cw-repo")
@@ -757,6 +773,9 @@ func TestEnsureLimaClaudeStateSeedsPortableEntries(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(homeDir, ".claude", "skills", "tasks"), 0o755); err != nil {
 		t.Fatalf("MkdirAll(home .claude skills): %v", err)
 	}
+	if err := os.MkdirAll(filepath.Join(homeDir, ".claude", "plugins", "marketplaces", "official"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(home .claude plugins): %v", err)
+	}
 	if err := os.MkdirAll(filepath.Join(agenticDir, ".claude"), 0o755); err != nil {
 		t.Fatalf("MkdirAll(agentic .claude): %v", err)
 	}
@@ -774,6 +793,9 @@ func TestEnsureLimaClaudeStateSeedsPortableEntries(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(homeDir, ".claude", "skills", "tasks", "SKILL.md"), []byte("skill"), 0o644); err != nil {
 		t.Fatalf("WriteFile(skill): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(homeDir, ".claude", "plugins", "marketplaces", "official", "marketplace.json"), []byte("marketplace"), 0o644); err != nil {
+		t.Fatalf("WriteFile(marketplace): %v", err)
 	}
 	if err := os.Symlink(filepath.Join(agenticDir, "MEMORY.md"), filepath.Join(homeDir, ".claude", "CLAUDE.md")); err != nil {
 		t.Fatalf("Symlink(CLAUDE.md): %v", err)
@@ -809,6 +831,9 @@ func TestEnsureLimaClaudeStateSeedsPortableEntries(t *testing.T) {
 		t.Fatalf("Lstat(settings.json): %v", err)
 	} else if info.Mode()&os.ModeSymlink != 0 {
 		t.Fatal("expected settings.json to be copied, not symlinked")
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "plugins")); !os.IsNotExist(err) {
+		t.Fatalf("expected plugins to remain unseeded, got err=%v", err)
 	}
 }
 
@@ -944,7 +969,11 @@ func TestLimaLifecycleCommands(t *testing.T) {
 
 	var calls [][]string
 	localRunCommand = func(name string, args ...string) ([]byte, error) {
-		calls = append(calls, append([]string{name}, args...))
+		call := append([]string{name}, args...)
+		calls = append(calls, call)
+		if len(call) >= 9 && reflect.DeepEqual(call[:9], []string{"limactl", "shell", "--workdir", "/", "cw-repo", "sudo", "stat", "-c", "%g"}) {
+			return []byte("988\n"), nil
+		}
 		return nil, nil
 	}
 	localRunCommandStream = func(name string, args ...string) error {
@@ -972,6 +1001,8 @@ func TestLimaLifecycleCommands(t *testing.T) {
 		{"limactl", "start", "--tty=false", "cw-repo"},
 		{"limactl", "shell", "--workdir", "/", "cw-repo", "sudo", "systemctl", "start", "docker"},
 		{"limactl", "shell", "--workdir", "/", "cw-repo", "sudo", "docker", "start", "cw-workspace"},
+		{"limactl", "shell", "--workdir", "/", "cw-repo", "sudo", "stat", "-c", "%g", limaDockerSockPath},
+		{"limactl", "shell", "--workdir", "/", "cw-repo", "sudo", "docker", "exec", "-u", "0", "cw-workspace", "sh", "-lc", `gid="988"; if getent group "$gid" >/dev/null 2>&1; then exit 0; fi; groupadd -g "$gid" codewire-docker >/dev/null 2>&1 || groupadd -g "$gid" docker >/dev/null 2>&1 || true`},
 		{"limactl", "shell", "--workdir", "/", "cw-repo", "sudo", "docker", "stop", "cw-workspace"},
 		{"limactl", "stop", "cw-repo"},
 		{"limactl", "delete", "--force", "cw-repo"},
@@ -1157,6 +1188,116 @@ func TestLocalPortsCmdRejectsConflictingLimaHostPort(t *testing.T) {
 	}
 	if saved {
 		t.Fatal("expected local instance state not to be saved")
+	}
+}
+
+func TestReconcileLocalInstancePortsFromConfigUpdatesStoppedLima(t *testing.T) {
+	origLookPath := localLookPath
+	origRunCommand := localRunCommand
+	t.Cleanup(func() {
+		localLookPath = origLookPath
+		localRunCommand = origRunCommand
+	})
+
+	projectDir := t.TempDir()
+	cfgPath := filepath.Join(projectDir, "codewire.yaml")
+	if err := cwconfig.WriteCodewireConfig(cfgPath, &cwconfig.CodewireConfig{Ports: []cwconfig.PortConfig{{HostPort: 8081, GuestPort: 8080}}}); err != nil {
+		t.Fatalf("WriteCodewireConfig() error = %v", err)
+	}
+
+	localLookPath = func(file string) (string, error) {
+		if file != "limactl" {
+			t.Fatalf("LookPath(%q) unexpected", file)
+		}
+		return "/usr/bin/limactl", nil
+	}
+
+	var calls [][]string
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		call := append([]string{name}, args...)
+		calls = append(calls, call)
+		if name == "limactl" && len(args) == 3 && args[0] == "list" && args[1] == "--format" && args[2] == "json" {
+			return []byte(`[{"name":"cw-repo","status":"Stopped"}]`), nil
+		}
+		return nil, nil
+	}
+
+	instance := &cwconfig.LocalInstance{
+		Name:             "repo",
+		Backend:          "lima",
+		RepoPath:         projectDir,
+		LimaInstanceName: "cw-repo",
+		Ports:            []cwconfig.PortConfig{{Port: 8080}},
+	}
+	changed, err := reconcileLocalInstancePortsFromConfig(instance)
+	if err != nil {
+		t.Fatalf("reconcileLocalInstancePortsFromConfig() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("expected reconcileLocalInstancePortsFromConfig() to report a change")
+	}
+	wantPorts := []cwconfig.PortConfig{{HostPort: 8081, GuestPort: 8080}}
+	if !reflect.DeepEqual(instance.Ports, wantPorts) {
+		t.Fatalf("instance.Ports = %#v, want %#v", instance.Ports, wantPorts)
+	}
+	wantCalls := [][]string{
+		{"limactl", "list", "--format", "json"},
+		{"limactl", "edit", "--tty=false", "cw-repo", "--set", `.portForwards = ((.portForwards // []) | map(select(.guestSocket != null)) + [{"guestPort":8080,"hostPort":8081,"proto":"tcp"}])`},
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("localRunCommand calls = %#v, want %#v", calls, wantCalls)
+	}
+}
+
+func TestReconcileLocalInstancePortsFromConfigRejectsRunningLima(t *testing.T) {
+	origLookPath := localLookPath
+	origRunCommand := localRunCommand
+	t.Cleanup(func() {
+		localLookPath = origLookPath
+		localRunCommand = origRunCommand
+	})
+
+	projectDir := t.TempDir()
+	cfgPath := filepath.Join(projectDir, "codewire.yaml")
+	if err := cwconfig.WriteCodewireConfig(cfgPath, &cwconfig.CodewireConfig{Ports: []cwconfig.PortConfig{{HostPort: 8081, GuestPort: 8080}}}); err != nil {
+		t.Fatalf("WriteCodewireConfig() error = %v", err)
+	}
+
+	localLookPath = func(file string) (string, error) {
+		if file != "limactl" {
+			t.Fatalf("LookPath(%q) unexpected", file)
+		}
+		return "/usr/bin/limactl", nil
+	}
+
+	calls := 0
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		calls++
+		if name == "limactl" && len(args) == 3 && args[0] == "list" && args[1] == "--format" && args[2] == "json" {
+			return []byte(`[{"name":"cw-repo","status":"Running"}]`), nil
+		}
+		return nil, nil
+	}
+
+	instance := &cwconfig.LocalInstance{
+		Name:             "repo",
+		Backend:          "lima",
+		RepoPath:         projectDir,
+		LimaInstanceName: "cw-repo",
+		Ports:            []cwconfig.PortConfig{{Port: 8080}},
+	}
+	changed, err := reconcileLocalInstancePortsFromConfig(instance)
+	if err == nil {
+		t.Fatal("expected reconcileLocalInstancePortsFromConfig() to fail")
+	}
+	if changed {
+		t.Fatal("expected reconcileLocalInstancePortsFromConfig() not to report a change")
+	}
+	if !strings.Contains(err.Error(), "stop it and rerun 'cw local start repo'") {
+		t.Fatalf("error = %q, want stop-and-restart guidance", err)
+	}
+	if calls != 1 {
+		t.Fatalf("localRunCommand calls = %d, want 1", calls)
 	}
 }
 

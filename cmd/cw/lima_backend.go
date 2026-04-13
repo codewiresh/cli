@@ -266,6 +266,9 @@ func discoverExternalSymlinkMounts(root string, readOnly bool) []cwconfig.MountC
 	return mounts
 }
 
+// Keep per-instance Claude runtime state isolated. In particular, do not seed
+// plugins or marketplaces from host ~/.claude because those registries store
+// absolute install and project paths that break across host/Lima boundaries.
 var limaClaudePortableEntries = []string{
 	"settings.json",
 	"settings.local.json",
@@ -314,16 +317,23 @@ func ensureLimaGitConfig(instance *cwconfig.LocalInstance) error {
 	return nil
 }
 
-func ensureLimaSSHAgentForward(instance *cwconfig.LocalInstance) error {
+func limaSSHAgentForwardSetExpr() (string, bool, error) {
 	hostSocket := strings.TrimSpace(localSSHAuthSock())
 	if hostSocket == "" {
-		return nil
+		return "", false, nil
 	}
 	payload, err := json.Marshal([]map[string]string{{"guestSocket": localSSHAuthSockPath, "hostSocket": hostSocket}})
 	if err != nil {
-		return fmt.Errorf("marshal Lima SSH agent forward: %w", err)
+		return "", false, fmt.Errorf("marshal Lima SSH agent forward: %w", err)
 	}
-	setExpr := fmt.Sprintf(`.portForwards = ((.portForwards // []) | map(select(.guestSocket != %q)) + %s)`, localSSHAuthSockPath, string(payload))
+	return fmt.Sprintf(`.portForwards = ((.portForwards // []) | map(select(.guestSocket != %q)) + %s)`, localSSHAuthSockPath, string(payload)), true, nil
+}
+
+func ensureLimaSSHAgentForward(instance *cwconfig.LocalInstance) error {
+	setExpr, ok, err := limaSSHAgentForwardSetExpr()
+	if err != nil || !ok {
+		return err
+	}
 	out, err := localRunCommand("limactl", "edit", "--tty=false", limaInstanceName(instance), "--set", setExpr)
 	if err != nil {
 		trimmed := strings.TrimSpace(string(out))
@@ -559,6 +569,11 @@ func limaCreateCommandArgs(instance *cwconfig.LocalInstance) []string {
 		"--mount-none",
 		"--set", mountSet,
 	}
+	if sshAgentSetExpr, ok, err := limaSSHAgentForwardSetExpr(); err == nil && ok {
+		args = append(args, "--set", sshAgentSetExpr)
+	} else if err != nil {
+		fmt.Fprintf(os.Stderr, "  Warning: skipping SSH agent forward: %v\n", err)
+	}
 
 	if instance.CPU > 0 {
 		cpus := (instance.CPU + 999) / 1000
@@ -634,9 +649,6 @@ func createLocalLimaInstance(instance *cwconfig.LocalInstance) error {
 	if err := localRunCommandStream("limactl", "shell", "--workdir", "/", name, "sudo", "docker", "info"); err != nil {
 		return fmt.Errorf("docker not ready inside Lima VM: %v", err)
 	}
-	if err := ensureLimaSSHAgentForward(instance); err != nil {
-		return err
-	}
 
 	// Login to GHCR using host's gh auth token (best-effort)
 	if tok := strings.TrimSpace(localGitHubToken()); tok != "" {
@@ -698,6 +710,9 @@ func createLocalLimaInstance(instance *cwconfig.LocalInstance) error {
 			return fmt.Errorf("docker start %s: %v\n%s", limaContainerName, err, strings.TrimSpace(string(out)))
 		}
 	}
+	if err := ensureLimaDockerSocketGroup(instance, dockerSockGID); err != nil {
+		return err
+	}
 
 	cleanup = false
 	return nil
@@ -722,6 +737,9 @@ func ensureLimaVMForCreate(instance *cwconfig.LocalInstance) (bool, error) {
 
 	fmt.Fprintf(os.Stderr, "  Reusing existing Lima VM %q...\n", name)
 	if status != "running" {
+		if err := ensureLimaSSHAgentForward(instance); err != nil {
+			return false, err
+		}
 		if err := localRunCommandStream("limactl", "start", "--tty=false", name); err != nil {
 			return false, fmt.Errorf("limactl start %s: %v", name, err)
 		}
@@ -741,6 +759,25 @@ func limaDockerSocketGID(instance *cwconfig.LocalInstance) (string, error) {
 		return "", fmt.Errorf("stat docker socket gid: empty output")
 	}
 	return gid, nil
+}
+func ensureLimaDockerSocketGroup(instance *cwconfig.LocalInstance, gid string) error {
+	gid = strings.TrimSpace(gid)
+	if gid == "" {
+		return nil
+	}
+
+	name := limaInstanceName(instance)
+	script := fmt.Sprintf(
+		`gid=%q; if getent group "$gid" >/dev/null 2>&1; then exit 0; fi; groupadd -g "$gid" codewire-docker >/dev/null 2>&1 || groupadd -g "$gid" docker >/dev/null 2>&1 || true`,
+		gid,
+	)
+	out, err := localRunCommand("limactl", "shell", "--workdir", "/", name,
+		"sudo", "docker", "exec", "-u", "0", limaContainerName,
+		"sh", "-lc", script)
+	if err != nil {
+		return fmt.Errorf("ensure docker socket group in %s: %v\n%s", limaContainerName, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func limaWorkspaceContainerStatus(instance *cwconfig.LocalInstance) (string, error) {
@@ -774,6 +811,9 @@ func startLocalLimaInstance(instance *cwconfig.LocalInstance) error {
 	if err := ensureLimaGitConfig(instance); err != nil {
 		return err
 	}
+	if err := ensureLimaSSHAgentForward(instance); err != nil {
+		return err
+	}
 	fmt.Fprintf(os.Stderr, "  Starting Lima VM %q...\n", name)
 	if err := localRunCommandStream("limactl", "start", "--tty=false", name); err != nil {
 		return fmt.Errorf("limactl start %s: %v", name, err)
@@ -784,6 +824,13 @@ func startLocalLimaInstance(instance *cwconfig.LocalInstance) error {
 	out, err := localRunCommand("limactl", "shell", "--workdir", "/", name, "sudo", "docker", "start", limaContainerName)
 	if err != nil {
 		return fmt.Errorf("docker start %s: %v\n%s", limaContainerName, err, strings.TrimSpace(string(out)))
+	}
+	dockerSockGID, err := limaDockerSocketGID(instance)
+	if err != nil {
+		return err
+	}
+	if err := ensureLimaDockerSocketGroup(instance, dockerSockGID); err != nil {
+		return err
 	}
 	return nil
 }

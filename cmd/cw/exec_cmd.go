@@ -43,6 +43,72 @@ var execLocally = func(workDir string, command []string) error {
 	return nil
 }
 
+var localRuntimeTerminalEnvKeys = []string{
+	"TERM",
+	"COLORTERM",
+	"TERM_PROGRAM",
+	"TERM_PROGRAM_VERSION",
+	"LC_TERMINAL",
+	"LC_TERMINAL_VERSION",
+	"KITTY_WINDOW_ID",
+	"KITTY_PUBLIC_KEY",
+	"KITTY_INSTALLATION_DIR",
+	"WEZTERM_PANE",
+	"WT_SESSION",
+	"WT_PROFILE_ID",
+	"VTE_VERSION",
+}
+
+func normalizeLocalRuntimeTERM(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "xterm-256color"
+	}
+
+	switch value {
+	case "xterm", "xterm-color", "xterm-256color", "screen", "screen-256color", "vt100", "linux", "dumb":
+		return value
+	default:
+		return "xterm-256color"
+	}
+}
+
+func localRuntimeTerminalEnv() []string {
+	env := make([]string, 0, len(localRuntimeTerminalEnvKeys)+2)
+	hasTerm := false
+	hasColorTerm := false
+	for _, key := range localRuntimeTerminalEnvKeys {
+		value, ok := os.LookupEnv(key)
+		if !ok || strings.TrimSpace(value) == "" {
+			continue
+		}
+		if key == "TERM" {
+			value = normalizeLocalRuntimeTERM(value)
+		}
+		env = append(env, key+"="+value)
+		if key == "TERM" {
+			hasTerm = true
+		}
+		if key == "COLORTERM" {
+			hasColorTerm = true
+		}
+	}
+	if !hasTerm {
+		env = append(env, "TERM=xterm-256color")
+	}
+	if !hasColorTerm {
+		env = append(env, "COLORTERM=truecolor")
+	}
+	return env
+}
+
+func appendLocalRuntimeEnvArgs(args []string, flag string) []string {
+	for _, entry := range localRuntimeTerminalEnv() {
+		args = append(args, flag, entry)
+	}
+	return args
+}
+
 var execInLocalRuntimeTarget = func(instance *cwconfig.LocalInstance, workDir string, command []string, allocTTY ...bool) error {
 	wantTTY := len(allocTTY) > 0 && allocTTY[0]
 	if instance == nil {
@@ -62,6 +128,7 @@ var execInLocalRuntimeTarget = func(instance *cwconfig.LocalInstance, workDir st
 		if strings.TrimSpace(workDir) != "" {
 			args = append(args, "-w", workDir)
 		}
+		args = appendLocalRuntimeEnvArgs(args, "-e")
 		args = append(args, instance.RuntimeName)
 		args = append(args, command...)
 		cmd = osExec.Command("docker", args...)
@@ -70,6 +137,7 @@ var execInLocalRuntimeTarget = func(instance *cwconfig.LocalInstance, workDir st
 		if strings.TrimSpace(workDir) != "" {
 			args = append(args, "--cwd", workDir)
 		}
+		args = appendLocalRuntimeEnvArgs(args, "--env")
 		args = append(args, instance.RuntimeName, "--")
 		args = append(args, command...)
 		cmd = osExec.Command("incus", args...)
@@ -97,6 +165,7 @@ var execInLocalRuntimeTarget = func(instance *cwconfig.LocalInstance, workDir st
 		if strings.TrimSpace(wd) != "" {
 			dockerArgs = append(dockerArgs, "-w", wd)
 		}
+		dockerArgs = appendLocalRuntimeEnvArgs(dockerArgs, "-e")
 		dockerArgs = append(dockerArgs, limaContainerName)
 		dockerArgs = append(dockerArgs, command...)
 
