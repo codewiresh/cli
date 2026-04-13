@@ -39,29 +39,30 @@ const (
 	attachBarPollInterval    = 250 * time.Millisecond
 )
 
-var forwardedTerminalEnvKeys = []string{
-	"TERM",
-	"COLORTERM",
-	"TERM_PROGRAM",
-	"TERM_PROGRAM_VERSION",
-	"LC_TERMINAL",
-	"LC_TERMINAL_VERSION",
-	"KITTY_WINDOW_ID",
-	"KITTY_PUBLIC_KEY",
-	"KITTY_INSTALLATION_DIR",
-	"WEZTERM_PANE",
-	"WT_SESSION",
-	"WT_PROFILE_ID",
-	"VTE_VERSION",
+func normalizeSessionTERM(value string) string {
+	value = strings.TrimSpace(value)
+	switch value {
+	case "", "dumb":
+		return "xterm-256color"
+	case "xterm", "xterm-color", "xterm-256color", "screen", "screen-256color", "vt100", "linux":
+		return value
+	default:
+		// Sessions can be re-attached from a different terminal later, so do
+		// not bake a terminal-specific profile like xterm-kitty into the PTY.
+		return "xterm-256color"
+	}
 }
 
 func launchEnvWithTerminalCapabilities(env []string) []string {
-	out := make([]string, 0, len(forwardedTerminalEnvKeys)+len(env))
-	for _, key := range forwardedTerminalEnvKeys {
-		if value, ok := os.LookupEnv(key); ok && strings.TrimSpace(value) != "" {
-			out = append(out, key+"="+value)
-		}
+	out := make([]string, 0, len(env)+2)
+	out = append(out, "TERM="+normalizeSessionTERM(os.Getenv("TERM")))
+
+	colorTerm := strings.TrimSpace(os.Getenv("COLORTERM"))
+	if colorTerm == "" {
+		colorTerm = "truecolor"
 	}
+	out = append(out, "COLORTERM="+colorTerm)
+
 	return append(out, env...)
 }
 

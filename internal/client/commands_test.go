@@ -330,8 +330,22 @@ func TestJoinNetworkPersistsEnrollment(t *testing.T) {
 	}
 }
 
-func TestLaunchEnvWithTerminalCapabilitiesForwardsCurrentTerminal(t *testing.T) {
-	for _, key := range forwardedTerminalEnvKeys {
+func TestLaunchEnvWithTerminalCapabilitiesUsesStableTerminalProfile(t *testing.T) {
+	for _, key := range []string{
+		"TERM",
+		"COLORTERM",
+		"TERM_PROGRAM",
+		"TERM_PROGRAM_VERSION",
+		"LC_TERMINAL",
+		"LC_TERMINAL_VERSION",
+		"KITTY_WINDOW_ID",
+		"KITTY_PUBLIC_KEY",
+		"KITTY_INSTALLATION_DIR",
+		"WEZTERM_PANE",
+		"WT_SESSION",
+		"WT_PROFILE_ID",
+		"VTE_VERSION",
+	} {
 		t.Setenv(key, "")
 	}
 	t.Setenv("TERM", "xterm-kitty")
@@ -340,36 +354,40 @@ func TestLaunchEnvWithTerminalCapabilitiesForwardsCurrentTerminal(t *testing.T) 
 	t.Setenv("KITTY_WINDOW_ID", "9")
 
 	env := launchEnvWithTerminalCapabilities(nil)
-	want := map[string]bool{
-		"TERM=xterm-kitty":          true,
-		"COLORTERM=truecolor":       true,
-		"TERM_PROGRAM=WarpTerminal": true,
-		"KITTY_WINDOW_ID=9":         true,
-	}
+	want := []string{"TERM=xterm-256color", "COLORTERM=truecolor"}
 	if len(env) != len(want) {
 		t.Fatalf("len(env) = %d, want %d: %v", len(env), len(want), env)
 	}
-	for _, entry := range env {
-		if !want[entry] {
-			t.Fatalf("unexpected forwarded env %q in %v", entry, env)
+	for i := range want {
+		if env[i] != want[i] {
+			t.Fatalf("env[%d] = %q, want %q; full=%v", i, env[i], want[i], env)
 		}
-		delete(want, entry)
 	}
-	if len(want) != 0 {
-		t.Fatalf("missing forwarded env entries: %v", want)
+}
+
+func TestLaunchEnvWithTerminalCapabilitiesDefaultsWhenUnset(t *testing.T) {
+	t.Setenv("TERM", "")
+	t.Setenv("COLORTERM", "")
+
+	env := launchEnvWithTerminalCapabilities(nil)
+	want := []string{"TERM=xterm-256color", "COLORTERM=truecolor"}
+	if len(env) != len(want) {
+		t.Fatalf("len(env) = %d, want %d: %v", len(env), len(want), env)
+	}
+	for i := range want {
+		if env[i] != want[i] {
+			t.Fatalf("env[%d] = %q, want %q; full=%v", i, env[i], want[i], env)
+		}
 	}
 }
 
 func TestLaunchEnvWithTerminalCapabilitiesAppendsExplicitOverrides(t *testing.T) {
-	for _, key := range forwardedTerminalEnvKeys {
-		t.Setenv(key, "")
-	}
-	t.Setenv("TERM", "xterm-kitty")
+	t.Setenv("TERM", "xterm")
 	t.Setenv("COLORTERM", "truecolor")
 
 	env := launchEnvWithTerminalCapabilities([]string{"TERM=screen-256color", "COLORTERM=24bit", "FOO=bar"})
 	want := []string{
-		"TERM=xterm-kitty",
+		"TERM=xterm",
 		"COLORTERM=truecolor",
 		"TERM=screen-256color",
 		"COLORTERM=24bit",

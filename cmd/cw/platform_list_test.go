@@ -406,3 +406,71 @@ func TestPrintPlatformEntriesGroupsByNetwork(t *testing.T) {
 		t.Fatalf("expected no-network entry, got %q", got)
 	}
 }
+
+func TestPrintLocalTargetEntriesIncludesLocalNodes(t *testing.T) {
+	sessions := []protocol.SessionInfo{{
+		ID:        7,
+		Name:      "planner",
+		Prompt:    "claude -p plan the refactor",
+		CreatedAt: time.Now().UTC().Add(-5 * time.Minute).Format(time.RFC3339),
+		Status:    "running",
+	}}
+	localNodes := []localNodeEntry{{
+		Instance: cwconfig.LocalInstance{
+			Name:     "vm-a",
+			Backend:  "lima",
+			Image:    "ghcr.io/codewire/base:latest",
+			RepoPath: "/tmp/repo",
+		},
+		Status: "running",
+	}}
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = oldStdout }()
+
+	if err := printLocalTargetEntries(sessions, localNodes); err != nil {
+		t.Fatalf("printLocalTargetEntries: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	text := string(out)
+	for _, want := range []string{"Runs", "Local Nodes", "planner", "vm-a", "lima"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("output missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestPrintLocalTargetEntriesEmptyState(t *testing.T) {
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = oldStdout }()
+
+	if err := printLocalTargetEntries(nil, nil); err != nil {
+		t.Fatalf("printLocalTargetEntries: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if got := string(out); !strings.Contains(got, "No sessions or local nodes.") {
+		t.Fatalf("unexpected output: %q", got)
+	}
+}

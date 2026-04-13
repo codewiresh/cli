@@ -1,0 +1,5 @@
+image: ghcr.io/codewiresh/full:latest
+install: go mod download
+secrets:
+  org: true
+  user: true

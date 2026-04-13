@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/codewiresh/codewire/internal/client"
+	cwconfig "github.com/codewiresh/codewire/internal/config"
 	"github.com/codewiresh/codewire/internal/platform"
 	"github.com/codewiresh/codewire/internal/protocol"
 )
@@ -48,6 +49,18 @@ In standalone mode, this falls back to listing local runs.`,
 					if err := ensureNode(); err != nil {
 						return err
 					}
+					if jsonOutput {
+						return client.List(target, true, statusFilter)
+					}
+					sessions, err := client.ListFiltered(target, statusFilter)
+					if err != nil {
+						return err
+					}
+					localNodes, err := listLocalNodeEntries()
+					if err != nil {
+						return err
+					}
+					return printLocalTargetEntries(sessions, localNodes)
 				}
 				return client.List(target, jsonOutput, statusFilter)
 			}
@@ -88,11 +101,93 @@ In standalone mode, this falls back to listing local runs.`,
 	cmd.Flags().BoolVar(&includeRuns, "runs", false, "Include Codewire runs from inside running sandbox environments")
 	cmd.Flags().StringVar(&networkFilter, "network", "", "Only show environments in the specified network")
 	cmd.Flags().String("org", "", "Organization ID or slug (default: current org)")
-	cmd.Flags().StringVar(&statusFilter, "status", "all", "Filter by status (standalone mode): all, running, completed, killed")
+	cmd.Flags().StringVar(&statusFilter, "status", "running", "Filter by status (standalone mode, default: running): all, running, completed, killed")
 	_ = cmd.RegisterFlagCompletionFunc("status", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"all", "running", "completed", "killed"}, cobra.ShellCompDirectiveNoFileComp
 	})
 	return cmd
+}
+
+type localNodeEntry struct {
+	Instance cwconfig.LocalInstance
+	Status   string
+}
+
+func listLocalNodeEntries() ([]localNodeEntry, error) {
+	state, err := loadLocalInstancesForCLI()
+	if err != nil {
+		return nil, err
+	}
+	if state == nil || len(state.Instances) == 0 {
+		return nil, nil
+	}
+
+	names := sortedLocalInstanceNames(state)
+	entries := make([]localNodeEntry, 0, len(names))
+	for _, name := range names {
+		instance := state.Instances[name]
+		status, err := localRuntimeStatus(&instance)
+		if err != nil {
+			status = "unknown"
+		}
+		entries = append(entries, localNodeEntry{Instance: instance, Status: status})
+	}
+	return entries, nil
+}
+
+func printLocalTargetEntries(sessions []protocol.SessionInfo, localNodes []localNodeEntry) error {
+	if len(sessions) == 0 && len(localNodes) == 0 {
+		fmt.Println("No sessions or local nodes.")
+		return nil
+	}
+
+	fmt.Println("Runs")
+	if len(sessions) == 0 {
+		fmt.Println("  none")
+	} else {
+		printStandaloneSessionTable(sessions)
+	}
+
+	fmt.Println()
+	fmt.Println("Local Nodes")
+	if len(localNodes) == 0 {
+		fmt.Println("  none")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	tableHeader(w, "NAME", "BACKEND", "STATE", "PORTS", "IMAGE", "REPO")
+	for _, entry := range localNodes {
+		instance := entry.Instance
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			instance.Name,
+			instance.Backend,
+			stateColor(entry.Status),
+			localPortSummary(&instance),
+			instance.Image,
+			instance.RepoPath,
+		)
+	}
+	return w.Flush()
+}
+
+func printStandaloneSessionTable(sessions []protocol.SessionInfo) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	tableHeader(w, "ID", "NAME", "STATUS", "AGE", "COMMAND")
+	for _, session := range sessions {
+		name := session.Name
+		if name == "" {
+			name = "-"
+		}
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n",
+			session.ID,
+			name,
+			stateColor(session.Status),
+			timeAgo(session.CreatedAt),
+			truncateRunCommand(session.Prompt),
+		)
+	}
+	_ = w.Flush()
 }
 
 func filterEnvironmentsByNetwork(envs []platform.Environment, network string) []platform.Environment {
