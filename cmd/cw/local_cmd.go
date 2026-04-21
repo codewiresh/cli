@@ -38,16 +38,17 @@ var (
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
 	}
-	localLookPath      = exec.LookPath
-	localPromptConfirm = promptConfirm
-	localNow           = func() time.Time { return time.Now().UTC() }
-	localGetwd         = os.Getwd
-	localUserHomeDir   = os.UserHomeDir
-	localOsStat        = os.Stat
-	localCLIDataDir    = dataDir
-	localGitHubToken   = detectLocalGitHubToken
-	localGitConfigPath = detectLocalGitConfigPath
-	localSSHAuthSock   = detectLocalSSHAuthSock
+	localLookPath         = exec.LookPath
+	localPromptConfirm    = promptConfirm
+	localNow              = func() time.Time { return time.Now().UTC() }
+	localGetwd            = os.Getwd
+	localUserHomeDir      = os.UserHomeDir
+	localOsStat           = os.Stat
+	localCLIDataDir       = dataDir
+	localGitHubToken      = detectLocalGitHubToken
+	localGitConfigPath    = detectLocalGitConfigPath
+	localSSHAuthSock      = detectLocalSSHAuthSock
+	localClaudeOAuthToken = resolveClaudeOAuthToken
 )
 
 func detectLocalGitHubToken() string {
@@ -1086,6 +1087,14 @@ func createLocalIncusInstance(instance *cwconfig.LocalInstance) error {
 				return err
 			}
 		}
+		if token := strings.TrimSpace(localClaudeOAuthToken()); token != "" {
+			if err := runIncus("config", "set", instance.RuntimeName, "environment.CLAUDE_CODE_OAUTH_TOKEN", token); err != nil {
+				return err
+			}
+			if err := runIncus("config", "set", instance.RuntimeName, "environment.ANTHROPIC_AUTH_TOKEN", token); err != nil {
+				return err
+			}
+		}
 		if gitConfigPath := strings.TrimSpace(localGitConfigPath()); gitConfigPath != "" {
 			if err := runIncus("config", "device", "add", instance.RuntimeName, "git-config", "disk",
 				"source="+gitConfigPath, "path=/home/codewire/.gitconfig", "readonly=true"); err != nil {
@@ -1165,6 +1174,10 @@ func createLocalDockerInstance(instance *cwconfig.LocalInstance) error {
 	}
 	if sshAuthSock := strings.TrimSpace(localSSHAuthSock()); sshAuthSock != "" {
 		args = append(args, "--env", "SSH_AUTH_SOCK="+localSSHAuthSockPath)
+	}
+	if token := strings.TrimSpace(localClaudeOAuthToken()); token != "" {
+		args = append(args, "--env", "CLAUDE_CODE_OAUTH_TOKEN="+token)
+		args = append(args, "--env", "ANTHROPIC_AUTH_TOKEN="+token)
 	}
 	if len(instance.Env) > 0 {
 		keys := make([]string, 0, len(instance.Env))

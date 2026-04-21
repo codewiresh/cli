@@ -48,6 +48,13 @@ func stubLocalSSHAuthSock(t *testing.T, path string) {
 	t.Cleanup(func() { localSSHAuthSock = orig })
 }
 
+func stubLocalClaudeOAuthToken(t *testing.T, token string) {
+	t.Helper()
+	orig := localClaudeOAuthToken
+	localClaudeOAuthToken = func() string { return token }
+	t.Cleanup(func() { localClaudeOAuthToken = orig })
+}
+
 func TestIncusOCIImageRef(t *testing.T) {
 	remoteName, remoteURL, remoteImage, err := incusOCIImageRef("ghcr.io/codewiresh/full:latest")
 	if err != nil {
@@ -161,6 +168,7 @@ func TestCreateLocalIncusInstanceInvokesExpectedCommands(t *testing.T) {
 	stubLocalGitHubToken(t, "gho_test")
 	stubLocalGitConfigPath(t, "/home/testuser/.gitconfig")
 	stubLocalSSHAuthSock(t, "")
+	stubLocalClaudeOAuthToken(t, "")
 
 	localLookPath = func(file string) (string, error) {
 		if file != "incus" && file != "skopeo" {
@@ -211,6 +219,62 @@ func TestCreateLocalIncusInstanceInvokesExpectedCommands(t *testing.T) {
 	}
 }
 
+func TestCreateLocalIncusInstanceSetsClaudeOAuthEnv(t *testing.T) {
+	origLookPath := localLookPath
+	origRunCommand := localRunCommand
+	origUserHomeDir := localUserHomeDir
+	origOsStat := localOsStat
+	t.Cleanup(func() {
+		localLookPath = origLookPath
+		localRunCommand = origRunCommand
+		localUserHomeDir = origUserHomeDir
+		localOsStat = origOsStat
+	})
+
+	localUserHomeDir = func() (string, error) { return "/home/testuser", nil }
+	localOsStat = func(name string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	stubLocalGitHubToken(t, "")
+	stubLocalGitConfigPath(t, "")
+	stubLocalSSHAuthSock(t, "")
+	stubLocalClaudeOAuthToken(t, "sk-ant-oat01-test")
+
+	localLookPath = func(file string) (string, error) { return "/usr/bin/" + file, nil }
+	var calls [][]string
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string{name}, args...))
+		return nil, nil
+	}
+
+	instance := &cwconfig.LocalInstance{
+		Name:        "repo",
+		Backend:     "incus",
+		RuntimeName: "cw-repo",
+		RepoPath:    "/tmp/repo",
+		Image:       "ghcr.io/codewiresh/full:latest",
+	}
+	if err := createLocalIncusInstance(instance); err != nil {
+		t.Fatalf("createLocalIncusInstance() error = %v", err)
+	}
+
+	wantOAuth := []string{"incus", "config", "set", "cw-repo", "environment.CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test"}
+	wantAnthropic := []string{"incus", "config", "set", "cw-repo", "environment.ANTHROPIC_AUTH_TOKEN", "sk-ant-oat01-test"}
+	var sawOAuth, sawAnthropic bool
+	for _, call := range calls {
+		if reflect.DeepEqual(call, wantOAuth) {
+			sawOAuth = true
+		}
+		if reflect.DeepEqual(call, wantAnthropic) {
+			sawAnthropic = true
+		}
+	}
+	if !sawOAuth {
+		t.Fatalf("expected %v in calls; got %#v", wantOAuth, calls)
+	}
+	if !sawAnthropic {
+		t.Fatalf("expected %v in calls; got %#v", wantAnthropic, calls)
+	}
+}
+
 func TestCreateLocalIncusInstanceCleansUpOnFailure(t *testing.T) {
 	origLookPath := localLookPath
 	origRunCommand := localRunCommand
@@ -228,6 +292,7 @@ func TestCreateLocalIncusInstanceCleansUpOnFailure(t *testing.T) {
 	stubLocalGitHubToken(t, "")
 	stubLocalGitConfigPath(t, "")
 	stubLocalSSHAuthSock(t, "")
+	stubLocalClaudeOAuthToken(t, "")
 
 	localLookPath = func(file string) (string, error) {
 		if file != "incus" && file != "skopeo" {
@@ -381,6 +446,7 @@ func TestCreateLocalDockerInstanceInvokesExpectedCommands(t *testing.T) {
 	stubLocalGitHubToken(t, "gho_test")
 	stubLocalGitConfigPath(t, "/home/testuser/.gitconfig")
 	stubLocalSSHAuthSock(t, "/home/testuser/.1password/agent.sock")
+	stubLocalClaudeOAuthToken(t, "")
 
 	var calls [][]string
 	localRunCommand = func(name string, args ...string) ([]byte, error) {
@@ -415,6 +481,66 @@ func TestCreateLocalDockerInstanceInvokesExpectedCommands(t *testing.T) {
 	}
 }
 
+func TestCreateLocalDockerInstanceSetsClaudeOAuthEnv(t *testing.T) {
+	origLookPath := localLookPath
+	origRunCommand := localRunCommand
+	origUserHomeDir := localUserHomeDir
+	origOsStat := localOsStat
+	t.Cleanup(func() {
+		localLookPath = origLookPath
+		localRunCommand = origRunCommand
+		localUserHomeDir = origUserHomeDir
+		localOsStat = origOsStat
+	})
+
+	localLookPath = func(file string) (string, error) { return "/usr/bin/docker", nil }
+	localUserHomeDir = func() (string, error) { return "/home/testuser", nil }
+	localOsStat = func(name string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	stubLocalGitHubToken(t, "")
+	stubLocalGitConfigPath(t, "")
+	stubLocalSSHAuthSock(t, "")
+	stubLocalClaudeOAuthToken(t, "sk-ant-oat01-test")
+
+	var calls [][]string
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string{name}, args...))
+		return nil, nil
+	}
+
+	instance := &cwconfig.LocalInstance{
+		Name:        "repo",
+		Backend:     "docker",
+		RuntimeName: "cw-repo",
+		RepoPath:    "/tmp/repo",
+		Image:       "ghcr.io/codewiresh/full:latest",
+	}
+	if err := createLocalDockerInstance(instance); err != nil {
+		t.Fatalf("createLocalDockerInstance() error = %v", err)
+	}
+
+	if len(calls) == 0 {
+		t.Fatal("no docker calls recorded")
+	}
+	createArgs := calls[0]
+	var sawOAuth, sawAnthropic bool
+	for i := 0; i+1 < len(createArgs); i++ {
+		if createArgs[i] == "--env" {
+			switch createArgs[i+1] {
+			case "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-test":
+				sawOAuth = true
+			case "ANTHROPIC_AUTH_TOKEN=sk-ant-oat01-test":
+				sawAnthropic = true
+			}
+		}
+	}
+	if !sawOAuth {
+		t.Fatalf("expected --env CLAUDE_CODE_OAUTH_TOKEN=... in docker create args: %v", createArgs)
+	}
+	if !sawAnthropic {
+		t.Fatalf("expected --env ANTHROPIC_AUTH_TOKEN=... in docker create args: %v", createArgs)
+	}
+}
+
 func TestCreateLocalDockerInstanceSkipsClaudeMountWhenMissing(t *testing.T) {
 	origLookPath := localLookPath
 	origRunCommand := localRunCommand
@@ -439,6 +565,7 @@ func TestCreateLocalDockerInstanceSkipsClaudeMountWhenMissing(t *testing.T) {
 	stubLocalGitHubToken(t, "")
 	stubLocalGitConfigPath(t, "")
 	stubLocalSSHAuthSock(t, "")
+	stubLocalClaudeOAuthToken(t, "")
 
 	var calls [][]string
 	localRunCommand = func(name string, args ...string) ([]byte, error) {
@@ -488,6 +615,7 @@ func TestCreateLocalDockerInstanceCleansUpOnFailure(t *testing.T) {
 	stubLocalGitHubToken(t, "")
 	stubLocalGitConfigPath(t, "")
 	stubLocalSSHAuthSock(t, "")
+	stubLocalClaudeOAuthToken(t, "")
 
 	var calls [][]string
 	localRunCommand = func(name string, args ...string) ([]byte, error) {
