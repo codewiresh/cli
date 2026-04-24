@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -107,6 +108,7 @@ type localCreateOptions struct {
 	Name          string
 	Path          string
 	File          string
+	Spec          string // JSON spec path or "-" for stdin; takes precedence over File
 	Preset        string
 	Image         string
 	Install       string
@@ -121,11 +123,45 @@ type localCreateOptions struct {
 	NoUserSecrets bool
 }
 
+// localSpec is the JSON shape accepted by `cw local create --spec`. It mirrors
+// the fields in codewire.yaml but uses snake_case keys. SDK consumers construct
+// these objects directly and pipe them via stdin.
+type localSpec struct {
+	Preset             string            `json:"preset,omitempty"`
+	Image              string            `json:"image,omitempty"`
+	Install            string            `json:"install,omitempty"`
+	Startup            string            `json:"startup,omitempty"`
+	Env                map[string]string `json:"env,omitempty"`
+	Ports              []localSpecPort   `json:"ports,omitempty"`
+	Mounts             []localSpecMount  `json:"mounts,omitempty"`
+	CPU                int               `json:"cpu,omitempty"`
+	Memory             int               `json:"memory,omitempty"`
+	Disk               int               `json:"disk,omitempty"`
+	Agent              string            `json:"agent,omitempty"`
+	SecretProject      string            `json:"secret_project,omitempty"`
+	IncludeOrgSecrets  *bool             `json:"include_org_secrets,omitempty"`
+	IncludeUserSecrets *bool             `json:"include_user_secrets,omitempty"`
+}
+
+type localSpecPort struct {
+	HostPort  int    `json:"host_port,omitempty"`
+	GuestPort int    `json:"guest_port,omitempty"`
+	Port      int    `json:"port,omitempty"`
+	Label     string `json:"label,omitempty"`
+}
+
+type localSpecMount struct {
+	Source   string `json:"source"`
+	Target   string `json:"target,omitempty"`
+	Readonly bool   `json:"readonly,omitempty"`
+}
+
 func localParentCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "local",
 		Short: "Manage local runtime instances",
 	}
+	cmd.PersistentFlags().Bool("json", false, "Emit machine-readable JSON output (stable schema for SDK consumers)")
 	cmd.AddCommand(localCreateCmd())
 	cmd.AddCommand(localStartCmd())
 	cmd.AddCommand(localStopCmd())
@@ -133,7 +169,15 @@ func localParentCmd() *cobra.Command {
 	cmd.AddCommand(localListCmd())
 	cmd.AddCommand(localInfoCmd())
 	cmd.AddCommand(localPortsCmd())
+	cmd.AddCommand(localFilesCmd())
 	return cmd
+}
+
+// jsonOut returns true when the --json persistent flag has been set on
+// `cw local ...`. Used by every local subcommand to branch output.
+func jsonOut(cmd *cobra.Command) bool {
+	v, _ := cmd.Flags().GetBool("json")
+	return v
 }
 
 func localCreateCmd() *cobra.Command {
@@ -169,6 +213,14 @@ func localCreateCmd() *cobra.Command {
 				return fmt.Errorf("save local instance state: %w", err)
 			}
 
+			if jsonOut(cmd) {
+				status, statusErr := localRuntimeStatus(&instance)
+				if statusErr != nil {
+					status = "unknown"
+				}
+				return emitJSON(localInstanceToJSON(&instance, status))
+			}
+
 			successMsg("Local instance created: %s.", instance.Name)
 			fmt.Printf("%-10s %s\n", bold("Backend:"), instance.Backend)
 			fmt.Printf("%-10s %s\n", bold("Runtime:"), instance.RuntimeName)
@@ -183,6 +235,7 @@ func localCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.Name, "name", "", "Instance name (defaults to the repo directory name)")
 	cmd.Flags().StringVar(&opts.Path, "path", ".", "Project directory to associate with the local instance")
 	cmd.Flags().StringVar(&opts.File, "file", "codewire.yaml", "Preset file path, relative to --path when not absolute")
+	cmd.Flags().StringVar(&opts.Spec, "spec", "", "JSON spec file or '-' for stdin; overrides codewire.yaml (used by SDK shell-out)")
 	cmd.Flags().StringVar(&opts.Preset, "preset", "", "Preset slug override")
 	cmd.Flags().StringVar(&opts.Image, "image", "", "Container image override")
 	cmd.Flags().StringVar(&opts.Install, "install", "", "Install command override")
@@ -225,6 +278,13 @@ func localStartCmd() *cobra.Command {
 			if err := startLocalRuntime(instance); err != nil {
 				return err
 			}
+			if jsonOut(cmd) {
+				status, statusErr := localRuntimeStatus(instance)
+				if statusErr != nil {
+					status = "unknown"
+				}
+				return emitJSON(localInstanceToJSON(instance, status))
+			}
 			successMsg("Local instance started: %s.", instance.Name)
 			return nil
 		},
@@ -243,6 +303,13 @@ func localStopCmd() *cobra.Command {
 			}
 			if err := stopLocalRuntime(instance); err != nil {
 				return err
+			}
+			if jsonOut(cmd) {
+				status, statusErr := localRuntimeStatus(instance)
+				if statusErr != nil {
+					status = "unknown"
+				}
+				return emitJSON(localInstanceToJSON(instance, status))
 			}
 			successMsg("Local instance stopped: %s.", instance.Name)
 			return nil
@@ -273,6 +340,12 @@ func localRmCmd() *cobra.Command {
 			if err := saveLocalInstancesForCLI(state); err != nil {
 				return fmt.Errorf("save local instance state: %w", err)
 			}
+			if jsonOut(cmd) {
+				return emitJSON(map[string]any{
+					"name":    instance.Name,
+					"removed": true,
+				})
+			}
 			successMsg("Local instance removed: %s.", instance.Name)
 			return nil
 		},
@@ -289,12 +362,26 @@ func localListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			names := sortedLocalInstanceNames(state)
+
+			if jsonOut(cmd) {
+				out := make([]localInstanceJSON, 0, len(names))
+				for _, name := range names {
+					instance := state.Instances[name]
+					status, statusErr := localRuntimeStatus(&instance)
+					if statusErr != nil {
+						status = "unknown"
+					}
+					out = append(out, localInstanceToJSON(&instance, status))
+				}
+				return emitJSON(out)
+			}
+
 			if len(state.Instances) == 0 {
 				fmt.Println("No local instances found.")
 				return nil
 			}
 
-			names := sortedLocalInstanceNames(state)
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			tableHeader(w, "NAME", "BACKEND", "STATE", "PORTS", "IMAGE", "REPO")
 			for _, name := range names {
@@ -330,6 +417,10 @@ func localInfoCmd() *cobra.Command {
 			status, statusErr := localRuntimeStatus(instance)
 			if statusErr != nil {
 				status = "unknown"
+			}
+
+			if jsonOut(cmd) {
+				return emitJSON(localInstanceToJSON(instance, status))
 			}
 
 			fmt.Printf("%-10s %s\n", bold("Name:"), instance.Name)
@@ -384,6 +475,13 @@ func localPortsCmd() *cobra.Command {
 
 			publish, _ := cmd.Flags().GetStringSlice("publish")
 			if len(publish) == 0 {
+				if jsonOut(cmd) {
+					status, statusErr := localRuntimeStatus(instance)
+					if statusErr != nil {
+						status = "unknown"
+					}
+					return emitJSON(localInstanceToJSON(instance, status).Ports)
+				}
 				printLocalConfiguredPorts(instance)
 				return nil
 			}
@@ -398,6 +496,13 @@ func localPortsCmd() *cobra.Command {
 				state.Instances[key] = *instance
 				if err := saveLocalInstancesForCLI(state); err != nil {
 					return fmt.Errorf("save local instance state: %w", err)
+				}
+				if jsonOut(cmd) {
+					status, statusErr := localRuntimeStatus(instance)
+					if statusErr != nil {
+						status = "unknown"
+					}
+					return emitJSON(localInstanceToJSON(instance, status))
 				}
 				if added == 0 {
 					fmt.Println("No new ports were added.")
@@ -728,9 +833,18 @@ func prepareLocalInstance(opts localCreateOptions) (cwconfig.LocalInstance, erro
 		return cwconfig.LocalInstance{}, fmt.Errorf("project path must be a directory")
 	}
 
-	cfg, err := loadLocalCodewireConfig(projectDir, opts.File)
-	if err != nil {
-		return cwconfig.LocalInstance{}, err
+	var cfg *cwconfig.CodewireConfig
+	if strings.TrimSpace(opts.Spec) != "" {
+		spec, err := loadLocalSpec(opts.Spec)
+		if err != nil {
+			return cwconfig.LocalInstance{}, err
+		}
+		cfg = localSpecToCodewireConfig(spec)
+	} else {
+		cfg, err = loadLocalCodewireConfig(projectDir, opts.File)
+		if err != nil {
+			return cwconfig.LocalInstance{}, err
+		}
 	}
 
 	parsedEnv, err := parseEnvVarFlags(opts.EnvVars)
@@ -878,6 +992,72 @@ func localIncludeUserSecrets(cfg *cwconfig.CodewireConfig) *bool {
 		return cfg.Secrets.User
 	}
 	return cfg.IncludeUserSecrets
+}
+
+// loadLocalSpec reads a localSpec JSON document from either a file path or
+// stdin (when source == "-"). SDK callers pipe JSON to `cw local create --spec -`.
+func loadLocalSpec(source string) (*localSpec, error) {
+	var data []byte
+	var err error
+	if source == "-" {
+		data, err = io.ReadAll(os.Stdin)
+		if err != nil {
+			return nil, fmt.Errorf("read spec from stdin: %w", err)
+		}
+	} else {
+		data, err = os.ReadFile(source)
+		if err != nil {
+			return nil, fmt.Errorf("read spec %s: %w", source, err)
+		}
+	}
+	var spec localSpec
+	if err := json.Unmarshal(data, &spec); err != nil {
+		return nil, fmt.Errorf("parse spec json: %w", err)
+	}
+	return &spec, nil
+}
+
+// localSpecToCodewireConfig converts the SDK-facing JSON spec into the internal
+// CodewireConfig shape used by prepareLocalInstance. Lives in cmd/ because the
+// JSON schema is a CLI contract, not an internal type.
+func localSpecToCodewireConfig(spec *localSpec) *cwconfig.CodewireConfig {
+	if spec == nil {
+		return &cwconfig.CodewireConfig{}
+	}
+	cfg := &cwconfig.CodewireConfig{
+		Preset:             spec.Preset,
+		Image:              spec.Image,
+		Install:            spec.Install,
+		Startup:            spec.Startup,
+		Env:                spec.Env,
+		CPU:                spec.CPU,
+		Memory:             spec.Memory,
+		Disk:               spec.Disk,
+		Agent:              spec.Agent,
+		IncludeOrgSecrets:  spec.IncludeOrgSecrets,
+		IncludeUserSecrets: spec.IncludeUserSecrets,
+	}
+	if strings.TrimSpace(spec.SecretProject) != "" {
+		cfg.Secrets = &cwconfig.CodewireSecretsConfig{Project: spec.SecretProject}
+	}
+	for _, p := range spec.Ports {
+		port := cwconfig.PortConfig{
+			HostPort:  p.HostPort,
+			GuestPort: p.GuestPort,
+			Port:      p.Port,
+			Label:     p.Label,
+		}
+		cfg.Ports = append(cfg.Ports, port.Canonical())
+	}
+	for _, m := range spec.Mounts {
+		ro := m.Readonly
+		cfg.Mounts = append(cfg.Mounts, cwconfig.MountConfig{
+			Source:   m.Source,
+			Target:   m.Target,
+			Readonly: &ro,
+		})
+	}
+	return cfg
 }
 
 func loadLocalCodewireConfig(projectDir, filePath string) (*cwconfig.CodewireConfig, error) {

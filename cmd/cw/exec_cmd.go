@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	osExec "os/exec"
@@ -12,6 +13,85 @@ import (
 	"github.com/codewiresh/codewire/internal/guestagent"
 	"github.com/codewiresh/codewire/internal/platform"
 )
+
+// execBufferedResult is the JSON shape produced by `cw exec --json`. SDK
+// consumers decode this directly.
+type execBufferedResult struct {
+	ExitCode int    `json:"exit_code"`
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+}
+
+// execInLocalRuntimeBuffered runs command inside the local VM and captures
+// stdout/stderr into buffers instead of streaming. Supported backends: docker,
+// incus, lima. For firecracker the guest-agent protocol does not currently
+// expose captured output; callers should route around this for now.
+func execInLocalRuntimeBuffered(instance *cwconfig.LocalInstance, workDir string, command []string) (*execBufferedResult, error) {
+	if instance == nil {
+		return nil, fmt.Errorf("local instance is required")
+	}
+	if len(command) == 0 {
+		return nil, fmt.Errorf("no command specified")
+	}
+
+	var cmd *osExec.Cmd
+	switch instance.Backend {
+	case "docker":
+		args := []string{"exec", "-i"}
+		if strings.TrimSpace(workDir) != "" {
+			args = append(args, "-w", workDir)
+		}
+		args = append(args, instance.RuntimeName)
+		args = append(args, command...)
+		cmd = osExec.Command("docker", args...)
+	case "incus":
+		args := []string{"exec"}
+		if strings.TrimSpace(workDir) != "" {
+			args = append(args, "--cwd", workDir)
+		}
+		args = append(args, instance.RuntimeName, "--")
+		args = append(args, command...)
+		cmd = osExec.Command("incus", args...)
+	case "lima":
+		name := limaInstanceName(instance)
+		wd := workDir
+		if wd == "" {
+			wd = instance.Workdir
+		}
+		dockerArgs := []string{"sudo", "docker", "exec", "-i"}
+		if strings.TrimSpace(wd) != "" {
+			dockerArgs = append(dockerArgs, "-w", wd)
+		}
+		dockerArgs = append(dockerArgs, limaContainerName)
+		dockerArgs = append(dockerArgs, command...)
+		args := []string{"shell", "--workdir", "/", name}
+		args = append(args, dockerArgs...)
+		cmd = osExec.Command("limactl", args...)
+	case "firecracker":
+		return nil, fmt.Errorf("cw exec --json is not yet supported for the firecracker backend")
+	default:
+		return nil, fmt.Errorf("unsupported local backend %q", instance.Backend)
+	}
+
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+	runErr := cmd.Run()
+	exitCode := 0
+	if runErr != nil {
+		if exitErr, ok := runErr.(*osExec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			return nil, runErr
+		}
+	}
+	return &execBufferedResult{
+		ExitCode: exitCode,
+		Stdout:   stdoutBuf.String(),
+		Stderr:   stderrBuf.String(),
+	}, nil
+}
 
 var execInEnvironmentTarget = func(envID, workDir string, timeout int, command []string) (*platform.ExecResult, error) {
 	orgID, client, err := getDefaultOrg()
@@ -212,6 +292,7 @@ func execCmd() *cobra.Command {
 		on          string
 		interactive bool
 		tty         bool
+		jsonOutput  bool
 	)
 
 	cmd := &cobra.Command{
@@ -246,10 +327,24 @@ func execCmd() *cobra.Command {
 							workDir = localWorkspacePath
 						}
 					}
+					if jsonOutput {
+						res, err := execInLocalRuntimeBuffered(instance, workDir, cmdArgs)
+						if err != nil {
+							return err
+						}
+						return emitJSON(res)
+					}
 					return execInLocalRuntimeTarget(instance, workDir, cmdArgs, interactive && tty)
 				}
 				if workDir == "" {
 					workDir, _ = os.Getwd()
+				}
+				if jsonOutput {
+					res, err := execLocallyBuffered(workDir, cmdArgs)
+					if err != nil {
+						return err
+					}
+					return emitJSON(res)
 				}
 				return execLocally(workDir, cmdArgs)
 			case "env":
@@ -259,6 +354,13 @@ func execCmd() *cobra.Command {
 				result, err := execInEnvironmentTarget(target.Ref, workDir, timeout, cmdArgs)
 				if err != nil {
 					return fmt.Errorf("exec: %w", err)
+				}
+				if jsonOutput {
+					return emitJSON(&execBufferedResult{
+						ExitCode: result.ExitCode,
+						Stdout:   result.Stdout,
+						Stderr:   result.Stderr,
+					})
 				}
 				if result.Stdout != "" {
 					fmt.Print(result.Stdout)
@@ -281,5 +383,36 @@ func execCmd() *cobra.Command {
 	cmd.Flags().IntVar(&timeout, "timeout", 30, "Timeout in seconds for environment exec")
 	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "Keep stdin open")
 	cmd.Flags().BoolVarP(&tty, "tty", "t", false, "Allocate a pseudo-TTY")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Capture stdout/stderr and emit {exit_code,stdout,stderr} JSON on completion")
 	return cmd
 }
+
+// execLocallyBuffered runs command in workDir on the host and captures stdout
+// and stderr instead of streaming them. Used by `cw exec --json` when the
+// target is the host itself (local, no VM).
+func execLocallyBuffered(workDir string, command []string) (*execBufferedResult, error) {
+	if len(command) == 0 {
+		return nil, fmt.Errorf("no command specified")
+	}
+	cmd := osExec.Command(command[0], command[1:]...)
+	cmd.Dir = workDir
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+	runErr := cmd.Run()
+	exitCode := 0
+	if runErr != nil {
+		if exitErr, ok := runErr.(*osExec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			return nil, runErr
+		}
+	}
+	return &execBufferedResult{
+		ExitCode: exitCode,
+		Stdout:   stdoutBuf.String(),
+		Stderr:   stderrBuf.String(),
+	}, nil
+}
+
