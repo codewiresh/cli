@@ -50,7 +50,16 @@ var (
 	localGitConfigPath    = detectLocalGitConfigPath
 	localSSHAuthSock      = detectLocalSSHAuthSock
 	localClaudeOAuthToken = resolveClaudeOAuthToken
+	localAnthropicAPIKey  = resolveAnthropicAPIKey
 )
+
+// resolveAnthropicAPIKey returns the host's Anthropic API key (sk-ant-api…)
+// from $ANTHROPIC_API_KEY, or empty when unset. SDKs and `claude-code` both
+// read this env var; forwarding it makes API-billed inference work
+// inside local VMs identically to OAuth-token flows.
+func resolveAnthropicAPIKey() string {
+	return strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
+}
 
 func detectLocalGitHubToken() string {
 	if token := strings.TrimSpace(os.Getenv("GH_TOKEN")); token != "" {
@@ -1276,6 +1285,12 @@ func createLocalIncusInstance(instance *cwconfig.LocalInstance) error {
 				return err
 			}
 		}
+		if apiKey := localAnthropicAPIKey(); apiKey != "" {
+			// Forward ANTHROPIC_API_KEY for SDK / claude-code direct-API use.
+			if err := runIncus("config", "set", instance.RuntimeName, "environment.ANTHROPIC_API_KEY", apiKey); err != nil {
+				return err
+			}
+		}
 		if gitConfigPath := strings.TrimSpace(localGitConfigPath()); gitConfigPath != "" {
 			if err := runIncus("config", "device", "add", instance.RuntimeName, "git-config", "disk",
 				"source="+gitConfigPath, "path=/home/codewire/.gitconfig", "readonly=true"); err != nil {
@@ -1367,6 +1382,12 @@ func createLocalDockerInstance(instance *cwconfig.LocalInstance) error {
 		// ("sk-ant-oat…"), and setting it here causes claude-code to
 		// preferentially use the wrong token and fail with 401.
 		args = append(args, "--env", "CLAUDE_CODE_OAUTH_TOKEN="+token)
+	}
+	if apiKey := localAnthropicAPIKey(); apiKey != "" {
+		// Forward ANTHROPIC_API_KEY so SDK code and `claude-code` running
+		// in the container can hit the API directly (CI / pay-per-token use
+		// case). Distinct from the OAuth token above.
+		args = append(args, "--env", "ANTHROPIC_API_KEY="+apiKey)
 	}
 	if len(instance.Env) > 0 {
 		keys := make([]string, 0, len(instance.Env))

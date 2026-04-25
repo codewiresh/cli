@@ -424,12 +424,16 @@ func TestCreateLocalDockerInstanceInvokesExpectedCommands(t *testing.T) {
 	origRunCommand := localRunCommand
 	origUserHomeDir := localUserHomeDir
 	origOsStat := localOsStat
+	origAnthropicAPIKey := localAnthropicAPIKey
 	t.Cleanup(func() {
 		localLookPath = origLookPath
 		localRunCommand = origRunCommand
 		localUserHomeDir = origUserHomeDir
 		localOsStat = origOsStat
+		localAnthropicAPIKey = origAnthropicAPIKey
 	})
+	// Isolate from a host that happens to have ANTHROPIC_API_KEY set.
+	localAnthropicAPIKey = func() string { return "" }
 
 	localLookPath = func(file string) (string, error) {
 		if file != "docker" {
@@ -484,12 +488,15 @@ func TestCreateLocalDockerInstanceSetsClaudeOAuthEnv(t *testing.T) {
 	origRunCommand := localRunCommand
 	origUserHomeDir := localUserHomeDir
 	origOsStat := localOsStat
+	origAnthropicAPIKey := localAnthropicAPIKey
 	t.Cleanup(func() {
 		localLookPath = origLookPath
 		localRunCommand = origRunCommand
 		localUserHomeDir = origUserHomeDir
 		localOsStat = origOsStat
+		localAnthropicAPIKey = origAnthropicAPIKey
 	})
+	localAnthropicAPIKey = func() string { return "" }
 
 	localLookPath = func(file string) (string, error) { return "/usr/bin/docker", nil }
 	localUserHomeDir = func() (string, error) { return "/home/testuser", nil }
@@ -535,6 +542,61 @@ func TestCreateLocalDockerInstanceSetsClaudeOAuthEnv(t *testing.T) {
 	}
 	if !sawOAuth {
 		t.Fatalf("expected --env CLAUDE_CODE_OAUTH_TOKEN=... in docker create args: %v", createArgs)
+	}
+}
+
+func TestCreateLocalDockerInstanceForwardsAnthropicAPIKey(t *testing.T) {
+	origLookPath := localLookPath
+	origRunCommand := localRunCommand
+	origUserHomeDir := localUserHomeDir
+	origOsStat := localOsStat
+	origAnthropicAPIKey := localAnthropicAPIKey
+	t.Cleanup(func() {
+		localLookPath = origLookPath
+		localRunCommand = origRunCommand
+		localUserHomeDir = origUserHomeDir
+		localOsStat = origOsStat
+		localAnthropicAPIKey = origAnthropicAPIKey
+	})
+
+	localLookPath = func(file string) (string, error) { return "/usr/bin/docker", nil }
+	localUserHomeDir = func() (string, error) { return "/home/testuser", nil }
+	localOsStat = func(name string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	stubLocalGitHubToken(t, "")
+	stubLocalGitConfigPath(t, "")
+	stubLocalSSHAuthSock(t, "")
+	stubLocalClaudeOAuthToken(t, "")
+	localAnthropicAPIKey = func() string { return "sk-ant-api-test-1234" }
+
+	var calls [][]string
+	localRunCommand = func(name string, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string{name}, args...))
+		return nil, nil
+	}
+
+	instance := &cwconfig.LocalInstance{
+		Name:        "repo",
+		Backend:     "docker",
+		RuntimeName: "cw-repo",
+		RepoPath:    "/tmp/repo",
+		Image:       "ghcr.io/codewiresh/full:latest",
+	}
+	if err := createLocalDockerInstance(instance); err != nil {
+		t.Fatalf("createLocalDockerInstance() error = %v", err)
+	}
+	if len(calls) == 0 {
+		t.Fatal("no docker calls recorded")
+	}
+
+	createArgs := calls[0]
+	var sawAPIKey bool
+	for i := 0; i+1 < len(createArgs); i++ {
+		if createArgs[i] == "--env" && createArgs[i+1] == "ANTHROPIC_API_KEY=sk-ant-api-test-1234" {
+			sawAPIKey = true
+		}
+	}
+	if !sawAPIKey {
+		t.Fatalf("expected --env ANTHROPIC_API_KEY=... in docker create args: %v", createArgs)
 	}
 }
 
@@ -714,6 +776,7 @@ func TestCreateLocalLimaInstanceInvokesExpectedCommands(t *testing.T) {
 	origGOOS := localGOOS
 	origUserHomeDir := localUserHomeDir
 	origOsStat := localOsStat
+	origAnthropicAPIKey := localAnthropicAPIKey
 	stubLocalCLIDataDir(t)
 	t.Cleanup(func() {
 		localLookPath = origLookPath
@@ -722,7 +785,10 @@ func TestCreateLocalLimaInstanceInvokesExpectedCommands(t *testing.T) {
 		localGOOS = origGOOS
 		localUserHomeDir = origUserHomeDir
 		localOsStat = origOsStat
+		localAnthropicAPIKey = origAnthropicAPIKey
 	})
+	// Isolate from a host that happens to have ANTHROPIC_API_KEY set.
+	localAnthropicAPIKey = func() string { return "" }
 
 	localGOOS = "linux"
 	localUserHomeDir = func() (string, error) { return "/home/testuser", nil }

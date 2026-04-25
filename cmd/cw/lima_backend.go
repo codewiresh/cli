@@ -697,6 +697,12 @@ func createLocalLimaInstance(instance *cwconfig.LocalInstance) error {
 		if sshAuthSock := strings.TrimSpace(localSSHAuthSock()); sshAuthSock != "" {
 			dockerArgs = append(dockerArgs, "-e", "SSH_AUTH_SOCK="+localSSHAuthSockPath)
 		}
+		if apiKey := localAnthropicAPIKey(); apiKey != "" {
+			// Forward ANTHROPIC_API_KEY (sk-ant-api…) for SDK / claude-code
+			// direct-API use. Distinct from CLAUDE_CODE_OAUTH_TOKEN, which is
+			// forwarded separately via the codewire.yaml token plumbing.
+			dockerArgs = append(dockerArgs, "-e", "ANTHROPIC_API_KEY="+apiKey)
+		}
 		dockerArgs = append(dockerArgs, limaContainerMountArgs(instance)...)
 		dockerArgs = append(dockerArgs,
 			"--workdir", repoMountPath,
