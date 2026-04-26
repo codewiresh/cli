@@ -130,6 +130,9 @@ type localCreateOptions struct {
 	Disk          int
 	NoOrgSecrets  bool
 	NoUserSecrets bool
+	Network       string
+	NoNetwork     bool
+	Yes           bool
 }
 
 // localSpec is the JSON shape accepted by `cw local create --spec`. It mirrors
@@ -213,6 +216,18 @@ func localCreateCmd() *cobra.Command {
 				return fmt.Errorf("local instance %q already exists", instance.Name)
 			}
 
+			// Resolve relay enrollment before creating the runtime. We don't
+			// inject env vars into the runtime; instead we redeem the invite
+			// from the host once the runtime is up (see below). Local runtimes
+			// have no platform-side worker that runs StartRelayNode the way
+			// cloud envs do, so the redemption is a synchronous post-create
+			// step here.
+			enrollment, err := resolveRelayEnrollment(dataDir(), opts.Yes, opts.Network, opts.NoNetwork)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: relay enrollment failed (%v), continuing without network\n", err)
+				enrollment = nil
+			}
+
 			if err := createLocalRuntime(&instance); err != nil {
 				return err
 			}
@@ -220,6 +235,16 @@ func localCreateCmd() *cobra.Command {
 			state.Instances[instance.Name] = instance
 			if err := saveLocalInstancesForCLI(state); err != nil {
 				return fmt.Errorf("save local instance state: %w", err)
+			}
+
+			enrolledOnNetwork := ""
+			if enrollment != nil {
+				if err := redeemRelayInviteInLocalRuntime(&instance, enrollment); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: relay enrollment redemption failed (%v); the runtime is up but not visible on the relay. Redeem manually with: cw exec %s -- cw network enroll redeem %s --node-name %s\n",
+						err, instance.Name, enrollment.InviteToken, instance.Name)
+				} else {
+					enrolledOnNetwork = enrollment.NetworkID
+				}
 			}
 
 			if jsonOut(cmd) {
@@ -236,6 +261,9 @@ func localCreateCmd() *cobra.Command {
 			fmt.Printf("%-10s %s\n", bold("Image:"), instance.Image)
 			fmt.Printf("%-10s %s\n", bold("Repo:"), instance.RepoPath)
 			fmt.Printf("%-10s %s\n", bold("Mount:"), instance.Workdir)
+			if enrolledOnNetwork != "" {
+				fmt.Printf("%-10s %s (node: %s)\n", bold("Network:"), enrolledOnNetwork, instance.Name)
+			}
 			return nil
 		},
 	}
@@ -257,6 +285,9 @@ func localCreateCmd() *cobra.Command {
 	cmd.Flags().IntVar(&opts.Disk, "disk", 0, "Disk in GB override")
 	cmd.Flags().BoolVar(&opts.NoOrgSecrets, "no-org-secrets", false, "Don't inject org-level secrets")
 	cmd.Flags().BoolVar(&opts.NoUserSecrets, "no-user-secrets", false, "Don't inject user-level secrets")
+	cmd.Flags().StringVar(&opts.Network, "network", "", "Join a specific relay network on boot (requires relay auth in local config)")
+	cmd.Flags().BoolVar(&opts.NoNetwork, "no-network", false, "Don't join the selected private relay network")
+	cmd.Flags().BoolVarP(&opts.Yes, "yes", "y", false, "Skip interactive prompts (assume yes)")
 	return cmd
 }
 
@@ -964,6 +995,47 @@ func prepareLocalInstance(opts localCreateOptions) (cwconfig.LocalInstance, erro
 		LastUsedAt:         localNow().Format(time.RFC3339),
 	}
 	return instance, nil
+}
+
+// relayInviteRedeemCommand builds the argv that redeems an enrollment
+// invite inside the runtime. Pure function for testability.
+func relayInviteRedeemCommand(instance *cwconfig.LocalInstance, enrollment *relayEnrollment) []string {
+	if instance == nil || enrollment == nil {
+		return nil
+	}
+	command := []string{"cw", "network", "enroll", "redeem", enrollment.InviteToken, "--node-name", instance.Name}
+	if strings.TrimSpace(enrollment.RelayURL) != "" {
+		command = append(command, "--relay-url", enrollment.RelayURL)
+	}
+	return command
+}
+
+// redeemRelayInviteInLocalRuntime redeems a relay enrollment invite from
+// inside a freshly-created local runtime. The runtime registers itself as
+// a relay node under the instance name, becoming addressable via
+// `cw run --on <name>` and the rest of the relay-routed CLI surface.
+//
+// This mirrors the cloud-env flow where the platform worker runs cw node
+// (which auto-redeems the invite from CODEWIRE_RELAY_INVITE_TOKEN). Local
+// runtimes have no worker setup phase, so we redeem synchronously from the
+// host immediately after the runtime is up.
+var redeemRelayInviteInLocalRuntime = func(instance *cwconfig.LocalInstance, enrollment *relayEnrollment) error {
+	command := relayInviteRedeemCommand(instance, enrollment)
+	if command == nil {
+		return nil
+	}
+	result, err := execInLocalRuntimeBuffered(instance, "", command)
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != 0 {
+		stderr := strings.TrimSpace(result.Stderr)
+		if stderr == "" {
+			stderr = strings.TrimSpace(result.Stdout)
+		}
+		return fmt.Errorf("redeem exited with code %d: %s", result.ExitCode, stderr)
+	}
+	return nil
 }
 
 func localPrimaryAgent(cfg *cwconfig.CodewireConfig) string {

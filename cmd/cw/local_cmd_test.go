@@ -135,6 +135,48 @@ func TestPrepareLocalInstanceUsesCodewireYAMLAndOverrides(t *testing.T) {
 	}
 }
 
+func TestRelayInviteRedeemCommandConstructsArgsCorrectly(t *testing.T) {
+	instance := &cwconfig.LocalInstance{Name: "myrepo"}
+	enrollment := &relayEnrollment{
+		RelayURL:    "https://relay.codewire.sh",
+		NetworkID:   "project-alpha",
+		InviteToken: "cw_enr_abc123",
+	}
+
+	got := relayInviteRedeemCommand(instance, enrollment)
+	want := []string{
+		"cw", "network", "enroll", "redeem", "cw_enr_abc123",
+		"--node-name", "myrepo",
+		"--relay-url", "https://relay.codewire.sh",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("relayInviteRedeemCommand() = %v, want %v", got, want)
+	}
+}
+
+func TestRelayInviteRedeemCommandOmitsRelayURLWhenEmpty(t *testing.T) {
+	instance := &cwconfig.LocalInstance{Name: "myrepo"}
+	enrollment := &relayEnrollment{
+		NetworkID:   "project-alpha",
+		InviteToken: "cw_enr_abc123",
+	}
+
+	got := relayInviteRedeemCommand(instance, enrollment)
+	want := []string{"cw", "network", "enroll", "redeem", "cw_enr_abc123", "--node-name", "myrepo"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("relayInviteRedeemCommand() = %v, want %v", got, want)
+	}
+}
+
+func TestRelayInviteRedeemCommandReturnsNilForMissingArgs(t *testing.T) {
+	if got := relayInviteRedeemCommand(nil, &relayEnrollment{InviteToken: "t"}); got != nil {
+		t.Fatalf("expected nil for missing instance, got %v", got)
+	}
+	if got := relayInviteRedeemCommand(&cwconfig.LocalInstance{Name: "x"}, nil); got != nil {
+		t.Fatalf("expected nil for missing enrollment, got %v", got)
+	}
+}
+
 func TestPrepareLocalInstanceUsesRepoPathWorkdirForLima(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfgPath := filepath.Join(tmpDir, "codewire.yaml")

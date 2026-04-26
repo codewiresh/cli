@@ -427,7 +427,7 @@ func printDetectionSummary(detection *platform.DetectionResult) {
 	fmt.Fprintln(os.Stderr)
 }
 
-type envRelayEnrollment struct {
+type relayEnrollment struct {
 	RelayURL    string
 	NetworkID   string
 	InviteToken string
@@ -435,7 +435,7 @@ type envRelayEnrollment struct {
 
 var createRelayInvite = cwclient.CreateInvite
 
-func resolveEnvRelayEnrollment(dir string, assumeYes bool, requestedNetwork string, disableNetwork bool) (*envRelayEnrollment, error) {
+func resolveRelayEnrollment(dir string, assumeYes bool, requestedNetwork string, disableNetwork bool) (*relayEnrollment, error) {
 	if disableNetwork {
 		return nil, nil
 	}
@@ -496,7 +496,7 @@ func resolveEnvRelayEnrollment(dir string, assumeYes bool, requestedNetwork stri
 		return nil, fmt.Errorf("create relay invite for env: %w", err)
 	}
 
-	return &envRelayEnrollment{
+	return &relayEnrollment{
 		RelayURL:    relayURL,
 		NetworkID:   networkID,
 		InviteToken: invite.Token,
@@ -580,7 +580,7 @@ Examples:
 
 			req := resolved.Request
 
-			enrollment, err := resolveEnvRelayEnrollment(dataDir(), yes, network, noNetwork)
+			enrollment, err := resolveRelayEnrollment(dataDir(), yes, network, noNetwork)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: relay enrollment failed (%v), continuing without network\n", err)
 				enrollment = nil

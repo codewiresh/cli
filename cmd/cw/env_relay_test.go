@@ -83,9 +83,9 @@ func TestResolveEnvRelayEnrollmentExplicitNetwork(t *testing.T) {
 		t.Fatalf("SaveConfig: %v", err)
 	}
 
-	enrollment, err := resolveEnvRelayEnrollment(dir, true, wantNetwork, false)
+	enrollment, err := resolveRelayEnrollment(dir, true, wantNetwork, false)
 	if err != nil {
-		t.Fatalf("resolveEnvRelayEnrollment: %v", err)
+		t.Fatalf("resolveRelayEnrollment: %v", err)
 	}
 	if enrollment == nil {
 		t.Fatal("expected enrollment")
@@ -152,9 +152,9 @@ func TestResolveEnvRelayEnrollmentPersistsConsent(t *testing.T) {
 		t.Fatalf("SaveConfig: %v", err)
 	}
 
-	enrollment, err := resolveEnvRelayEnrollment(dir, true, "", false)
+	enrollment, err := resolveRelayEnrollment(dir, true, "", false)
 	if err != nil {
-		t.Fatalf("resolveEnvRelayEnrollment: %v", err)
+		t.Fatalf("resolveRelayEnrollment: %v", err)
 	}
 	if enrollment == nil {
 		t.Fatal("expected enrollment")
