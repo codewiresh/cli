@@ -428,14 +428,22 @@ func printDetectionSummary(detection *platform.DetectionResult) {
 }
 
 type relayEnrollment struct {
-	RelayURL    string
-	NetworkID   string
-	InviteToken string
+	RelayURL        string
+	NetworkID       string
+	InviteToken     string
+	EnrollmentToken string
 }
 
 var createRelayInvite = cwclient.CreateInvite
+var createRelayNodeEnrollment = cwclient.CreateNodeEnrollment
 
-func resolveRelayEnrollment(dir string, assumeYes bool, requestedNetwork string, disableNetwork bool) (*relayEnrollment, error) {
+type relayNetworkBootstrap struct {
+	RelayURL  string
+	AuthToken string
+	NetworkID string
+}
+
+func resolveRelayNetworkBootstrap(dir string, assumeYes bool, requestedNetwork string, disableNetwork bool) (*relayNetworkBootstrap, error) {
 	if disableNetwork {
 		return nil, nil
 	}
@@ -487,19 +495,57 @@ func resolveRelayEnrollment(dir string, assumeYes bool, requestedNetwork string,
 		return nil, nil
 	}
 
-	invite, err := createRelayInvite(dir, cwclient.RelayAuthOptions{
+	return &relayNetworkBootstrap{
 		RelayURL:  relayURL,
 		AuthToken: authToken,
 		NetworkID: networkID,
+	}, nil
+}
+
+func resolveRelayEnrollment(dir string, assumeYes bool, requestedNetwork string, disableNetwork bool) (*relayEnrollment, error) {
+	bootstrap, err := resolveRelayNetworkBootstrap(dir, assumeYes, requestedNetwork, disableNetwork)
+	if err != nil || bootstrap == nil {
+		return nil, err
+	}
+
+	invite, err := createRelayInvite(dir, cwclient.RelayAuthOptions{
+		RelayURL:  bootstrap.RelayURL,
+		AuthToken: bootstrap.AuthToken,
+		NetworkID: bootstrap.NetworkID,
 	}, 1, "24h")
 	if err != nil {
 		return nil, fmt.Errorf("create relay invite for env: %w", err)
 	}
 
 	return &relayEnrollment{
-		RelayURL:    relayURL,
-		NetworkID:   networkID,
+		RelayURL:    bootstrap.RelayURL,
+		NetworkID:   bootstrap.NetworkID,
 		InviteToken: invite.Token,
+	}, nil
+}
+
+func createLocalRelayNodeEnrollment(dir string, bootstrap *relayNetworkBootstrap, nodeName string) (*relayEnrollment, error) {
+	if bootstrap == nil {
+		return nil, nil
+	}
+	nodeName = strings.TrimSpace(nodeName)
+	if nodeName == "" {
+		return nil, fmt.Errorf("node name is required")
+	}
+
+	enrollment, err := createRelayNodeEnrollment(dir, cwclient.RelayAuthOptions{
+		RelayURL:  bootstrap.RelayURL,
+		AuthToken: bootstrap.AuthToken,
+		NetworkID: bootstrap.NetworkID,
+	}, nodeName, 1, "10m")
+	if err != nil {
+		return nil, fmt.Errorf("create relay node enrollment for local runtime: %w", err)
+	}
+
+	return &relayEnrollment{
+		RelayURL:        bootstrap.RelayURL,
+		NetworkID:       bootstrap.NetworkID,
+		EnrollmentToken: enrollment.EnrollmentToken,
 	}, nil
 }
 
