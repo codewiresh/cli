@@ -115,3 +115,106 @@ func oscBody(seq string) string {
 		return body
 	}
 }
+
+// QueryAutoResponder implements a streaming detector for terminal capability
+// queries (cursor position, device attributes, OSC color queries, etc.) that
+// TUIs emit at startup and block on. Behind a `cw run` PTY there is no
+// terminal emulator to answer those queries, so the child program hangs.
+//
+// QueryAutoResponder is fed bytes streamed out of the child PTY; for each
+// recognized query it returns the canned response bytes the dispatcher should
+// write back into the child's PTY stdin. Bytes are NOT consumed from the
+// stream — callers should still forward all output to log/broadcaster
+// subscribers; the responder only generates side-channel responses.
+//
+// Partial sequences spanning a read boundary are buffered and re-evaluated
+// on the next Feed call.
+type QueryAutoResponder struct {
+	tail []byte
+}
+
+// NewQueryAutoResponder returns a fresh responder.
+func NewQueryAutoResponder() *QueryAutoResponder {
+	return &QueryAutoResponder{}
+}
+
+// Feed scans data (with any retained tail from the previous call prepended)
+// for terminal capability queries and returns the concatenated response bytes
+// for every query found. Any partial trailing escape sequence is retained
+// internally and re-evaluated on the next call.
+func (r *QueryAutoResponder) Feed(data []byte) []byte {
+	if len(data) == 0 && len(r.tail) == 0 {
+		return nil
+	}
+	var combined []byte
+	if len(r.tail) > 0 {
+		combined = make([]byte, 0, len(r.tail)+len(data))
+		combined = append(combined, r.tail...)
+		combined = append(combined, data...)
+		r.tail = nil
+	} else {
+		combined = data
+	}
+
+	s := string(combined)
+	var out []byte
+	i := 0
+	for i < len(s) {
+		if s[i] != '\x1b' {
+			i++
+			continue
+		}
+		next, complete := consumeEscapeSequence(s, i)
+		if !complete {
+			r.tail = append([]byte(nil), combined[i:]...)
+			return out
+		}
+		if resp := queryResponse(s[i:next]); len(resp) > 0 {
+			out = append(out, resp...)
+		}
+		i = next
+	}
+	return out
+}
+
+// queryResponse returns the canned response bytes for known terminal
+// capability queries, or nil if seq is not one we handle.
+func queryResponse(seq string) []byte {
+	if len(seq) < 2 || seq[0] != '\x1b' {
+		return nil
+	}
+	switch seq[1] {
+	case '[':
+		switch seq {
+		case "\x1b[6n":
+			// Cursor position request: report row 1 col 1.
+			return []byte("\x1b[1;1R")
+		case "\x1b[c", "\x1b[0c":
+			// Primary device attributes: VT102 minimal.
+			return []byte("\x1b[?6c")
+		case "\x1b[>c", "\x1b[>0c":
+			// Secondary device attributes.
+			return []byte("\x1b[>0;0;0c")
+		case "\x1b[>q":
+			// XTVERSION.
+			return []byte("\x1bP>|cw\x1b\\")
+		case "\x1b[?u":
+			// Kitty keyboard progressive enhancement query.
+			return []byte("\x1b[?0u")
+		}
+		return nil
+	case ']':
+		body := oscBody(seq)
+		switch {
+		case strings.HasPrefix(body, "10;?"):
+			return []byte("\x1b]10;rgb:c0c0/c0c0/c0c0\x07")
+		case strings.HasPrefix(body, "11;?"):
+			return []byte("\x1b]11;rgb:0000/0000/0000\x07")
+		case strings.HasPrefix(body, "12;?"):
+			return []byte("\x1b]12;rgb:c0c0/c0c0/c0c0\x07")
+		}
+		return nil
+	default:
+		return nil
+	}
+}

@@ -931,6 +931,15 @@ func (m *SessionManager) Launch(command []string, workingDir string, env []strin
 		slog.Error("failed to open session log file", "id", id, "path", logPath, "err", logErr)
 	}
 
+	// Auto-respond to terminal capability queries (cursor position, device
+	// attributes, OSC color queries) that TUIs emit at startup. Without a
+	// real terminal emulator behind the PTY, the child would hang waiting
+	// for replies. The responder is opt-out via CW_NO_TTY_QUERIES=1.
+	var queryResponder *termutil.QueryAutoResponder
+	if os.Getenv("CW_NO_TTY_QUERIES") != "1" {
+		queryResponder = termutil.NewQueryAutoResponder()
+	}
+
 	// Goroutine 1: PTY reader → log file + broadcast + output tracking.
 	go func() {
 		buf := make([]byte, 4096)
@@ -939,6 +948,13 @@ func (m *SessionManager) Launch(command []string, workingDir string, env []strin
 			if n > 0 {
 				data := make([]byte, n)
 				copy(data, buf[:n])
+				if queryResponder != nil {
+					if resp := queryResponder.Feed(data); len(resp) > 0 {
+						if _, wErr := ptmx.Write(resp); wErr != nil {
+							slog.Error("PTY auto-respond write error", "id", id, "err", wErr)
+						}
+					}
+				}
 				if logFile != nil {
 					if _, wErr := logFile.Write(data); wErr != nil {
 						slog.Error("log write error", "id", id, "err", wErr)
