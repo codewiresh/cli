@@ -720,22 +720,35 @@ func (m *SessionManager) CleanupRequest(requestID string) {
 	m.pendingRequestsMu.Unlock()
 }
 
-// FormatDirectMessagePrompt formats a PTY-injectable prompt for a direct message.
+// FormatDirectMessagePrompt formats a PTY-injectable prompt for a direct
+// message. The body is emitted inside bracketed-paste markers and submitted
+// with a carriage return so TUIs (codex, claude, etc.) treat it as one paste
+// event rather than typed-then-submitted lines.
+//
+// We do NOT prepend a "[Codewire message from <sender>]" header for PTY
+// delivery: codex's TUI panics on bracket-prefixed multi-line content
+// (panic in tui/src/wrapping.rs:52, byte index near u64::MAX). The session
+// identifier is preserved through other channels (inbox listing, log file,
+// notifications); the PTY path delivers only the message body.
+//
+// Without bracketed-paste, embedded newlines in the body would pre-submit
+// each line as its own prompt. Bracketed-paste-aware TUIs buffer the entire
+// content, then the trailing CR submits the buffered paste as one input.
 func FormatDirectMessagePrompt(fromName string, fromID uint32, body string) string {
-	sender := fromName
-	if sender == "" {
-		sender = fmt.Sprintf("session-%d", fromID)
-	}
-	return fmt.Sprintf("\n[Codewire message from %s]\n%s\n\n", sender, body)
+	_ = fromName
+	_ = fromID
+	return "\x1b[200~" + body + "\x1b[201~\r"
 }
 
 // FormatRequestPrompt formats a PTY-injectable prompt for a request message.
+// Uses bracketed-paste markers and omits the bracketed header for the same
+// reason as FormatDirectMessagePrompt. The reply hint is appended inside the
+// paste so the receiving session sees how to respond.
 func FormatRequestPrompt(requestID string, fromName string, fromID uint32, body string) string {
-	sender := fromName
-	if sender == "" {
-		sender = fmt.Sprintf("session-%d", fromID)
-	}
-	return fmt.Sprintf("\n[Codewire request %s from %s]\n%s\n\nReply with: cw reply %s \"<response>\"\n\n", requestID, sender, body, requestID)
+	_ = fromName
+	_ = fromID
+	footer := fmt.Sprintf("\n\nReply with: cw reply %s <response>", requestID)
+	return "\x1b[200~" + body + footer + "\x1b[201~\r"
 }
 
 func randomMessageID() string {
@@ -931,6 +944,15 @@ func (m *SessionManager) Launch(command []string, workingDir string, env []strin
 		slog.Error("failed to open session log file", "id", id, "path", logPath, "err", logErr)
 	}
 
+	// Auto-respond to terminal capability queries (cursor position, device
+	// attributes, OSC color queries) that TUIs emit at startup. Without a
+	// real terminal emulator behind the PTY, the child would hang waiting
+	// for replies. The responder is opt-out via CW_NO_TTY_QUERIES=1.
+	var queryResponder *termutil.QueryAutoResponder
+	if os.Getenv("CW_NO_TTY_QUERIES") != "1" {
+		queryResponder = termutil.NewQueryAutoResponder()
+	}
+
 	// Goroutine 1: PTY reader → log file + broadcast + output tracking.
 	go func() {
 		buf := make([]byte, 4096)
@@ -939,6 +961,13 @@ func (m *SessionManager) Launch(command []string, workingDir string, env []strin
 			if n > 0 {
 				data := make([]byte, n)
 				copy(data, buf[:n])
+				if queryResponder != nil {
+					if resp := queryResponder.Feed(data); len(resp) > 0 {
+						if _, wErr := ptmx.Write(resp); wErr != nil {
+							slog.Error("PTY auto-respond write error", "id", id, "err", wErr)
+						}
+					}
+				}
 				if logFile != nil {
 					if _, wErr := logFile.Write(data); wErr != nil {
 						slog.Error("log write error", "id", id, "err", wErr)
