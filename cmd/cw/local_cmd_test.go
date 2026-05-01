@@ -846,9 +846,9 @@ func TestLimaCreateCommandArgs(t *testing.T) {
 	}
 
 	got := limaCreateCommandArgs(instance)
-	wantClaudeDir := filepath.Join(dataDir, "lima", "cw-repo", "claude")
+	_ = filepath.Join(dataDir, "lima", "cw-repo", "claude")
 	wantGitDir := filepath.Join(dataDir, "lima", "cw-repo", "git")
-	wantMountSet := `.mounts=[{"location":"/tmp/repo","mountPoint":"/tmp/repo","writable":true},{"location":"` + wantClaudeDir + `","mountPoint":"/home/{{.User}}.guest/.claude","writable":true},{"location":"/home/testuser/.config/gh","mountPoint":"/home/{{.User}}.guest/.config/gh","writable":true},{"location":"` + wantGitDir + `","mountPoint":"/home/{{.User}}.guest/.codewire-git","writable":false},{"location":"/home/testuser/.ssh","mountPoint":"/mnt/host-ssh","writable":false},{"location":"/home/testuser/.codex","mountPoint":"/home/{{.User}}.guest/.codex","writable":true},{"location":"/tmp/shared","mountPoint":"/mnt/shared","writable":false}]`
+	wantMountSet := `.mounts=[{"location":"/tmp/repo","mountPoint":"/tmp/repo","writable":true},{"location":"/home/testuser/.claude","mountPoint":"/home/{{.User}}.guest/.claude","writable":true},{"location":"/home/testuser/.config/gh","mountPoint":"/home/{{.User}}.guest/.config/gh","writable":true},{"location":"/home/testuser/.claude.json","mountPoint":"/home/{{.User}}.guest/.claude.json","writable":true},{"location":"` + wantGitDir + `","mountPoint":"/home/{{.User}}.guest/.codewire-git","writable":false},{"location":"/home/testuser/.ssh","mountPoint":"/mnt/host-ssh","writable":false},{"location":"/home/testuser/.codex","mountPoint":"/home/{{.User}}.guest/.codex","writable":true},{"location":"/tmp/shared","mountPoint":"/mnt/shared","writable":false}]`
 
 	want := []string{
 		"start",
@@ -971,6 +971,7 @@ func TestCreateLocalLimaInstanceInvokesExpectedCommands(t *testing.T) {
 			"-v", "/home/" + vmUser + ".guest/.config/gh:/home/codewire/.config/gh",
 			"-v", "/mnt/host-ssh:/home/codewire/.ssh:ro",
 			"-v", "/home/" + vmUser + ".guest/.codex:/home/codewire/.codex",
+			"-v", "/home/" + vmUser + ".guest/.claude.json:/home/codewire/.claude.json",
 			"-v", "/tmp/shared:/mnt/shared:ro",
 			"--workdir", "/tmp/repo",
 			"ghcr.io/codewiresh/full:latest",
