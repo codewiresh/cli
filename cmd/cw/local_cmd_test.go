@@ -8,7 +8,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	cwclient "github.com/codewiresh/codewire/internal/client"
 	cwconfig "github.com/codewiresh/codewire/internal/config"
 )
 
@@ -138,42 +140,100 @@ func TestPrepareLocalInstanceUsesCodewireYAMLAndOverrides(t *testing.T) {
 func TestRelayInviteRedeemCommandConstructsArgsCorrectly(t *testing.T) {
 	instance := &cwconfig.LocalInstance{Name: "myrepo"}
 	enrollment := &relayEnrollment{
-		RelayURL:    "https://relay.codewire.sh",
-		NetworkID:   "project-alpha",
-		InviteToken: "cw_enr_abc123",
+		RelayURL:        "https://relay.codewire.sh",
+		NetworkID:       "project-alpha",
+		EnrollmentToken: "cw_enr_abc123",
 	}
 
-	got := relayInviteRedeemCommand(instance, enrollment)
+	got := relayEnrollmentRedeemCommand(instance, enrollment)
 	want := []string{
 		"cw", "network", "enroll", "redeem", "cw_enr_abc123",
 		"--node-name", "myrepo",
 		"--relay-url", "https://relay.codewire.sh",
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("relayInviteRedeemCommand() = %v, want %v", got, want)
+		t.Fatalf("relayEnrollmentRedeemCommand() = %v, want %v", got, want)
 	}
 }
 
 func TestRelayInviteRedeemCommandOmitsRelayURLWhenEmpty(t *testing.T) {
 	instance := &cwconfig.LocalInstance{Name: "myrepo"}
 	enrollment := &relayEnrollment{
-		NetworkID:   "project-alpha",
-		InviteToken: "cw_enr_abc123",
+		NetworkID:       "project-alpha",
+		EnrollmentToken: "cw_enr_abc123",
 	}
 
-	got := relayInviteRedeemCommand(instance, enrollment)
+	got := relayEnrollmentRedeemCommand(instance, enrollment)
 	want := []string{"cw", "network", "enroll", "redeem", "cw_enr_abc123", "--node-name", "myrepo"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("relayInviteRedeemCommand() = %v, want %v", got, want)
+		t.Fatalf("relayEnrollmentRedeemCommand() = %v, want %v", got, want)
 	}
 }
 
 func TestRelayInviteRedeemCommandReturnsNilForMissingArgs(t *testing.T) {
-	if got := relayInviteRedeemCommand(nil, &relayEnrollment{InviteToken: "t"}); got != nil {
+	if got := relayEnrollmentRedeemCommand(nil, &relayEnrollment{EnrollmentToken: "t"}); got != nil {
 		t.Fatalf("expected nil for missing instance, got %v", got)
 	}
-	if got := relayInviteRedeemCommand(&cwconfig.LocalInstance{Name: "x"}, nil); got != nil {
+	if got := relayEnrollmentRedeemCommand(&cwconfig.LocalInstance{Name: "x"}, nil); got != nil {
 		t.Fatalf("expected nil for missing enrollment, got %v", got)
+	}
+	if got := relayEnrollmentRedeemCommand(&cwconfig.LocalInstance{Name: "x"}, &relayEnrollment{InviteToken: "CW-INV-wrong-kind"}); got != nil {
+		t.Fatalf("expected nil for invite token, got %v", got)
+	}
+}
+
+func TestCreateLocalRelayNodeEnrollmentUsesNodeEnrollmentToken(t *testing.T) {
+	origCreateEnrollment := createRelayNodeEnrollment
+	t.Cleanup(func() { createRelayNodeEnrollment = origCreateEnrollment })
+
+	bootstrap := &relayNetworkBootstrap{
+		RelayURL:  "https://relay.codewire.sh",
+		AuthToken: "relay-session",
+		NetworkID: "project-alpha",
+	}
+	createRelayNodeEnrollment = func(dataDir string, opts cwclient.RelayAuthOptions, nodeName string, uses int, ttl string) (*cwclient.NodeEnrollment, error) {
+		if dataDir != "/tmp/cw-data" {
+			t.Fatalf("dataDir = %q", dataDir)
+		}
+		if opts.RelayURL != bootstrap.RelayURL {
+			t.Fatalf("RelayURL = %q", opts.RelayURL)
+		}
+		if opts.AuthToken != bootstrap.AuthToken {
+			t.Fatalf("AuthToken = %q", opts.AuthToken)
+		}
+		if opts.NetworkID != bootstrap.NetworkID {
+			t.Fatalf("NetworkID = %q", opts.NetworkID)
+		}
+		if nodeName != "myrepo" {
+			t.Fatalf("nodeName = %q", nodeName)
+		}
+		if uses != 1 {
+			t.Fatalf("uses = %d", uses)
+		}
+		if ttl != "10m" {
+			t.Fatalf("ttl = %q", ttl)
+		}
+		return &cwclient.NodeEnrollment{
+			NetworkID:       bootstrap.NetworkID,
+			NodeName:        nodeName,
+			EnrollmentToken: "cw_enr_local",
+			UsesRemaining:   1,
+			ExpiresAt:       time.Now().UTC().Add(10 * time.Minute),
+		}, nil
+	}
+
+	enrollment, err := createLocalRelayNodeEnrollment("/tmp/cw-data", bootstrap, "myrepo")
+	if err != nil {
+		t.Fatalf("createLocalRelayNodeEnrollment: %v", err)
+	}
+	if enrollment.EnrollmentToken != "cw_enr_local" {
+		t.Fatalf("EnrollmentToken = %q", enrollment.EnrollmentToken)
+	}
+	if enrollment.InviteToken != "" {
+		t.Fatalf("InviteToken = %q, want empty", enrollment.InviteToken)
+	}
+	if enrollment.NetworkID != bootstrap.NetworkID {
+		t.Fatalf("NetworkID = %q", enrollment.NetworkID)
 	}
 }
 
