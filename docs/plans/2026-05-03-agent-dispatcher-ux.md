@@ -107,8 +107,9 @@ sits in the same dev-ops tooling space.
 - `--output json` — primary, structured for dispatchers.
 - `--output text` — human, pretty (current default behavior).
 - `-o` — short alias.
-- `--json` — keep as shorthand-equivalent of `--output json` for
-  back-compat. No deprecation; both ship indefinitely.
+- **No back-compat.** `--json` is removed in this change; everywhere
+  it appears in code and docs becomes `--output json`. We don't ship
+  shims.
 
 Future-room: `--output yaml` and `--output wide` slots open. No need
 to implement yet.
