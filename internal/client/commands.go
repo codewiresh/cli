@@ -848,7 +848,7 @@ func sendTyped(target *Target, id uint32, data []byte, noNewline bool) error {
 
 // WatchSession watches a session's output in real-time without attaching.
 // An optional timeout (in seconds) limits how long to wait.
-func WatchSession(target *Target, id uint32, tail *int, noHistory bool, timeout *uint64) error {
+func WatchSession(target *Target, id uint32, tail *int, noHistory bool, timeout *uint64, jsonOutput bool, filter string, w io.Writer) error {
 	reader, writer, err := target.Connect()
 	if err != nil {
 		return err
@@ -864,11 +864,20 @@ func WatchSession(target *Target, id uint32, tail *int, noHistory bool, timeout 
 	}
 	if tail != nil {
 		t := uint(*tail)
-		req.Tail = &t
+		req.HistoryLines = &t
 	}
 
 	if err := writer.SendRequest(req); err != nil {
 		return fmt.Errorf("sending watch request: %w", err)
+	}
+
+	var jsonWatcher *watchJSONWriter
+	if jsonOutput {
+		jsonWatcher, err = newWatchJSONWriter(w, filter)
+		if err != nil {
+			return err
+		}
+		defer jsonWatcher.Flush()
 	}
 
 	// Set up timeout timer.
@@ -905,9 +914,20 @@ func WatchSession(target *Target, id uint32, tail *int, noHistory bool, timeout 
 			switch resp.Type {
 			case "WatchUpdate":
 				if resp.Output != nil {
-					os.Stdout.Write([]byte(*resp.Output))
+					if jsonWatcher != nil {
+						if err := jsonWatcher.WriteChunk(*resp.Output); err != nil {
+							return err
+						}
+					} else {
+						w.Write([]byte(*resp.Output))
+					}
 				}
 				if resp.Done != nil && *resp.Done {
+					if jsonWatcher != nil {
+						if err := jsonWatcher.Flush(); err != nil {
+							return err
+						}
+					}
 					return nil
 				}
 			case "Error":
@@ -919,6 +939,154 @@ func WatchSession(target *Target, id uint32, tail *int, noHistory bool, timeout 
 			return nil
 		}
 	}
+}
+
+type watchJSONWriter struct {
+	out    io.Writer
+	filter []watchFilterToken
+	buffer string
+}
+
+type watchFilterToken struct {
+	key   string
+	index *int
+}
+
+func newWatchJSONWriter(out io.Writer, filter string) (*watchJSONWriter, error) {
+	tokens, err := parseWatchFilter(filter)
+	if err != nil {
+		return nil, err
+	}
+	return &watchJSONWriter{out: out, filter: tokens}, nil
+}
+
+func (w *watchJSONWriter) WriteChunk(chunk string) error {
+	w.buffer += chunk
+	for {
+		idx := strings.IndexByte(w.buffer, '\n')
+		if idx < 0 {
+			return nil
+		}
+		line := w.buffer[:idx]
+		w.buffer = w.buffer[idx+1:]
+		if err := w.emitLine(line); err != nil {
+			return err
+		}
+	}
+}
+
+func (w *watchJSONWriter) Flush() error {
+	if w.buffer == "" {
+		return nil
+	}
+	line := w.buffer
+	w.buffer = ""
+	return w.emitLine(line)
+}
+
+func (w *watchJSONWriter) emitLine(line string) error {
+	line = strings.TrimSuffix(line, "\r")
+
+	value := any(map[string]any{
+		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
+		"stream":    "stdout",
+		"text":      line,
+	})
+
+	if parsed, ok := parseWatchJSONLine(line); ok {
+		value = parsed
+	}
+
+	if len(w.filter) > 0 {
+		projected, ok := applyWatchFilter(value, w.filter)
+		if !ok {
+			return nil
+		}
+		value = projected
+	}
+
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	_, err = w.out.Write(data)
+	return err
+}
+
+func parseWatchJSONLine(line string) (any, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return nil, false
+	}
+	var value any
+	if err := json.Unmarshal([]byte(line), &value); err != nil {
+		return nil, false
+	}
+	return value, true
+}
+
+func parseWatchFilter(raw string) ([]watchFilterToken, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "." {
+		return nil, nil
+	}
+	if !strings.HasPrefix(raw, ".") {
+		return nil, fmt.Errorf("watch filter must start with '.'")
+	}
+
+	var tokens []watchFilterToken
+	for i := 1; i < len(raw); {
+		switch raw[i] {
+		case '.':
+			i++
+		case '[':
+			end := strings.IndexByte(raw[i:], ']')
+			if end <= 1 {
+				return nil, fmt.Errorf("invalid watch filter %q", raw)
+			}
+			value := raw[i+1 : i+end]
+			index, err := strconv.Atoi(value)
+			if err != nil {
+				return nil, fmt.Errorf("invalid watch filter index %q", value)
+			}
+			indexCopy := index
+			tokens = append(tokens, watchFilterToken{index: &indexCopy})
+			i += end + 1
+		default:
+			start := i
+			for i < len(raw) && raw[i] != '.' && raw[i] != '[' {
+				i++
+			}
+			tokens = append(tokens, watchFilterToken{key: raw[start:i]})
+		}
+	}
+	return tokens, nil
+}
+
+func applyWatchFilter(value any, tokens []watchFilterToken) (any, bool) {
+	current := value
+	for _, token := range tokens {
+		if token.key != "" {
+			obj, ok := current.(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			next, ok := obj[token.key]
+			if !ok {
+				return nil, false
+			}
+			current = next
+		}
+		if token.index != nil {
+			items, ok := current.([]any)
+			if !ok || *token.index < 0 || *token.index >= len(items) {
+				return nil, false
+			}
+			current = items[*token.index]
+		}
+	}
+	return current, true
 }
 
 // readFrames reads frames in a loop and sends them to the channel.
